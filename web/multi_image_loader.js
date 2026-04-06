@@ -418,17 +418,7 @@ function createWidget(node) {
         pointer-events:none;z-index:1;
       `;
 
-      // ── deselected overlay (shown when NOT selected) ──────────────────────
-      const deselOverlay = document.createElement("div");
-      deselOverlay.style.cssText = `
-        position:absolute;inset:0;
-        background:rgba(10,10,20,0.62);
-        display:${isSelected ? "none" : "flex"};
-        align-items:center;justify-content:center;
-        pointer-events:none;
-        border-radius:5px;
-      `;
-      deselOverlay.innerHTML = `<span style="font-size:24px;opacity:0.9;color:#ff5555;line-height:1;">⦸</span>`;
+
 
       // ── remove button (top-right, shown on hover) ─────────────────────────
       const removeBtn = document.createElement("button");
