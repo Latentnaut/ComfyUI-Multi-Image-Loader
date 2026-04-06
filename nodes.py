@@ -105,8 +105,18 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     ox    = float(transform.get("ox",    0.0))
     oy    = float(transform.get("oy",    0.0))
     scale = float(transform.get("scale", 1.0))
+    flipH = bool(transform.get("flipH", False))
+    flipV = bool(transform.get("flipV", False))
+    rotate = float(transform.get("rotate", 0.0))
     if scale <= 0:
         scale = 1.0
+
+    # Intrinsic transforms (flip then rotate)
+    if flipH: img = ImageOps.mirror(img)
+    if flipV: img = ImageOps.flip(img)
+    if rotate != 0:
+        # PIL rotates CCW; our convention is CW so negate
+        img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS)
 
     src_w, src_h = img.size
     base_scale   = min(canvas_w / src_w, canvas_h / src_h)

@@ -357,11 +357,57 @@ function createWidget(node) {
   }
   function hasCrop(filename) {
     const t = cropMap[filename];
-    return !!(t && (t.ox !== 0 || t.oy !== 0 || t.scale !== 1.0));
+    return !!(t && (t.ox!==0 || t.oy!==0 || t.scale!==1.0 || t.flipH || t.flipV || (t.rotate||0)!==0));
   }
   function persistCropData() {
     const w = getCropDataWidget();
     if (w) w.value = JSON.stringify(cropMap);
+  }
+
+  // Auto-update thumbnails after crop editor Apply.
+  // Draws each image through the same canvas transform as the editor.
+  async function renderCropPreviews() {
+    if (items.length === 0) return;
+    // Get reference dims from first image
+    let refW, refH;
+    try {
+      const r0 = await getImageDimensions(items[0].src);
+      refW = r0.w; refH = r0.h;
+    } catch { return; }
+
+    for (const item of items) {
+      const t = cropMap[item.filename];
+      if (!t) { item.previewSrc = undefined; continue; }
+      try {
+        const el = await loadImage(item.src);
+        const cvs = document.createElement("canvas");
+        cvs.width = refW; cvs.height = refH;
+        const ctx = cvs.getContext("2d");
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, refW, refH);
+
+        const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
+        const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
+        const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
+        const rW = el.naturalWidth * cosA + el.naturalHeight * sinA;
+        const rH = el.naturalWidth * sinA + el.naturalHeight * cosA;
+        const bf = Math.min(refW / rW, refH / rH);
+        const eff = bf * sc;
+        const dw = el.naturalWidth * eff, dh = el.naturalHeight * eff;
+
+        ctx.save();
+        ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
+        ctx.rotate(rot);
+        ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
+        ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
+
+        item.previewSrc = cvs.toDataURL("image/jpeg", 0.92);
+      } catch (e) {
+        console.warn("[MIL] crop preview error:", item.filename, e);
+      }
+    }
+    previewActive = true;
+    render();
   }
 
   function getEffectiveThumbW() {
@@ -527,8 +573,8 @@ function createWidget(node) {
       const cropActive = hasCrop(item.filename);
       cropBtn.style.cssText = `
         position:absolute;top:2px;right:20px;
-        background:${cropActive ? "rgba(255,200,60,0.9)" : "rgba(40,40,40,0.82)"};
-        color:${cropActive ? "#111" : "#ccc"};
+        background:${cropActive ? "rgba(110,110,110,0.9)" : "rgba(40,40,40,0.82)"};
+        color:#eee;
         border:none;border-radius:3px;
         width:16px;height:16px;font-size:9px;
         cursor:pointer;padding:0;line-height:16px;text-align:center;
@@ -555,7 +601,7 @@ function createWidget(node) {
         cropBadge.title = "Custom crop active";
         cropBadge.style.cssText = `
           position:absolute;bottom:2px;right:2px;
-          background:rgba(255,200,60,0.9);color:#111;
+          background:rgba(110,110,110,0.85);color:#eee;
           font-size:8px;padding:0 2px;border-radius:2px;
           pointer-events:none;z-index:1;
         `;
@@ -796,6 +842,7 @@ function createWidget(node) {
     let edImg = null, edNatW = 1, edNatH = 1;
     let edRefW = 1, edRefH = 1;  // reference canvas = first-image dims
     let dOX = 0, dOY = 0, edScale = 1.0;
+    let edFlipH = false, edFlipV = false, edRotate = 0;  // intrinsic transforms
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
     let rafId = null, panSt = null;
 
@@ -862,11 +909,19 @@ function createWidget(node) {
     cancelB.addEventListener("mouseleave", () => { cancelB.style.background="#2a2a2a"; cancelB.style.color="#aaa"; cancelB.style.borderColor="#444"; });
     pnl.appendChild(mkSec("Quick Fit"));
     pnl.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
-    pnl.appendChild(mkPB("\u2B1C Fit   (letterbox)", () => { dOX=0;dOY=0;edScale=1; updLbl(); }));
+    pnl.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
     pnl.appendChild(mkPB("\u2194 Fit Width",  doFitW));
     pnl.appendChild(mkPB("\u2195 Fit Height", doFitH));
+    pnl.appendChild(mkSec("Flip"));
+    pnl.appendChild(mkPB("\u2194 Flip Horizontal", ()=>{ edFlipH=!edFlipH; }));
+    pnl.appendChild(mkPB("\u2195 Flip Vertical",   ()=>{ edFlipV=!edFlipV; }));
+    pnl.appendChild(mkSec("Rotate"));
+    pnl.appendChild(mkPB("\u21BA  -90\u00b0",  ()=>{ edRotate=(edRotate-90+360)%360; updLbl(); }));
+    pnl.appendChild(mkPB("\u21BA  -45\u00b0",  ()=>{ edRotate=(edRotate-45+360)%360; updLbl(); }));
+    pnl.appendChild(mkPB("\u21BB  +45\u00b0",  ()=>{ edRotate=(edRotate+45)%360; updLbl(); }));
+    pnl.appendChild(mkPB("\u21BB  +90\u00b0",  ()=>{ edRotate=(edRotate+90)%360; updLbl(); }));
     pnl.appendChild(mkSec("Transform"));
-    pnl.appendChild(mkPB("\u27F2 Reset",      ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
+    pnl.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0; updLbl(); }));
     pnl.appendChild(zoomLbl);
     pnl.appendChild(spacer);
     pnl.appendChild(applyB);
@@ -886,10 +941,31 @@ function createWidget(node) {
     ov.appendChild(dlg); document.body.appendChild(ov);
 
     // ── helpers ───────────────────────────────────────────────
-    function updLbl() { zoomLbl.textContent = `Zoom: ${Math.round(edScale*100)}%`; }
-    function doFill() { dOX=0;dOY=0; edScale=Math.max(frameW/edNatW,frameH/edNatH)/bFit; updLbl(); }
-    function doFitW() { dOX=0;dOY=0; edScale=(frameW/edNatW)/bFit; updLbl(); }
-    function doFitH() { dOX=0;dOY=0; edScale=(frameH/edNatH)/bFit; updLbl(); }
+    function updLbl() {
+      const parts = [`Zoom: ${Math.round(edScale*100)}%`];
+      if (edRotate)            parts.push(`${edRotate}\u00b0`);
+      if (edFlipH)             parts.push("\u2194 H");
+      if (edFlipV)             parts.push("\u2195 V");
+      zoomLbl.textContent = parts.join(" \u00b7 ");
+    }
+    function _rotDims() {
+      const rf = edRotate * Math.PI / 180;
+      const c = Math.abs(Math.cos(rf)), s = Math.abs(Math.sin(rf));
+      return { rW: edNatW*c+edNatH*s, rH: edNatW*s+edNatH*c };
+    }
+    function _bfitOf(rW, rH) { return Math.min(frameW/rW, frameH/rH); }
+    function doFill() {
+      const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
+      dOX=0;dOY=0; edScale=Math.max(frameW/(rW*bf),frameH/(rH*bf)); updLbl();
+    }
+    function doFitW() {
+      const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
+      dOX=0;dOY=0; edScale=frameW/(rW*bf); updLbl();
+    }
+    function doFitH() {
+      const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
+      dOX=0;dOY=0; edScale=frameH/(rH*bf); updLbl();
+    }
 
     function syncCvs() {
       const r = ca.getBoundingClientRect();
@@ -901,7 +977,10 @@ function createWidget(node) {
       if (asp>=maxW/maxH) { frameW=maxW; frameH=Math.round(maxW/asp); }
       else               { frameH=maxH; frameW=Math.round(maxH*asp); }
       frameCX=cw/2; frameCY=ch/2;
-      bFit=Math.min(frameW/edNatW,frameH/edNatH);
+      // bFit accounts for rotated bounding box
+      const rf=edRotate*Math.PI/180, c=Math.abs(Math.cos(rf)), s=Math.abs(Math.sin(rf));
+      const rW=edNatW*c+edNatH*s, rH=edNatW*s+edNatH*c;
+      bFit=Math.min(frameW/rW,frameH/rH);
     }
 
     function redraw() {
@@ -916,12 +995,16 @@ function createWidget(node) {
           ctx.fillStyle=(r+c)%2===0?"#1a1a1a":"#141414";
           ctx.fillRect(c*T,r*T,T,T);
         }
-        // image
+        // image with flip + rotation transform
         if (edImg) {
           const eff=bFit*edScale;
           const dw=edNatW*eff, dh=edNatH*eff;
-          const dx=frameCX-dw/2+dOX, dy=frameCY-dh/2+dOY;
-          ctx.drawImage(edImg,dx,dy,dw,dh);
+          ctx.save();
+          ctx.translate(frameCX+dOX, frameCY+dOY);
+          ctx.rotate(edRotate*Math.PI/180);
+          ctx.scale(edFlipH?-1:1, edFlipV?-1:1);
+          ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
+          ctx.restore();
         }
         // dim outside frame
         const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
@@ -943,7 +1026,8 @@ function createWidget(node) {
     // ── image load ───────────────────────────────────────────
     function saveToSes() {
       const fn = items[curIdx]?.filename; if (!fn) return;
-      if (dOX!==0||dOY!==0||edScale!==1.0) ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale};
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0)
+        ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate};
       else delete ses[fn];
     }
     async function loadIdx(idx) {
@@ -960,6 +1044,7 @@ function createWidget(node) {
           syncCvs();
           const t=ses[items[idx].filename];
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
+          edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0;
           updLbl(); redraw(); res();
         };
         el.onerror=res; el.src=items[idx].src;
@@ -1010,10 +1095,11 @@ function createWidget(node) {
       // commit session to cropMap
       for (const fn of valid) {
         const t=ses[fn];
-        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0)) cropMap[fn]=t;
+        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0)) cropMap[fn]=t;
         else delete cropMap[fn];
       }
-      persistCropData(); render(); persist(); doClose();
+      persistCropData(); persist(); doClose();
+      renderCropPreviews();  // async: update thumbnails with crop applied
     }
     applyB.addEventListener("click",  doApply);
     cancelB.addEventListener("click", doClose);
