@@ -50,14 +50,59 @@ async def upload_images_handler(request):
 
 # ─── Node ─────────────────────────────────────────────────────────────────────
 
+def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
+    """
+    Resize `img` to (target_w, target_h) using the requested fit strategy.
+
+    letterbox – Preserve aspect ratio; pad with black to fill the canvas.
+    crop      – Preserve aspect ratio; scale to fill, then center-crop.
+    fill      – Stretch/squish to exact dimensions (no padding, no crop).
+    """
+    if img.size == (target_w, target_h):
+        return img
+
+    if mode == "fill":
+        return img.resize((target_w, target_h), Image.LANCZOS)
+
+    src_w, src_h = img.size
+    scale_w = target_w / src_w
+    scale_h = target_h / src_h
+
+    if mode == "letterbox":
+        # Scale down to fit inside the canvas (never upscale beyond target)
+        scale = min(scale_w, scale_h)
+        new_w = round(src_w * scale)
+        new_h = round(src_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        offset_x = (target_w - new_w) // 2
+        offset_y = (target_h - new_h) // 2
+        canvas.paste(resized, (offset_x, offset_y))
+        return canvas
+
+    if mode == "crop":
+        # Scale up to fill the canvas, then center-crop
+        scale = max(scale_w, scale_h)
+        new_w = round(src_w * scale)
+        new_h = round(src_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        left = (new_w - target_w) // 2
+        top  = (new_h - target_h) // 2
+        return resized.crop((left, top, left + target_w, top + target_h))
+
+    # Fallback – should not happen
+    return img.resize((target_w, target_h), Image.LANCZOS)
+
+
 class MultiImageLoader:
     """
     Loads multiple images uploaded directly in the UI (no folder needed).
     Images are uploaded via a drag-and-drop / file-picker widget injected
     by the companion JavaScript extension.
 
-    Outputs a single IMAGE batch tensor  [B, H, W, C]  where all images are
-    resized to match the first image's dimensions when sizes differ.
+    Outputs a single IMAGE batch tensor  [B, H, W, C].
+    All images are conformed to the first image's dimensions using
+    the chosen fit_mode: letterbox, crop, or fill.
     """
 
     UPLOADED_FILES_KEY = "image_list"
@@ -71,7 +116,7 @@ class MultiImageLoader:
                 # Must be in 'optional' (NOT 'hidden') so LiteGraph creates a
                 # real widget and saves it in widgets_values for persistence.
                 "image_list": ("STRING", {"default": "[]"}),
-                "resize_mode": (["resize_to_first", "none"],),
+                "fit_mode": (["letterbox", "crop", "fill"],),
             },
         }
 
@@ -82,11 +127,11 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", resize_mode="resize_to_first"):
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox"):
         # Re-run whenever the file list changes
         return hashlib.md5(image_list.encode()).hexdigest()
 
-    def load_images(self, image_list="[]", resize_mode="resize_to_first"):
+    def load_images(self, image_list="[]", fit_mode="letterbox"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -112,9 +157,10 @@ class MultiImageLoader:
                 img = img.convert("RGB")
 
                 if reference_size is None:
-                    reference_size = img.size  # (W, H)
-                elif resize_mode == "resize_to_first" and img.size != reference_size:
-                    img = img.resize(reference_size, Image.LANCZOS)
+                    reference_size = img.size  # (W, H) — first image sets the canvas
+                elif img.size != reference_size:
+                    target_w, target_h = reference_size
+                    img = _fit_image(img, target_w, target_h, fit_mode)
 
                 arr = np.array(img).astype(np.float32) / 255.0  # H×W×C  in [0,1]
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))  # 1×H×W×C
