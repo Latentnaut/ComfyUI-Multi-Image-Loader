@@ -137,7 +137,7 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
 
   return (
     NODE_HEADER_H   +
-    NODE_SLOT_H * 4 +
+    NODE_SLOT_H * 3 +
     NODE_PADDING_V  +
     dropH           +
     extraGap        +
@@ -335,10 +335,6 @@ function createWidget(node) {
     return node.widgets?.find((w) => w.name === "image_list");
   }
 
-  function getSelectedListWidget() {
-    return node.widgets?.find((w) => w.name === "selected_list");
-  }
-
   function getFitModeWidget() {
     return node.widgets?.find((w) => w.name === "fit_mode");
   }
@@ -346,10 +342,6 @@ function createWidget(node) {
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
-    const ws = getSelectedListWidget();
-    if (ws) ws.value = JSON.stringify(
-      items.filter(i => selectedSet.has(i.filename)).map(i => i.filename)
-    );
     node.setDirtyCanvas(true, true);
   }
 
@@ -387,14 +379,13 @@ function createWidget(node) {
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  function render(doResize = true) {
+  function render() {
     statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const tw = THUMB_W;
     const th = thumbH;
 
     items.forEach((item, idx) => {
-      const isSelected = selectedSet.has(item.filename);
 
       // ── wrapper ──────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
@@ -407,11 +398,9 @@ function createWidget(node) {
         height: ${th}px;
         border-radius: 6px;
         overflow: hidden;
-        border: ${isSelected ? "2px solid #4ae6b4" : "1px solid #333348"};
+        border: 1px solid #3a5080;
         flex-shrink: 0;
         background: #1a1f2e;
-        cursor: pointer;
-        transition: border-color 0.12s;
       `;
 
       // ── image ─────────────────────────────────────────────────────────────
@@ -460,7 +449,6 @@ function createWidget(node) {
       wrapper.addEventListener("mouseleave", () => (removeBtn.style.opacity = "0"));
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        selectedSet.delete(item.filename);
         items.splice(idx, 1);
         items.forEach((it) => delete it.previewSrc);
         previewActive = false;
@@ -469,20 +457,8 @@ function createWidget(node) {
         persist();
       });
 
-      // ── click to toggle selection ─────────────────────────────────────────
-      let _didDrag = false;
-      wrapper.addEventListener("mousedown", () => { _didDrag = false; });
-      wrapper.addEventListener("click", () => {
-        if (_didDrag) return;
-        if (selectedSet.has(item.filename)) selectedSet.delete(item.filename);
-        else selectedSet.add(item.filename);
-        persist();
-        render(false); // visual-only repaint — keep user's manual node size
-      });
-
       // ── drag-to-reorder events ────────────────────────────────────────────
       wrapper.addEventListener("dragstart", (e) => {
-        _didDrag = true;
         dragSrcIdx = idx;
         wrapper.classList.add("mil-dragging");
         e.dataTransfer.effectAllowed = "move";
@@ -529,21 +505,19 @@ function createWidget(node) {
       wrapper.appendChild(img);
       wrapper.appendChild(badge);
       wrapper.appendChild(removeBtn);
-      wrapper.appendChild(deselOverlay);
       grid.appendChild(wrapper);
     });
 
-    const count    = items.length;
-    const selCount = items.filter(i => selectedSet.has(i.filename)).length;
+    const count = items.length;
     updateDropZone(count);
     statusBar.style.display  = count > 0 ? "flex" : "none";
     statusLabel.textContent  = count > 0
-      ? `${count} images · ${selCount} selected · Drag to reorder`
+      ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
       : "";
     clearBtn.style.display   = count > 0 ? "inline-block" : "none";
     previewBtn.style.display = count > 1 ? "inline-block" : "none";
 
-    if (doResize) resizeNode();
+    resizeNode();
     requestAnimationFrame(updateScrollFade);
   }
 
@@ -693,7 +667,6 @@ function createWidget(node) {
 
       filenames.forEach((fn, i) => {
         items.push({ filename: fn, src: dataURLs[i] });
-        selectedSet.add(fn); // auto-select on upload
       });
 
       statusLabel.style.color = "#8899bb";
@@ -739,7 +712,6 @@ function createWidget(node) {
     items  = [];
     thumbH = THUMB_W;
     previewActive = false;
-    selectedSet.clear();
     render();
     persist();
   });
@@ -779,7 +751,7 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
-            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 4 - NODE_PADDING_V)];
+            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 3 - NODE_PADDING_V)];
           },
         }
       );
@@ -787,7 +759,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "selected_list", "fit_mode"];
+        const hiddenNames = ["image_list", "fit_mode"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";

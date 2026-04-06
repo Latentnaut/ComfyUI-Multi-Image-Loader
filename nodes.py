@@ -112,48 +112,41 @@ class MultiImageLoader:
         return {
             "required": {},
             "optional": {
-                # JSON list of ALL filenames persisted in the workflow JSON.
+                # JSON list of filenames persisted in the workflow JSON.
                 "image_list": ("STRING", {"default": "[]"}),
-                # JSON list of SELECTED filenames (subset of image_list).
-                "selected_list": ("STRING", {"default": "[]"}),
                 "fit_mode": (["letterbox", "crop"],),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE")
-    RETURN_NAMES = ("all_images", "selected_images")
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image_batch",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", selected_list="[]", fit_mode="letterbox"):
-        return hashlib.md5((image_list + selected_list).encode()).hexdigest()
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox"):
+        return hashlib.md5(image_list.encode()).hexdigest()
 
-    def load_images(self, image_list="[]", selected_list="[]", fit_mode="letterbox"):
+    def load_images(self, image_list="[]", fit_mode="letterbox"):
         try:
             filenames = json.loads(image_list)
         except Exception:
             filenames = []
 
-        try:
-            selected_fns = set(json.loads(selected_list) or [])
-        except Exception:
-            selected_fns = set()
-
         placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
 
         if not filenames:
-            return (placeholder, placeholder)
+            return (placeholder,)
 
         input_dir = Path(folder_paths.get_input_directory())
-        loaded = []          # list of (filename, tensor)
+        tensors = []
         reference_size = None
 
         for fname in filenames:
             fpath = input_dir / fname
             if not fpath.exists():
-                print(f"[MultiImageLoader] Warning: file not found – {fpath}")
+                print(f"[MultiImageLoader] Warning: file not found \u2013 {fpath}")
                 continue
             try:
                 img = Image.open(fpath)
@@ -167,27 +160,16 @@ class MultiImageLoader:
                     img = _fit_image(img, target_w, target_h, fit_mode)
 
                 arr = np.array(img).astype(np.float32) / 255.0
-                tensor = torch.from_numpy(arr).unsqueeze(0)  # 1×H×W×C
-                loaded.append((fname, tensor))
+                tensors.append(torch.from_numpy(arr).unsqueeze(0))
             except Exception as e:
                 print(f"[MultiImageLoader] Error loading {fname}: {e}")
                 continue
 
-        if not loaded:
-            return (placeholder, placeholder)
+        if not tensors:
+            return (placeholder,)
 
-        # all_images: every successfully loaded image
-        all_batch = torch.cat([t for _, t in loaded], dim=0)
-
-        # selected_images: those whose filename is in selected_fns
-        # If selected_fns is empty (nothing persisted yet) fall back to all.
-        if not selected_fns:
-            selected_batch = all_batch
-        else:
-            sel = [t for fn, t in loaded if fn in selected_fns]
-            selected_batch = torch.cat(sel, dim=0) if sel else placeholder
-
-        return (all_batch, selected_batch)
+        batch = torch.cat(tensors, dim=0)
+        return (batch,)
 
 
 # ─── Registrations ────────────────────────────────────────────────────────────
