@@ -562,12 +562,14 @@ function createWidget(node) {
         const [moved] = items.splice(dragSrcIdx, 1);
         items.splice(idx, 0, moved);
 
-        items.forEach((it) => delete it.previewSrc);
-        previewActive = false;
+        // Clear only non-crop previews; crop previews are rebuilt async
+        items.forEach((it) => { if (!hasCrop(it.filename)) delete it.previewSrc; });
+        previewActive = items.some(it => it.previewSrc);
 
         updateThumbHFromFirst();
         render();
         persist();
+        renderCropPreviews();  // async: restore crop thumbnails after reorder
       });
 
       // ── crop button (top-right, next to remove btn) ──────────────────────
