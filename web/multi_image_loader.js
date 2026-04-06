@@ -931,9 +931,9 @@ function createWidget(node) {
       b.style.cssText = "background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:5px 8px;font-size:11px;cursor:pointer;text-align:left;width:100%;";
       b.addEventListener("mouseenter", () => { b.style.background="#2a2a2a"; b.style.borderColor="#484848"; });
       b.addEventListener("mouseleave", () => { b.style.background="#1e1e1e"; b.style.borderColor="#333"; });
-      b.addEventListener("click", () => { cb(); redraw(); });
-      return b;
-    }
+    b.addEventListener("click", () => { cb(); redraw(); requestInpaintPreview(); });
+    return b;
+  }
     const spacer = document.createElement("div"); spacer.style.flex = "1";
     const applyB = document.createElement("button");
     applyB.textContent = "\u2713 Apply";
@@ -976,7 +976,7 @@ function createWidget(node) {
       function commit(){
         const v = Math.max(-180,Math.min(180,parseInt(inp.value)||0));
         edRotate=v; rotSlider.value=v; rotValEl.textContent=v+"\u00b0";
-        updLbl(); redraw();
+        updLbl(); redraw(); requestInpaintPreview();
       }
       inp.addEventListener("blur", commit);
       inp.addEventListener("keydown", e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") rotValEl.textContent=edRotate+"\u00b0"; });
@@ -1079,7 +1079,12 @@ function createWidget(node) {
 
     // ── inpaint preview (Telea / Navier-Stokes) ────────────────────────────
     function requestInpaintPreview() {
-      if (edBg !== "telea" && edBg !== "navier-stokes") return;
+      // Clear stale preview immediately so the old (unrotated) result is never shown
+      edInpaintPreview = null;
+      if (edBg !== "telea" && edBg !== "navier-stokes") {
+        edInpaintDirty = false;
+        return;
+      }
       clearTimeout(edReqHandle);
       edInpaintDirty = true;
       redraw();
