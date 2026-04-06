@@ -137,7 +137,7 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
 
   return (
     NODE_HEADER_H   +
-    NODE_SLOT_H * 3 +
+    NODE_SLOT_H * 4 +
     NODE_PADDING_V  +
     dropH           +
     extraGap        +
@@ -326,10 +326,17 @@ function createWidget(node) {
   // Preview state
   let previewActive = false;
 
+  // Selection state (Set of filenames that are selected = part of selected_images output)
+  let selectedSet = new Set();
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   function getImageListWidget() {
     return node.widgets?.find((w) => w.name === "image_list");
+  }
+
+  function getSelectedListWidget() {
+    return node.widgets?.find((w) => w.name === "selected_list");
   }
 
   function getFitModeWidget() {
@@ -339,6 +346,10 @@ function createWidget(node) {
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
+    const ws = getSelectedListWidget();
+    if (ws) ws.value = JSON.stringify(
+      items.filter(i => selectedSet.has(i.filename)).map(i => i.filename)
+    );
     node.setDirtyCanvas(true, true);
   }
 
@@ -377,12 +388,14 @@ function createWidget(node) {
   // ── render ────────────────────────────────────────────────────────────────
 
   function render() {
-    statusLabel.style.color = "#8899bb"; // always reset error colour
+    statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const tw = THUMB_W;
     const th = thumbH;
 
     items.forEach((item, idx) => {
+      const isSelected = selectedSet.has(item.filename);
+
       // ── wrapper ──────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
       wrapper.className = "mil-thumb";
@@ -394,37 +407,43 @@ function createWidget(node) {
         height: ${th}px;
         border-radius: 6px;
         overflow: hidden;
-        border: ${idx === 0 ? "2px solid #00c880" : "1px solid #3a5080"};
+        border: ${isSelected ? "2px solid #4ae6b4" : "1px solid #333348"};
         flex-shrink: 0;
         background: #1a1f2e;
+        cursor: pointer;
+        transition: border-color 0.12s;
       `;
 
-      // ── image: contain so thumbnails are not misleadingly cropped ────────
+      // ── image ─────────────────────────────────────────────────────────────
       const img = document.createElement("img");
       img.src = item.previewSrc || item.src;
       img.style.cssText = `width:${tw}px;height:${th}px;object-fit:contain;display:block;pointer-events:none;`;
       img.title = item.filename;
 
-      // ── "★ First" badge on image 0 (top-left) ──────────────────────
-      if (idx === 0) {
-        const firstBadge = document.createElement("span");
-        firstBadge.className = "mil-first-badge";
-        firstBadge.textContent = "★ First";
-        wrapper.appendChild(firstBadge);
-      }
-
-      // ── numeric badge (bottom-right, clear of ✕ button) ──────────────
+      // ── numeric badge (bottom-left, clear of ✕ button) ───────────────────
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
       badge.style.cssText = `
-        position:absolute;bottom:2px;right:2px;
+        position:absolute;bottom:2px;left:3px;
         background:rgba(0,0,0,0.65);color:#fff;
         font-size:9px;font-family:sans-serif;
         padding:0 3px;border-radius:3px;
-        pointer-events:none;
+        pointer-events:none;z-index:1;
       `;
 
-      // ── remove button (top-right) ──────────────────────────────────
+      // ── deselected overlay (shown when NOT selected) ──────────────────────
+      const deselOverlay = document.createElement("div");
+      deselOverlay.style.cssText = `
+        position:absolute;inset:0;
+        background:rgba(10,10,20,0.62);
+        display:${isSelected ? "none" : "flex"};
+        align-items:center;justify-content:center;
+        pointer-events:none;
+        border-radius:5px;
+      `;
+      deselOverlay.innerHTML = `<span style="font-size:24px;opacity:0.9;color:#ff5555;line-height:1;">⦸</span>`;
+
+      // ── remove button (top-right, shown on hover) ─────────────────────────
       const removeBtn = document.createElement("button");
       removeBtn.textContent = "✕";
       removeBtn.title = "Remove";
@@ -435,21 +454,35 @@ function createWidget(node) {
         width:16px;height:16px;font-size:10px;
         cursor:pointer;padding:0;line-height:16px;text-align:center;
         opacity:0;transition:opacity 0.15s;
+        z-index:2;
       `;
       wrapper.addEventListener("mouseenter", () => (removeBtn.style.opacity = "1"));
       wrapper.addEventListener("mouseleave", () => (removeBtn.style.opacity = "0"));
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        selectedSet.delete(item.filename);
         items.splice(idx, 1);
-        items.forEach((it) => delete it.previewSrc); // clear stale previews
+        items.forEach((it) => delete it.previewSrc);
         previewActive = false;
         if (items.length === 0) thumbH = THUMB_W;
         render();
         persist();
       });
 
-      // ── drag-to-reorder events ────────────────────────────────────────
+      // ── click to toggle selection ─────────────────────────────────────────
+      let _didDrag = false;
+      wrapper.addEventListener("mousedown", () => { _didDrag = false; });
+      wrapper.addEventListener("click", () => {
+        if (_didDrag) return;
+        if (selectedSet.has(item.filename)) selectedSet.delete(item.filename);
+        else selectedSet.add(item.filename);
+        persist();
+        render();
+      });
+
+      // ── drag-to-reorder events ────────────────────────────────────────────
       wrapper.addEventListener("dragstart", (e) => {
+        _didDrag = true;
         dragSrcIdx = idx;
         wrapper.classList.add("mil-dragging");
         e.dataTransfer.effectAllowed = "move";
@@ -459,7 +492,6 @@ function createWidget(node) {
       wrapper.addEventListener("dragend", () => {
         dragSrcIdx = null;
         wrapper.classList.remove("mil-dragging");
-        // Clean up any leftover highlights
         grid.querySelectorAll(".mil-drag-over").forEach((el) =>
           el.classList.remove("mil-drag-over")
         );
@@ -483,35 +515,30 @@ function createWidget(node) {
         wrapper.classList.remove("mil-drag-over");
         if (dragSrcIdx === null || dragSrcIdx === idx) return;
 
-        // Track whether position-0 is involved (first image will change)
-        const firstWillChange = dragSrcIdx === 0 || idx === 0;
-
-        // Reorder: remove from old position, insert at new position
         const [moved] = items.splice(dragSrcIdx, 1);
         items.splice(idx, 0, moved);
 
-        // Clear all previews — they're stale after reorder
         items.forEach((it) => delete it.previewSrc);
         previewActive = false;
 
-        // Update thumbH from the new first image
         updateThumbHFromFirst();
-
         render();
-        persist(); // ← image_list is updated immediately; next Run uses new order
+        persist();
       });
 
       wrapper.appendChild(img);
       wrapper.appendChild(badge);
       wrapper.appendChild(removeBtn);
+      wrapper.appendChild(deselOverlay);
       grid.appendChild(wrapper);
     });
 
-    const count = items.length;
+    const count    = items.length;
+    const selCount = items.filter(i => selectedSet.has(i.filename)).length;
     updateDropZone(count);
     statusBar.style.display  = count > 0 ? "flex" : "none";
     statusLabel.textContent  = count > 0
-      ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
+      ? `${count} images · ${selCount} selected · Drag to reorder`
       : "";
     clearBtn.style.display   = count > 0 ? "inline-block" : "none";
     previewBtn.style.display = count > 1 ? "inline-block" : "none";
@@ -623,6 +650,18 @@ function createWidget(node) {
 
     items = filenames.map((fn) => ({ filename: fn, src: viewURL(fn) }));
 
+    // Restore selection state from selected_list widget
+    const ws = getSelectedListWidget();
+    let selectedFns;
+    try { selectedFns = JSON.parse(ws?.value || "null"); } catch { selectedFns = null; }
+
+    if (selectedFns && selectedFns.length > 0) {
+      selectedFns.forEach(fn => selectedSet.add(fn));
+    } else {
+      // Nothing persisted yet → select all by default
+      items.forEach(i => selectedSet.add(i.filename));
+    }
+
     try {
       const { w: iw, h: ih } = await getImageDimensions(viewURL(filenames[0]));
       thumbH = Math.max(20, Math.round(THUMB_W * ih / iw));
@@ -699,6 +738,7 @@ function createWidget(node) {
     items  = [];
     thumbH = THUMB_W;
     previewActive = false;
+    selectedSet.clear();
     render();
     persist();
   });
@@ -738,7 +778,7 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
-            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 3 - NODE_PADDING_V)];
+            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 4 - NODE_PADDING_V)];
           },
         }
       );
@@ -746,7 +786,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "fit_mode"];
+        const hiddenNames = ["image_list", "selected_list", "fit_mode"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";
