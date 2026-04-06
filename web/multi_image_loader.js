@@ -1,11 +1,12 @@
 /**
- * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.3
+ * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.4
  *
- * Changes:
- *  - Thumbnails persist across page refresh (Ctrl+F5) and workflow reload
- *  - item.src can be a data-URL (freshly uploaded) or a /view server URL (restored)
- *  - Aspect ratio is recovered from the first image on restore
- *  - onConfigure hook restores thumbnails when a saved workflow is loaded
+ * Changes in v1.4:
+ *  - Removed 'fill' resize mode (no distortion policy)
+ *  - Thumbnail drag-to-reorder: drag any thumbnail to change its position
+ *  - The first image in the list sets the reference canvas for fit_mode
+ *  - "★ First" badge shows on image #1; reordering updates image_list automatically
+ *  - On workflow Run the new order is already persisted → backend uses correct reference
  */
 
 import { app } from "../../scripts/app.js";
@@ -60,11 +61,11 @@ function viewURL(filename) {
   return `/view?filename=${encodeURIComponent(filename)}&type=input&subfolder=`;
 }
 
-// Inject global scrollbar CSS once
-function injectScrollbarStyles() {
-  if (document.getElementById("mil-scrollbar-style")) return;
+// Inject global CSS once (scrollbars + drag styles)
+function injectStyles() {
+  if (document.getElementById("mil-global-style")) return;
   const style = document.createElement("style");
-  style.id = "mil-scrollbar-style";
+  style.id = "mil-global-style";
   style.textContent = `
     .mil-grid {
       scrollbar-width: thin;
@@ -81,6 +82,31 @@ function injectScrollbarStyles() {
       border: 1px solid #1e2535;
     }
     .mil-grid::-webkit-scrollbar-thumb:hover { background: #7aacff; }
+
+    /* Drag-to-reorder */
+    .mil-thumb { cursor: grab; }
+    .mil-thumb:active { cursor: grabbing; }
+    .mil-thumb.mil-dragging {
+      opacity: 0.35;
+      outline: 2px dashed #7ab0ff;
+    }
+    .mil-thumb.mil-drag-over {
+      outline: 2px solid #ffe066;
+      background: rgba(255,220,80,0.12);
+    }
+    .mil-first-badge {
+      position: absolute;
+      top: 2px;
+      left: 3px;
+      background: rgba(0,160,100,0.88);
+      color: #fff;
+      font-size: 8px;
+      font-family: sans-serif;
+      padding: 1px 4px;
+      border-radius: 3px;
+      pointer-events: none;
+      font-weight: bold;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -110,7 +136,7 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
 // ─── widget factory ───────────────────────────────────────────────────────────
 
 function createWidget(node) {
-  injectScrollbarStyles();
+  injectStyles();
 
   // ── root container ────────────────────────────────────────────────────────
   const root = document.createElement("div");
@@ -146,6 +172,7 @@ function createWidget(node) {
     <div style="font-size:28px;margin-bottom:4px;">🖼️</div>
     <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
     <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
+    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Drag thumbnails below to reorder · First image sets the canvas</div>
   `;
 
   dropZone.addEventListener("mouseenter", () => {
@@ -215,9 +242,11 @@ function createWidget(node) {
 
   // ── state ─────────────────────────────────────────────────────────────────
   // Each item: { filename: string, src: string }
-  // src = data-URL (fresh upload) or /view URL (restored from saved workflow)
   let items  = [];
   let thumbH = THUMB_W;  // updated from first image's aspect ratio
+
+  // Drag-reorder state
+  let dragSrcIdx = null;
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -245,23 +274,36 @@ function createWidget(node) {
     const th = thumbH;
 
     items.forEach((item, idx) => {
+      // ── wrapper ────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
+      wrapper.className = "mil-thumb";
+      wrapper.draggable = true;
+      wrapper.dataset.idx = idx;
       wrapper.style.cssText = `
         position: relative;
         width: ${tw}px;
         height: ${th}px;
         border-radius: 6px;
         overflow: hidden;
-        border: 1px solid #3a5080;
+        border: ${idx === 0 ? "2px solid #00c880" : "1px solid #3a5080"};
         flex-shrink: 0;
-        cursor: default;
       `;
 
+      // ── image ──────────────────────────────────────────────────────────
       const img = document.createElement("img");
       img.src = item.src;
-      img.style.cssText = `width:${tw}px;height:${th}px;object-fit:fill;display:block;`;
+      img.style.cssText = `width:${tw}px;height:${th}px;object-fit:cover;display:block;pointer-events:none;`;
       img.title = item.filename;
 
+      // ── "★ First" badge on image 0 ──────────────────────────────────
+      if (idx === 0) {
+        const firstBadge = document.createElement("span");
+        firstBadge.className = "mil-first-badge";
+        firstBadge.textContent = "★ First";
+        wrapper.appendChild(firstBadge);
+      }
+
+      // ── numeric badge (bottom-left) ────────────────────────────────────
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
       badge.style.cssText = `
@@ -272,6 +314,7 @@ function createWidget(node) {
         pointer-events:none;
       `;
 
+      // ── remove button ──────────────────────────────────────────────────
       const removeBtn = document.createElement("button");
       removeBtn.textContent = "✕";
       removeBtn.title = "Remove";
@@ -288,9 +331,56 @@ function createWidget(node) {
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         items.splice(idx, 1);
-        if (items.length === 0) thumbH = THUMB_W; // reset ratio on empty
+        if (items.length === 0) thumbH = THUMB_W;
         render();
         persist();
+      });
+
+      // ── drag-to-reorder events ─────────────────────────────────────────
+      wrapper.addEventListener("dragstart", (e) => {
+        dragSrcIdx = idx;
+        wrapper.classList.add("mil-dragging");
+        e.dataTransfer.effectAllowed = "move";
+        // Needed for Firefox
+        e.dataTransfer.setData("text/plain", String(idx));
+      });
+
+      wrapper.addEventListener("dragend", () => {
+        dragSrcIdx = null;
+        wrapper.classList.remove("mil-dragging");
+        // Clean up any leftover highlights
+        grid.querySelectorAll(".mil-drag-over").forEach((el) =>
+          el.classList.remove("mil-drag-over")
+        );
+      });
+
+      wrapper.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        if (dragSrcIdx !== null && dragSrcIdx !== idx) {
+          wrapper.classList.add("mil-drag-over");
+        }
+      });
+
+      wrapper.addEventListener("dragleave", () => {
+        wrapper.classList.remove("mil-drag-over");
+      });
+
+      wrapper.addEventListener("drop", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        wrapper.classList.remove("mil-drag-over");
+        if (dragSrcIdx === null || dragSrcIdx === idx) return;
+
+        // Reorder: remove from old position, insert at new position
+        const [moved] = items.splice(dragSrcIdx, 1);
+        items.splice(idx, 0, moved);
+
+        // Update thumbH from the new first image
+        updateThumbHFromFirst();
+
+        render();
+        persist(); // ← image_list is updated immediately; next Run uses new order
       });
 
       wrapper.appendChild(img);
@@ -300,21 +390,29 @@ function createWidget(node) {
     });
 
     const count = items.length;
-    statusLabel.textContent = count > 0 ? `${count} image${count !== 1 ? "s" : ""} queued` : "";
+    statusLabel.textContent =
+      count > 0
+        ? `${count} image${count !== 1 ? "s" : ""} queued · drag to reorder`
+        : "";
     clearBtn.style.display = count > 0 ? "inline-block" : "none";
 
     resizeNode();
   }
 
+  // Update thumbH from whatever image is now first
+  async function updateThumbHFromFirst() {
+    if (items.length === 0) { thumbH = THUMB_W; return; }
+    try {
+      const { w, h } = await getImageDimensions(items[0].src);
+      thumbH = Math.max(20, Math.round(THUMB_W * h / w));
+    } catch {
+      thumbH = THUMB_W;
+    }
+  }
+
   // ── restore (called on page load / workflow reload) ───────────────────────
 
-  /**
-   * Reads the persisted image_list widget value and rebuilds thumbnails
-   * using the /view endpoint (no re-upload needed, files are still on disk).
-   * Safe to call multiple times – skips if items are already populated.
-   */
   async function restore() {
-    // Skip if there are already items (e.g., restore called twice)
     if (items.length > 0) return;
 
     const w = getImageListWidget();
@@ -326,20 +424,16 @@ function createWidget(node) {
     }
     if (!filenames?.length) return;
 
-    // Rebuild items using server /view URLs (files already exist in input/)
     items = filenames.map((fn) => ({ filename: fn, src: viewURL(fn) }));
 
-    // Recover aspect ratio from the first image
     try {
-      const firstSrc = viewURL(filenames[0]);
-      const { w: iw, h: ih } = await getImageDimensions(firstSrc);
+      const { w: iw, h: ih } = await getImageDimensions(viewURL(filenames[0]));
       thumbH = Math.max(20, Math.round(THUMB_W * ih / iw));
     } catch {
       thumbH = THUMB_W;
     }
 
     render();
-    // Do NOT call persist() – we haven't changed state, just rendered it
   }
 
   // ── addFiles (called by drag-drop / file picker) ──────────────────────────
@@ -355,7 +449,6 @@ function createWidget(node) {
       const dataURLs  = await Promise.all(imageFiles.map(fileToDataURL));
       const filenames = await uploadFiles(imageFiles);
 
-      // Detect aspect ratio from the FIRST image only (when queue was empty)
       const isFirstBatch = items.length === 0;
       if (isFirstBatch && dataURLs.length > 0) {
         const { w, h } = await getImageDimensions(dataURLs[0]);
@@ -412,7 +505,6 @@ function createWidget(node) {
   // ── initial render ────────────────────────────────────────────────────────
   render();
 
-  // Expose public API on the element
   root._addFiles = addFiles;
   root._restore  = restore;
 
@@ -437,7 +529,6 @@ app.registerExtension({
       const initH = computeIdealHeight(0, 300, THUMB_W);
       node.setSize([300, initH]);
 
-      // ── Inject DOM widget ──────────────────────────────────────────────
       const domWidget = node.addDOMWidget(
         "mil_uploader",
         "MultiImageLoaderWidget",
@@ -451,12 +542,10 @@ app.registerExtension({
         }
       );
 
-      // Store on node so onConfigure can access it
       node._milDomWidget = domWidget;
 
-      // ── Hide auxiliary widgets (they still save values, just invisible) ─
       setTimeout(() => {
-        const hiddenNames = ["image_list", "resize_mode"];
+        const hiddenNames = ["image_list", "fit_mode"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";
@@ -464,12 +553,8 @@ app.registerExtension({
           }
         });
         node.setDirtyCanvas(true);
-        // NOTE: do NOT call _restore() here – widget values aren't
-        // populated at onNodeCreated time. Restoration happens in
-        // onConfigure (workflow load) or setup → graphConfigured (page load).
       }, 0);
 
-      // ── Intercept drops on the node canvas element ─────────────────────
       node.onDrop = function (e) {
         e.preventDefault?.();
         e.stopPropagation?.();
@@ -480,11 +565,6 @@ app.registerExtension({
       };
     };
 
-    /**
-     * onConfigure is called by LiteGraph when a workflow JSON is loaded.
-     * Widget values are already set at this point. Double rAF ensures the
-     * DOM widget element is mounted before we try to access it.
-     */
     nodeType.prototype.onConfigure = function (data) {
       origOnConfigure?.call(this, data);
       const node = this;

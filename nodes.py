@@ -116,7 +116,7 @@ class MultiImageLoader:
                 # Must be in 'optional' (NOT 'hidden') so LiteGraph creates a
                 # real widget and saves it in widgets_values for persistence.
                 "image_list": ("STRING", {"default": "[]"}),
-                "fit_mode": (["letterbox", "crop", "fill"],),
+                "fit_mode": (["letterbox", "crop"],),
             },
         }
 
