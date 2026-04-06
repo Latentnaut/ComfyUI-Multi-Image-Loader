@@ -147,13 +147,14 @@ function createWidget(node) {
     box-sizing: border-box;
     width: 100%;
     min-width: 180px;
+    overflow: hidden;
   `;
 
   // ── drop zone ─────────────────────────────────────────────────────────────
   const dropZone = document.createElement("div");
   dropZone.style.cssText = `
     flex-shrink: 0;
-    flex-grow: 1;
+    flex-grow: 0;
     display: flex;
     flex-direction: column;
     justify-content: center;
