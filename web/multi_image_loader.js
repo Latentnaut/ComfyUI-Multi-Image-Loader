@@ -345,8 +345,10 @@ function createWidget(node) {
 
   function resizeNode() {
     const curW   = node.size[0];
+    const curH   = node.size[1];
     const idealH = computeIdealHeight(items.length, curW, thumbH);
-    node.setSize([curW, idealH]);
+    // Only grow — never shrink below the user's manually-set size
+    if (idealH > curH) node.setSize([curW, idealH]);
   }
 
   function updateScrollFade() {
