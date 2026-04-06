@@ -48,6 +48,68 @@ async def upload_images_handler(request):
         return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
+# ─── Live-preview route ────────────────────────────────────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/preview")
+async def preview_transform_handler(request):
+    """
+    Apply a crop transform to an uploaded image and return the result as
+    a base64 JPEG DataURL.  Called from the JavaScript crop editor for
+    Telea / Navier-Stokes inpaint preview.
+    """
+    import asyncio, base64, io as _io
+    from urllib.parse import urlparse, parse_qs
+
+    try:
+        data     = await request.json()
+        src_url  = data.get("src", "")
+        transform = data.get("transform", {})
+        ref_w    = max(32, int(data.get("refW", 512)))
+        ref_h    = max(32, int(data.get("refH", 512)))
+
+        # ── resolve image file from ComfyUI view URL ──────────────────────────
+        parsed   = urlparse(src_url)
+        params   = parse_qs(parsed.query)
+        filename = params.get("filename", [None])[0]
+        subfolder = params.get("subfolder", [""])[0]
+        ftype    = params.get("type", ["input"])[0]
+
+        if not filename:
+            return web.Response(status=400, text="No filename in src URL")
+
+        if ftype == "input":
+            base_dir = folder_paths.get_input_directory()
+        elif ftype == "temp":
+            base_dir = folder_paths.get_temp_directory()
+        else:
+            base_dir = folder_paths.get_output_directory()
+
+        # path traversal guard
+        path = os.path.normpath(os.path.join(base_dir, subfolder, filename) if subfolder
+                                else os.path.join(base_dir, filename))
+        if not path.startswith(os.path.normpath(base_dir)):
+            return web.Response(status=403, text="Forbidden")
+        if not os.path.isfile(path):
+            return web.Response(status=404, text="File not found")
+
+        # ── run transform in a thread (cv2 can be slow) ───────────────────────
+        loop = asyncio.get_event_loop()
+        def _run():
+            img = Image.open(path).convert("RGB")
+            return _apply_crop_transform(img, transform, ref_w, ref_h)
+
+        result = await loop.run_in_executor(None, _run)
+
+        buf = _io.BytesIO()
+        result.save(buf, format="JPEG", quality=88)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+
+        return web.json_response({"dataUrl": f"data:image/jpeg;base64,{b64}"})
+
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+
 # ─── Node ─────────────────────────────────────────────────────────────────────
 
 def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:

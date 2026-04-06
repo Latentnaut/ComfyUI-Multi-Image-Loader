@@ -850,6 +850,8 @@ function createWidget(node) {
     let dOX = 0, dOY = 0, edScale = 1.0;
     let edFlipH = false, edFlipV = false, edRotate = 0;  // intrinsic transforms
     let edBg = "#808080";  // background fill
+    let edInpaintPreview = null, edInpaintDirty = true, edReqHandle = null;
+    const edPreviewCache = new Map();
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
     let rafId = null, panSt = null;
 
@@ -952,6 +954,7 @@ function createWidget(node) {
     });
     rotSlider.addEventListener("input", () => {
       edRotate=parseInt(rotSlider.value); rotValEl.textContent=edRotate+"\u00b0"; updLbl(); redraw();
+      requestInpaintPreview();
     });
     rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
     pnl.appendChild(rotRow);
@@ -984,7 +987,8 @@ function createWidget(node) {
       bgCustomRow.style.display=v==="custom"?"flex":"none";
       bgNote.style.display=(v==="telea"||v==="navier-stokes")?"block":"none";
       edBg= v==="custom" ? bgColorPick.value : v;
-      redraw();
+      edInpaintPreview=null; edInpaintDirty=true;
+      redraw(); requestInpaintPreview();
     });
     function syncBgUI(){
       const known=["#808080","black","white","telea","navier-stokes"];
@@ -1043,6 +1047,43 @@ function createWidget(node) {
       dOX=0;dOY=0; edScale=frameH/(rH*bf); updLbl();
     }
 
+    // ── inpaint preview (Telea / Navier-Stokes) ────────────────────────────
+    function requestInpaintPreview() {
+      if (edBg !== "telea" && edBg !== "navier-stokes") return;
+      clearTimeout(edReqHandle);
+      edInpaintDirty = true;
+      redraw();
+      const transform = {
+        ox:dOX/frameW, oy:dOY/frameH, scale:edScale,
+        flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
+      };
+      const cacheKey = JSON.stringify(transform) + "|" + (items[curIdx]?.src ?? "");
+      edReqHandle = setTimeout(async () => {
+        if (!edImg || !items[curIdx]) return;
+        const cached = edPreviewCache.get(cacheKey);
+        if (cached) { edInpaintPreview=cached; edInpaintDirty=false; redraw(); return; }
+        try {
+          const resp = await fetch("/multi_image_loader/preview", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({src:items[curIdx].src, transform, refW:edRefW, refH:edRefH})
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const { dataUrl } = await resp.json();
+          const img = new Image();
+          img.onload = () => {
+            if (edPreviewCache.size > 30) edPreviewCache.delete(edPreviewCache.keys().next().value);
+            edPreviewCache.set(cacheKey, img);
+            edInpaintPreview = img; edInpaintDirty = false; redraw();
+          };
+          img.src = dataUrl;
+        } catch(e) {
+          console.warn("[MIL] inpaint preview error:", e);
+          edInpaintDirty = false; redraw();
+        }
+      }, 350);
+    }
+
     function syncCvs() {
       const r = ca.getBoundingClientRect();
       if (cvs.width!==Math.round(r.width)||cvs.height!==Math.round(r.height)) {
@@ -1083,16 +1124,30 @@ function createWidget(node) {
           }
           ctx.restore();
         }
-        // image with flip + rotation transform
-        if (edImg) {
-          const eff=bFit*edScale;
-          const dw=edNatW*eff, dh=edNatH*eff;
-          ctx.save();
-          ctx.translate(frameCX+dOX, frameCY+dOY);
-          ctx.rotate(edRotate*Math.PI/180);
-          ctx.scale(edFlipH?-1:1, edFlipV?-1:1);
-          ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
-          ctx.restore();
+        // image rendering
+        const isInpaint = edBg==="telea"||edBg==="navier-stokes";
+        if (isInpaint && edInpaintPreview && !edInpaintDirty) {
+          // Server-rendered result — draw it filling the reference frame (already fully transformed)
+          ctx.drawImage(edInpaintPreview, fx, fy, frameW, frameH);
+        } else {
+          if (edImg) {
+            const eff=bFit*edScale;
+            const dw=edNatW*eff, dh=edNatH*eff;
+            ctx.save();
+            ctx.translate(frameCX+dOX, frameCY+dOY);
+            ctx.rotate(edRotate*Math.PI/180);
+            ctx.scale(edFlipH?-1:1, edFlipV?-1:1);
+            ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
+            ctx.restore();
+          }
+          if (isInpaint) {
+            // spinner overlay while computing
+            ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(fx,fy,frameW,frameH);
+            ctx.fillStyle="#888"; ctx.font="12px system-ui";
+            ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText("\u2699 Computing inpaint\u2026", frameCX, frameCY);
+            ctx.textAlign="start"; ctx.textBaseline="alphabetic";
+          }
         }
         // dim outside frame
         ctx.fillStyle="rgba(0,0,0,0.58)";
@@ -1132,7 +1187,8 @@ function createWidget(node) {
           const t=ses[items[idx].filename];
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
           edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??"#808080";
-          syncRotUI(); syncBgUI(); updLbl(); redraw(); res();
+          edInpaintPreview=null; edInpaintDirty=true;
+          syncRotUI(); syncBgUI(); updLbl(); redraw(); requestInpaintPreview(); res();
         };
         el.onerror=res; el.src=items[idx].src;
       });
@@ -1143,7 +1199,7 @@ function createWidget(node) {
       if (!panSt) return;
       dOX=panSt.ox+(e.clientX-panSt.x); dOY=panSt.oy+(e.clientY-panSt.y); redraw();
     }
-    function onPanUp() { if (panSt) { panSt=null; ca.style.cursor="grab"; } }
+    function onPanUp() { if (panSt) { panSt=null; ca.style.cursor="grab"; requestInpaintPreview(); } }
     cvs.addEventListener("mousedown", e=>{
       if (e.button!==0) return;
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
@@ -1157,6 +1213,7 @@ function createWidget(node) {
       const mx=e.clientX-r.left-frameCX, my=e.clientY-r.top-frameCY;
       dOX=(dOX-mx)*f+mx; dOY=(dOY-my)*f+my;
       edScale=Math.max(0.05,Math.min(20,edScale*f)); updLbl(); redraw();
+      requestInpaintPreview();
     },{passive:false});
     const ro=new ResizeObserver(()=>redraw()); ro.observe(ca);
     function onKey(e) {
@@ -1170,6 +1227,7 @@ function createWidget(node) {
 
     // ── apply / cancel / close ────────────────────────────────
     function doClose() {
+      clearTimeout(edReqHandle);
       cancelAnimationFrame(rafId); ro.disconnect();
       window.removeEventListener("keydown",    onKey);
       window.removeEventListener("mousemove",  onPanMove);
