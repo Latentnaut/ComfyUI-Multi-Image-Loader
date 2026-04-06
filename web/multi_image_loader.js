@@ -20,7 +20,7 @@ const NODE_HEADER_H  = 30;
 const NODE_SLOT_H    = 22;
 const NODE_PADDING_V = 12;
 const DROPZONE_H     = 128;
-const STATUS_H       = 22;
+const STATUS_H       = 46;
 const GAP            = 6;
 const THUMB_W        = 72;
 const THUMB_GAP      = 5;
@@ -146,7 +146,7 @@ function createWidget(node) {
     padding: 4px 6px 6px;
     box-sizing: border-box;
     width: 100%;
-    min-width: 240px;
+    min-width: 180px;
   `;
 
   // ── drop zone ─────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ function createWidget(node) {
     <div style="font-size:28px;margin-bottom:4px;">🖼️</div>
     <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
     <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
-    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Drag thumbnails below to reorder · First image sets the canvas</div>
+    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Drag thumbnails below · First image = canvas reference</div>
   `;
 
   dropZone.addEventListener("mouseenter", () => {
@@ -210,21 +210,23 @@ function createWidget(node) {
   statusBar.style.cssText = `
     flex-shrink: 0;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-end;
     font-family: sans-serif;
     font-size: 10px;
     color: #8899bb;
-    padding: 0 2px;
-    height: ${STATUS_H}px;
+    padding: 2px 2px 0;
+    min-height: ${STATUS_H}px;
     box-sizing: border-box;
+    gap: 3px;
   `;
   const statusLabel = document.createElement("span");
   statusLabel.style.whiteSpace = "pre-line";
 
   // Right-side button group
   const btnGroup = document.createElement("div");
-  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;flex-shrink:0;white-space:nowrap;`;
+  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;justify-content:flex-end;flex-shrink:0;white-space:nowrap;width:100%;`;
 
   const previewBtn = document.createElement("button");
   previewBtn.textContent = "🔄 Preview Fit";
