@@ -357,7 +357,8 @@ function createWidget(node) {
   }
   function hasCrop(filename) {
     const t = cropMap[filename];
-    return !!(t && (t.ox!==0 || t.oy!==0 || t.scale!==1.0 || t.flipH || t.flipV || (t.rotate||0)!==0));
+    return !!(t && (t.ox!==0 || t.oy!==0 || t.scale!==1.0 || t.flipH || t.flipV ||
+              (t.rotate||0)!==0 || (t.bg && t.bg !== "#808080")));
   }
   function persistCropData() {
     const w = getCropDataWidget();
@@ -383,7 +384,10 @@ function createWidget(node) {
         const cvs = document.createElement("canvas");
         cvs.width = refW; cvs.height = refH;
         const ctx = cvs.getContext("2d");
-        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, refW, refH);
+        const bgRaw = t.bg ?? "#808080";
+        const bgC   = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
+                    : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
+        ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
 
         const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
         const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
@@ -843,6 +847,7 @@ function createWidget(node) {
     let edRefW = 1, edRefH = 1;  // reference canvas = first-image dims
     let dOX = 0, dOY = 0, edScale = 1.0;
     let edFlipH = false, edFlipV = false, edRotate = 0;  // intrinsic transforms
+    let edBg = "#808080";  // background fill
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
     let rafId = null, panSt = null;
 
@@ -916,12 +921,81 @@ function createWidget(node) {
     pnl.appendChild(mkPB("\u2194 Flip Horizontal", ()=>{ edFlipH=!edFlipH; }));
     pnl.appendChild(mkPB("\u2195 Flip Vertical",   ()=>{ edFlipV=!edFlipV; }));
     pnl.appendChild(mkSec("Rotate"));
-    pnl.appendChild(mkPB("\u21BA  -90\u00b0",  ()=>{ edRotate=(edRotate-90+360)%360; updLbl(); }));
-    pnl.appendChild(mkPB("\u21BA  -45\u00b0",  ()=>{ edRotate=(edRotate-45+360)%360; updLbl(); }));
-    pnl.appendChild(mkPB("\u21BB  +45\u00b0",  ()=>{ edRotate=(edRotate+45)%360; updLbl(); }));
-    pnl.appendChild(mkPB("\u21BB  +90\u00b0",  ()=>{ edRotate=(edRotate+90)%360; updLbl(); }));
+    // slider + click-to-type angle
+    const rotRow = document.createElement("div");
+    rotRow.style.cssText = "display:flex;align-items:center;gap:5px;";
+    const rotSlider = document.createElement("input");
+    rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
+    rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
+    const rotValEl = document.createElement("div");
+    rotValEl.style.cssText="color:#888;font-size:10px;min-width:34px;text-align:right;cursor:text;user-select:none;";
+    rotValEl.textContent="0\u00b0";
+    function syncRotUI(){
+      rotSlider.value = edRotate;
+      rotValEl.textContent = edRotate + "\u00b0";
+    }
+    rotValEl.addEventListener("click", () => {
+      const inp = document.createElement("input");
+      inp.type="number"; inp.min=-180; inp.max=180; inp.value=edRotate;
+      inp.style.cssText="width:40px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:10px;padding:1px 3px;";
+      rotValEl.innerHTML=""; rotValEl.appendChild(inp);
+      inp.focus(); inp.select();
+      function commit(){
+        const v = Math.max(-180,Math.min(180,parseInt(inp.value)||0));
+        edRotate=v; rotSlider.value=v; rotValEl.textContent=v+"\u00b0";
+        updLbl(); redraw();
+      }
+      inp.addEventListener("blur", commit);
+      inp.addEventListener("keydown", e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") rotValEl.textContent=edRotate+"\u00b0"; });
+    });
+    rotSlider.addEventListener("input", () => {
+      edRotate=parseInt(rotSlider.value); rotValEl.textContent=edRotate+"\u00b0"; updLbl(); redraw();
+    });
+    rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
+    pnl.appendChild(rotRow);
+
+    // Background Fill section
+    pnl.appendChild(mkSec("Background Fill"));
+    const bgSelect = document.createElement("select");
+    bgSelect.style.cssText="width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer;";
+    [["#808080","Gray (default)"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
+      .forEach(([v,l])=>{ const o=document.createElement("option"); o.value=v; o.textContent=l; bgSelect.appendChild(o); });
+    const bgCustomRow = document.createElement("div");
+    bgCustomRow.style.cssText="display:none;align-items:center;gap:4px;";
+    const bgColorPick = document.createElement("input");
+    bgColorPick.type="color"; bgColorPick.value="#808080";
+    bgColorPick.style.cssText="width:26px;height:22px;border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;";
+    const bgHexInp = document.createElement("input");
+    bgHexInp.type="text"; bgHexInp.value="#808080"; bgHexInp.maxLength=7;
+    bgHexInp.style.cssText="flex:1;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:10px;padding:2px 4px;min-width:0;";
+    bgCustomRow.appendChild(bgColorPick); bgCustomRow.appendChild(bgHexInp);
+    const bgNote = document.createElement("div");
+    bgNote.style.cssText="color:#444;font-size:9px;line-height:1.3;display:none;";
+    bgNote.textContent="\u2699 Applied by Python at queue";
+    bgColorPick.addEventListener("input", ()=>{ bgHexInp.value=bgColorPick.value; edBg=bgColorPick.value; redraw(); });
+    bgHexInp.addEventListener("change", ()=>{
+      const h=bgHexInp.value.trim();
+      if(/^#[0-9a-fA-F]{6}$/.test(h)){ bgColorPick.value=h; edBg=h; redraw(); }
+    });
+    bgSelect.addEventListener("change", ()=>{
+      const v=bgSelect.value;
+      bgCustomRow.style.display=v==="custom"?"flex":"none";
+      bgNote.style.display=(v==="telea"||v==="navier-stokes")?"block":"none";
+      edBg= v==="custom" ? bgColorPick.value : v;
+      redraw();
+    });
+    function syncBgUI(){
+      const known=["#808080","black","white","telea","navier-stokes"];
+      bgSelect.value=known.includes(edBg)?edBg:"custom";
+      const isCust=!known.includes(edBg);
+      bgCustomRow.style.display=isCust?"flex":"none";
+      if(isCust){ bgColorPick.value=edBg; bgHexInp.value=edBg; }
+      bgNote.style.display=(edBg==="telea"||edBg==="navier-stokes")?"block":"none";
+    }
+    pnl.appendChild(bgSelect); pnl.appendChild(bgCustomRow); pnl.appendChild(bgNote);
+
     pnl.appendChild(mkSec("Transform"));
-    pnl.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0; updLbl(); }));
+    pnl.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0;edBg="#808080"; syncRotUI(); syncBgUI(); updLbl(); }));
     pnl.appendChild(zoomLbl);
     pnl.appendChild(spacer);
     pnl.appendChild(applyB);
@@ -989,11 +1063,23 @@ function createWidget(node) {
         syncCvs();
         const ctx = cvs.getContext("2d");
         const cw=cvs.width, ch=cvs.height;
-        // checkerboard
+        const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
+        // full-canvas checkerboard
         const T=14;
         for(let r=0;r<Math.ceil(ch/T);r++) for(let c=0;c<Math.ceil(cw/T);c++) {
           ctx.fillStyle=(r+c)%2===0?"#1a1a1a":"#141414";
           ctx.fillRect(c*T,r*T,T,T);
+        }
+        // background fill inside frame
+        const bgC = edBg==="black" ? "#000000" : edBg==="white" ? "#ffffff"
+                  : /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
+        ctx.fillStyle=bgC; ctx.fillRect(fx,fy,frameW,frameH);
+        if (edBg==="telea"||edBg==="navier-stokes") {
+          ctx.save(); ctx.strokeStyle="rgba(90,122,191,0.18)"; ctx.lineWidth=1;
+          for(let i=-frameH;i<frameW+frameH;i+=14){
+            ctx.beginPath(); ctx.moveTo(fx+i,fy); ctx.lineTo(fx+i+frameH,fy+frameH); ctx.stroke();
+          }
+          ctx.restore();
         }
         // image with flip + rotation transform
         if (edImg) {
@@ -1007,7 +1093,6 @@ function createWidget(node) {
           ctx.restore();
         }
         // dim outside frame
-        const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
         ctx.fillStyle="rgba(0,0,0,0.58)";
         ctx.fillRect(0,0,cw,fy); ctx.fillRect(0,fy+frameH,cw,ch-fy-frameH);
         ctx.fillRect(0,fy,fx,frameH); ctx.fillRect(fx+frameW,fy,cw-fx-frameW,frameH);
@@ -1026,8 +1111,8 @@ function createWidget(node) {
     // ── image load ───────────────────────────────────────────
     function saveToSes() {
       const fn = items[curIdx]?.filename; if (!fn) return;
-      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0)
-        ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate};
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!=="#808080")
+        ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
       else delete ses[fn];
     }
     async function loadIdx(idx) {
@@ -1044,8 +1129,8 @@ function createWidget(node) {
           syncCvs();
           const t=ses[items[idx].filename];
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
-          edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0;
-          updLbl(); redraw(); res();
+          edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??"#808080";
+          syncRotUI(); syncBgUI(); updLbl(); redraw(); res();
         };
         el.onerror=res; el.src=items[idx].src;
       });

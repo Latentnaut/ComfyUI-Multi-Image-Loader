@@ -96,28 +96,83 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Ima
 
 def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int) -> Image.Image:
     """
-    Apply a user-defined pan/zoom transform and crop the result to canvas_w × canvas_h.
+    Apply a user-defined pan/zoom/flip/rotate transform and crop to canvas_w × canvas_h.
     transform keys:
-      ox    – horizontal offset of image centre from canvas centre, as a fraction of canvas_w
-      oy    – vertical offset of image centre from canvas centre, as a fraction of canvas_h
-      scale – zoom factor relative to letterbox-fit scale (1.0 = image fits entirely in canvas)
+      ox, oy    – offset of image centre from canvas centre (fraction of canvas dims)
+      scale     – zoom factor relative to letterbox-fit (1.0 = whole image fits)
+      flipH, flipV – mirror flags
+      rotate    – clockwise degrees (-180..180)
+      bg        – background fill: 'black' | 'white' | '#rrggbb' | '#808080' (default) |
+                  'telea' | 'navier-stokes'
     """
-    ox    = float(transform.get("ox",    0.0))
-    oy    = float(transform.get("oy",    0.0))
-    scale = float(transform.get("scale", 1.0))
-    flipH = bool(transform.get("flipH", False))
-    flipV = bool(transform.get("flipV", False))
+    import numpy as np
+
+    ox     = float(transform.get("ox",     0.0))
+    oy     = float(transform.get("oy",     0.0))
+    scale  = float(transform.get("scale",  1.0))
+    flipH  = bool(transform.get("flipH",  False))
+    flipV  = bool(transform.get("flipV",  False))
     rotate = float(transform.get("rotate", 0.0))
+    bg_raw = transform.get("bg", "#808080")
     if scale <= 0:
         scale = 1.0
 
-    # Intrinsic transforms (flip then rotate)
+    # ── resolve background colour ──────────────────────────────────────────────
+    def _parse_hex(h, default=(128, 128, 128)):
+        try:
+            h = h.lstrip("#")
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        except Exception:
+            return default
+
+    inpaint_method = None
+    if bg_raw == "black":
+        bg_color = (0, 0, 0)
+    elif bg_raw == "white":
+        bg_color = (255, 255, 255)
+    elif bg_raw == "telea":
+        bg_color = (128, 128, 128)
+        inpaint_method = "telea"
+    elif bg_raw == "navier-stokes":
+        bg_color = (128, 128, 128)
+        inpaint_method = "navier-stokes"
+    elif isinstance(bg_raw, str) and bg_raw.startswith("#"):
+        bg_color = _parse_hex(bg_raw)
+    else:
+        bg_color = (128, 128, 128)   # default grey
+
+    # ── intrinsic transforms: flip → rotate ────────────────────────────────────
     if flipH: img = ImageOps.mirror(img)
     if flipV: img = ImageOps.flip(img)
-    if rotate != 0:
-        # PIL rotates CCW; our convention is CW so negate
-        img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS)
 
+    rotation_alpha = None   # PIL Image "L" mask (255=opaque, 0=transparent)
+    if rotate != 0:
+        if inpaint_method:
+            # Rotate in RGBA so we can track newly-transparent pixels
+            rgba = img.convert("RGBA")
+            rgba = rgba.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+                               fillcolor=(0, 0, 0, 0))
+            rotation_alpha = rgba.split()[3]           # L mode, 0=gap
+            img = rgba.convert("RGB")
+        else:
+            img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+                             fillcolor=bg_color)
+
+    # ── cv2 inpainting to fill rotation gaps ──────────────────────────────────
+    if inpaint_method and rotation_alpha is not None:
+        try:
+            import cv2
+            alpha_np = np.array(rotation_alpha)
+            inpaint_mask = np.where(alpha_np < 128, 255, 0).astype(np.uint8)
+            if inpaint_mask.any():
+                img_np = np.array(img.convert("RGB"))
+                method = cv2.INPAINT_TELEA if inpaint_method == "telea" else cv2.INPAINT_NS
+                img_np = cv2.inpaint(img_np, inpaint_mask, inpaintRadius=3, flags=method)
+                img = Image.fromarray(img_np.astype(np.uint8))
+        except Exception as e:
+            print(f"[MultiImageLoader] cv2 inpaint error (falling back to solid fill): {e}")
+
+    # ── pan / zoom ─────────────────────────────────────────────────────────────
     src_w, src_h = img.size
     base_scale   = min(canvas_w / src_w, canvas_h / src_h)
     eff_scale    = base_scale * scale
@@ -128,9 +183,10 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
 
-    canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+    canvas = Image.new("RGB", (canvas_w, canvas_h), bg_color)
     canvas.paste(resized, (paste_x, paste_y))
     return canvas
+
 
 
 class MultiImageLoader:
