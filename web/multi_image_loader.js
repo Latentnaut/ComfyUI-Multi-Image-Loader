@@ -222,7 +222,7 @@ function createWidget(node) {
     font-family: sans-serif;
     font-size: 10px;
     color: #8899bb;
-    padding: 2px 2px 0;
+    padding: 6px 2px 4px;
     min-height: ${STATUS_H}px;
     box-sizing: border-box;
     gap: 3px;
@@ -232,7 +232,7 @@ function createWidget(node) {
 
   // Right-side button group
   const btnGroup = document.createElement("div");
-  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;justify-content:flex-end;flex-shrink:0;white-space:nowrap;width:100%;`;
+  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;justify-content:center;flex-shrink:0;white-space:nowrap;width:100%;`;
 
   const previewBtn = document.createElement("button");
   previewBtn.textContent = "🔄 Preview Fit";
@@ -242,7 +242,7 @@ function createWidget(node) {
     color: #44cc88;
     border: 1px solid #336644;
     border-radius: 4px;
-    padding: 1px 8px;
+    padding: 3px 10px;
     font-size: 10px;
     cursor: pointer;
     display: none;
@@ -255,7 +255,7 @@ function createWidget(node) {
     color: #ff8888;
     border: 1px solid #884444;
     border-radius: 4px;
-    padding: 1px 8px;
+    padding: 3px 10px;
     font-size: 10px;
     cursor: pointer;
     display: none;
