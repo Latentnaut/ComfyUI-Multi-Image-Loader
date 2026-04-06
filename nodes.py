@@ -180,40 +180,73 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     elif isinstance(bg_raw, str) and bg_raw.startswith("#"):
         bg_color = _parse_hex(bg_raw)
     else:
-        bg_color = (128, 128, 128)   # default grey
+        bg_color = (128, 128, 128)
 
-    # ── intrinsic transforms: flip → rotate ────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # INPAINT PATH — all transforms in RGBA so the final alpha = coverage mask.
+    # Inpainting runs once at the end on the full canvas, catching BOTH:
+    #   • rotation corner gaps
+    #   • pan / zoom letterbox borders
+    # ══════════════════════════════════════════════════════════════════════════
+    if inpaint_method:
+        try:
+            import cv2
+        except ImportError:
+            inpaint_method = None  # fall through to solid-fill path below
+
+    if inpaint_method:
+        rgba = img.convert("RGBA")
+
+        # Flip
+        if flipH: rgba = ImageOps.mirror(rgba)
+        if flipV: rgba = ImageOps.flip(rgba)
+
+        # Rotate (expand=True so corners don't clip; transparent fill)
+        if rotate != 0:
+            rgba = rgba.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+                               fillcolor=(0, 0, 0, 0))
+
+        # Scale to fit canvas, applying user zoom
+        src_w, src_h = rgba.size
+        base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+        eff_scale    = base_scale * scale
+        new_w        = max(1, round(src_w * eff_scale))
+        new_h        = max(1, round(src_h * eff_scale))
+        resized      = rgba.resize((new_w, new_h), Image.LANCZOS)
+
+        # Paste onto a fully-transparent RGBA canvas
+        paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
+        paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
+        canvas_rgba = Image.new("RGBA", (canvas_w, canvas_h), (128, 128, 128, 0))
+        canvas_rgba.paste(resized, (paste_x, paste_y), resized)
+
+        # Alpha channel → inpaint mask  (255 = empty area to fill, 0 = keep)
+        alpha_np     = np.array(canvas_rgba.split()[3])
+        inpaint_mask = np.where(alpha_np < 128, 255, 0).astype(np.uint8)
+
+        # RGB image with gray seed in empty areas (gives inpaint a neutral start)
+        seed = Image.new("RGB", (canvas_w, canvas_h), (128, 128, 128))
+        seed.paste(canvas_rgba.convert("RGB"), (0, 0), canvas_rgba.split()[3])
+        img_np = np.array(seed)
+
+        if inpaint_mask.any():
+            method = cv2.INPAINT_TELEA if inpaint_method == "telea" else cv2.INPAINT_NS
+            img_bgr = img_np[:, :, ::-1].copy()
+            img_bgr = cv2.inpaint(img_bgr, inpaint_mask, inpaintRadius=3, flags=method)
+            img_np  = img_bgr[:, :, ::-1]
+
+        return Image.fromarray(img_np.astype(np.uint8))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SOLID-FILL PATH — flip → rotate → scale → pan → paste onto bg canvas
+    # ══════════════════════════════════════════════════════════════════════════
     if flipH: img = ImageOps.mirror(img)
     if flipV: img = ImageOps.flip(img)
 
-    rotation_alpha = None   # PIL Image "L" mask (255=opaque, 0=transparent)
     if rotate != 0:
-        if inpaint_method:
-            # Rotate in RGBA so we can track newly-transparent pixels
-            rgba = img.convert("RGBA")
-            rgba = rgba.rotate(-rotate, expand=True, resample=Image.LANCZOS,
-                               fillcolor=(0, 0, 0, 0))
-            rotation_alpha = rgba.split()[3]           # L mode, 0=gap
-            img = rgba.convert("RGB")
-        else:
-            img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS,
-                             fillcolor=bg_color)
+        img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+                         fillcolor=bg_color)
 
-    # ── cv2 inpainting to fill rotation gaps ──────────────────────────────────
-    if inpaint_method and rotation_alpha is not None:
-        try:
-            import cv2
-            alpha_np = np.array(rotation_alpha)
-            inpaint_mask = np.where(alpha_np < 128, 255, 0).astype(np.uint8)
-            if inpaint_mask.any():
-                img_np = np.array(img.convert("RGB"))
-                method = cv2.INPAINT_TELEA if inpaint_method == "telea" else cv2.INPAINT_NS
-                img_np = cv2.inpaint(img_np, inpaint_mask, inpaintRadius=3, flags=method)
-                img = Image.fromarray(img_np.astype(np.uint8))
-        except Exception as e:
-            print(f"[MultiImageLoader] cv2 inpaint error (falling back to solid fill): {e}")
-
-    # ── pan / zoom ─────────────────────────────────────────────────────────────
     src_w, src_h = img.size
     base_scale   = min(canvas_w / src_w, canvas_h / src_h)
     eff_scale    = base_scale * scale
