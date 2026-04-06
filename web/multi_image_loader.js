@@ -121,8 +121,8 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
   const extraGap = rows > 0 ? GAP * 2 : GAP;
 
   return (
-    NODE_HEADER_H +
-    NODE_SLOT_H   +
+    NODE_HEADER_H  +
+    NODE_SLOT_H * 3 +  // output slot + image_list + fit_mode widgets
     NODE_PADDING_V +
     DROPZONE_H    +
     extraGap      +
@@ -661,7 +661,7 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
-            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H - NODE_PADDING_V)];
+            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 3 - NODE_PADDING_V)];
           },
         }
       );
@@ -673,7 +673,9 @@ app.registerExtension({
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";
+            w.computeSize = () => [0, -4]; // zero height in LiteGraph layout
             w.inputEl?.remove?.();
+            if (w.element) w.element.style.display = "none";
           }
         });
         node.setDirtyCanvas(true);
