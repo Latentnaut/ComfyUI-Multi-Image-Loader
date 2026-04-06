@@ -673,9 +673,7 @@ app.registerExtension({
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";
-            w.computeSize = () => [0, -4]; // zero height in LiteGraph layout
             w.inputEl?.remove?.();
-            if (w.element) w.element.style.display = "none";
           }
         });
         node.setDirtyCanvas(true);
