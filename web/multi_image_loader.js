@@ -164,7 +164,7 @@ function createWidget(node) {
     background: rgba(60, 90, 150, 0.15);
     transition: background 0.2s, border-color 0.2s;
     user-select: none;
-    height: ${DROPZONE_H}px;
+    min-height: ${DROPZONE_H}px;
     box-sizing: border-box;
   `;
   dropZone.innerHTML = `
