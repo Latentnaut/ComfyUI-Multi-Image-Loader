@@ -1,0 +1,7 @@
+{
+  "name": "comfyui-multi-image-loader",
+  "version": "1.0.0",
+  "description": "Load multiple images by drag-and-drop or file picker directly inside a ComfyUI node, outputs them as a single IMAGE batch tensor.",
+  "author": "Custom",
+  "license": "MIT"
+}
