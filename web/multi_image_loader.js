@@ -110,6 +110,11 @@ function injectStyles() {
       font-weight: bold;
     }
     .mil-btn { transition: background 0.15s, border-color 0.15s; }
+    @keyframes mil-fadein {
+      from { opacity:0; transform:scale(0.96); }
+      to   { opacity:1; transform:scale(1);    }
+    }
+    .mil-crop-enter { animation: mil-fadein 0.18s ease-out; }
     .mil-scroll-fade {
       position: absolute; bottom: 0; left: 0; right: 7px;
       height: 24px;
@@ -326,6 +331,8 @@ function createWidget(node) {
 
   // Preview state
   let previewActive = false;
+  // Per-image crop transforms: { filename → { ox, oy, scale } }
+  let cropMap = {};
 
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -341,7 +348,20 @@ function createWidget(node) {
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
+    persistCropData();
     node.setDirtyCanvas(true, true);
+  }
+
+  function getCropDataWidget() {
+    return node.widgets?.find((ww) => ww.name === "crop_data");
+  }
+  function hasCrop(filename) {
+    const t = cropMap[filename];
+    return !!(t && (t.ox !== 0 || t.oy !== 0 || t.scale !== 1.0));
+  }
+  function persistCropData() {
+    const w = getCropDataWidget();
+    if (w) w.value = JSON.stringify(cropMap);
   }
 
   function getEffectiveThumbW() {
@@ -500,8 +520,51 @@ function createWidget(node) {
         persist();
       });
 
+      // ── crop button (top-right, next to remove btn) ──────────────────────
+      const cropBtn = document.createElement("button");
+      cropBtn.textContent = "✂";
+      cropBtn.title = "Edit crop";
+      const cropActive = hasCrop(item.filename);
+      cropBtn.style.cssText = `
+        position:absolute;top:2px;right:20px;
+        background:${cropActive ? "rgba(255,200,60,0.9)" : "rgba(40,40,40,0.82)"};
+        color:${cropActive ? "#111" : "#ccc"};
+        border:none;border-radius:3px;
+        width:16px;height:16px;font-size:9px;
+        cursor:pointer;padding:0;line-height:16px;text-align:center;
+        opacity:0;transition:opacity 0.15s;
+        z-index:2;
+      `;
+      wrapper.addEventListener("mouseenter", () => {
+        removeBtn.style.opacity = "1";
+        cropBtn.style.opacity   = "1";
+      });
+      wrapper.addEventListener("mouseleave", () => {
+        removeBtn.style.opacity = "0";
+        cropBtn.style.opacity   = "0";
+      });
+      cropBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCropEditor(idx);
+      });
+
+      // ── crop-active badge (bottom-right, always visible) ──────────────────
+      if (cropActive) {
+        const cropBadge = document.createElement("span");
+        cropBadge.textContent = "✂";
+        cropBadge.title = "Custom crop active";
+        cropBadge.style.cssText = `
+          position:absolute;bottom:2px;right:2px;
+          background:rgba(255,200,60,0.9);color:#111;
+          font-size:8px;padding:0 2px;border-radius:2px;
+          pointer-events:none;z-index:1;
+        `;
+        wrapper.appendChild(cropBadge);
+      }
+
       wrapper.appendChild(img);
       wrapper.appendChild(badge);
+      wrapper.appendChild(cropBtn);
       wrapper.appendChild(removeBtn);
       grid.appendChild(wrapper);
     });
@@ -622,6 +685,10 @@ function createWidget(node) {
 
     items = filenames.map((fn) => ({ filename: fn, src: viewURL(fn) }));
 
+    // Restore crop transforms
+    const cw = getCropDataWidget();
+    try { cropMap = JSON.parse(cw?.value || "{}"); } catch { cropMap = {}; }
+
     try {
       const { w: iw, h: ih } = await getImageDimensions(viewURL(filenames[0]));
       thumbH = Math.max(20, Math.round(THUMB_W * ih / iw));
@@ -698,6 +765,7 @@ function createWidget(node) {
     items  = [];
     thumbH = THUMB_W;
     previewActive = false;
+    cropMap = {};
     render();
     persist();
   });
@@ -716,6 +784,255 @@ function createWidget(node) {
     node.setSize([curW, idealH]);
     render();
   };
+
+  // ── openCropEditor ───────────────────────────────────────────────────
+  function openCropEditor(startIdx) {
+    // session crops: edits made during this dialog, committed only on Apply
+    const ses = {};
+    for (const fn in cropMap) ses[fn] = { ...cropMap[fn] };
+    let curIdx = startIdx;
+
+    // per-image display state
+    let edImg = null, edNatW = 1, edNatH = 1;
+    let edRefW = 1, edRefH = 1;  // reference canvas = first-image dims
+    let dOX = 0, dOY = 0, edScale = 1.0;
+    let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
+    let rafId = null, panSt = null;
+
+    // ── overlay ───────────────────────────────────────────────
+    const ov = document.createElement("div");
+    ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;";
+    const dlg = document.createElement("div");
+    dlg.className = "mil-crop-enter";
+    dlg.style.cssText = "position:relative;width:min(96vw,1080px);height:min(90vh,680px);background:#181818;border-radius:12px;border:1px solid #333;box-shadow:0 24px 80px rgba(0,0,0,0.8);display:flex;flex-direction:column;overflow:hidden;";
+
+    // ── header ───────────────────────────────────────────────
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "flex-shrink:0;display:flex;align-items:center;gap:8px;padding:8px 12px;background:#111;border-bottom:1px solid #2a2a2a;";
+    function mkB(t, col) {
+      const b = document.createElement("button");
+      b.textContent = t;
+      b.style.cssText = `background:#222;color:${col||"#bbb"};border:1px solid #3a3a3a;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;`;
+      b.addEventListener("mouseenter", () => { b.style.background="#2e2e2e"; b.style.borderColor="#555"; });
+      b.addEventListener("mouseleave", () => { b.style.background="#222"; b.style.borderColor="#3a3a3a"; });
+      return b;
+    }
+    const titleEl = document.createElement("span");
+    titleEl.style.cssText = "color:#ccc;font-size:13px;font-weight:600;flex:1;";
+    titleEl.textContent = "\u2702  Crop Editor";
+    const prevB = mkB("\u2190 Prev"); const cntEl = document.createElement("span");
+    cntEl.style.cssText = "color:#555;font-size:11px;min-width:52px;text-align:center;";
+    const nextB = mkB("Next \u2192"); const closeB = mkB("\u2715 Close");
+    hdr.appendChild(titleEl); hdr.appendChild(prevB); hdr.appendChild(cntEl);
+    hdr.appendChild(nextB); hdr.appendChild(closeB);
+
+    // ── body ────────────────────────────────────────────────
+    const body = document.createElement("div");
+    body.style.cssText = "flex:1;display:flex;min-height:0;";
+
+    // left panel
+    const pnl = document.createElement("div");
+    pnl.style.cssText = "width:168px;flex-shrink:0;background:#111;border-right:1px solid #222;padding:12px 10px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;";
+    function mkSec(t) {
+      const d = document.createElement("div");
+      d.style.cssText = "color:#444;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:5px;";
+      d.textContent = t; return d;
+    }
+    const zoomLbl = document.createElement("div");
+    zoomLbl.style.cssText = "color:#666;font-size:10px;text-align:center;padding:1px 0;";
+    function mkPB(label, cb) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText = "background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:5px 8px;font-size:11px;cursor:pointer;text-align:left;width:100%;";
+      b.addEventListener("mouseenter", () => { b.style.background="#2a2a2a"; b.style.borderColor="#484848"; });
+      b.addEventListener("mouseleave", () => { b.style.background="#1e1e1e"; b.style.borderColor="#333"; });
+      b.addEventListener("click", () => { cb(); redraw(); });
+      return b;
+    }
+    const spacer = document.createElement("div"); spacer.style.flex = "1";
+    const applyB = document.createElement("button");
+    applyB.textContent = "\u2713 Apply";
+    applyB.style.cssText = "background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:6px;padding:7px;font-size:12px;font-weight:600;cursor:pointer;width:100%;";
+    applyB.addEventListener("mouseenter", () => { applyB.style.background="#225540"; applyB.style.borderColor="#44cc88"; });
+    applyB.addEventListener("mouseleave", () => { applyB.style.background="#1a3a28"; applyB.style.borderColor="#336644"; });
+    const cancelB = document.createElement("button");
+    cancelB.textContent = "\u2715 Cancel";
+    cancelB.style.cssText = "background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:6px;padding:7px;font-size:12px;cursor:pointer;width:100%;";
+    cancelB.addEventListener("mouseenter", () => { cancelB.style.background="#3a2020"; cancelB.style.color="#ff8888"; cancelB.style.borderColor="#553333"; });
+    cancelB.addEventListener("mouseleave", () => { cancelB.style.background="#2a2a2a"; cancelB.style.color="#aaa"; cancelB.style.borderColor="#444"; });
+    pnl.appendChild(mkSec("Quick Fit"));
+    pnl.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
+    pnl.appendChild(mkPB("\u2B1C Fit   (letterbox)", () => { dOX=0;dOY=0;edScale=1; updLbl(); }));
+    pnl.appendChild(mkPB("\u2194 Fit Width",  doFitW));
+    pnl.appendChild(mkPB("\u2195 Fit Height", doFitH));
+    pnl.appendChild(mkSec("Transform"));
+    pnl.appendChild(mkPB("\u27F2 Reset",      ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
+    pnl.appendChild(zoomLbl);
+    pnl.appendChild(spacer);
+    pnl.appendChild(applyB);
+    pnl.appendChild(cancelB);
+
+    // canvas area
+    const ca = document.createElement("div");
+    ca.style.cssText = "flex:1;position:relative;overflow:hidden;background:#0d0d0d;cursor:grab;";
+    const cvs = document.createElement("canvas");
+    cvs.style.cssText = "display:block;width:100%;height:100%;";
+    const hint = document.createElement("div");
+    hint.style.cssText = "position:absolute;bottom:8px;left:0;right:0;text-align:center;color:#333;font-size:10px;pointer-events:none;";
+    hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+    ca.appendChild(cvs); ca.appendChild(hint);
+    body.appendChild(pnl); body.appendChild(ca);
+    dlg.appendChild(hdr); dlg.appendChild(body);
+    ov.appendChild(dlg); document.body.appendChild(ov);
+
+    // ── helpers ───────────────────────────────────────────────
+    function updLbl() { zoomLbl.textContent = `Zoom: ${Math.round(edScale*100)}%`; }
+    function doFill() { dOX=0;dOY=0; edScale=Math.max(frameW/edNatW,frameH/edNatH)/bFit; updLbl(); }
+    function doFitW() { dOX=0;dOY=0; edScale=(frameW/edNatW)/bFit; updLbl(); }
+    function doFitH() { dOX=0;dOY=0; edScale=(frameH/edNatH)/bFit; updLbl(); }
+
+    function syncCvs() {
+      const r = ca.getBoundingClientRect();
+      if (cvs.width!==Math.round(r.width)||cvs.height!==Math.round(r.height)) {
+        cvs.width=Math.round(r.width); cvs.height=Math.round(r.height);
+      }
+      const asp = edRefW/edRefH, cw=cvs.width, ch=cvs.height, pad=40;
+      const maxW=cw-pad*2, maxH=ch-pad*2;
+      if (asp>=maxW/maxH) { frameW=maxW; frameH=Math.round(maxW/asp); }
+      else               { frameH=maxH; frameW=Math.round(maxH*asp); }
+      frameCX=cw/2; frameCY=ch/2;
+      bFit=Math.min(frameW/edNatW,frameH/edNatH);
+    }
+
+    function redraw() {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        syncCvs();
+        const ctx = cvs.getContext("2d");
+        const cw=cvs.width, ch=cvs.height;
+        // checkerboard
+        const T=14;
+        for(let r=0;r<Math.ceil(ch/T);r++) for(let c=0;c<Math.ceil(cw/T);c++) {
+          ctx.fillStyle=(r+c)%2===0?"#1a1a1a":"#141414";
+          ctx.fillRect(c*T,r*T,T,T);
+        }
+        // image
+        if (edImg) {
+          const eff=bFit*edScale;
+          const dw=edNatW*eff, dh=edNatH*eff;
+          const dx=frameCX-dw/2+dOX, dy=frameCY-dh/2+dOY;
+          ctx.drawImage(edImg,dx,dy,dw,dh);
+        }
+        // dim outside frame
+        const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
+        ctx.fillStyle="rgba(0,0,0,0.58)";
+        ctx.fillRect(0,0,cw,fy); ctx.fillRect(0,fy+frameH,cw,ch-fy-frameH);
+        ctx.fillRect(0,fy,fx,frameH); ctx.fillRect(fx+frameW,fy,cw-fx-frameW,frameH);
+        // frame border
+        ctx.strokeStyle="rgba(255,255,255,0.35)"; ctx.lineWidth=1.5;
+        ctx.strokeRect(fx+0.75,fy+0.75,frameW-1.5,frameH-1.5);
+        // rule-of-thirds
+        ctx.strokeStyle="rgba(255,255,255,0.1)"; ctx.lineWidth=0.5;
+        for(let i=1;i<3;i++) {
+          ctx.beginPath(); ctx.moveTo(fx+frameW/3*i,fy); ctx.lineTo(fx+frameW/3*i,fy+frameH); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(fx,fy+frameH/3*i); ctx.lineTo(fx+frameW,fy+frameH/3*i); ctx.stroke();
+        }
+      });
+    }
+
+    // ── image load ───────────────────────────────────────────
+    function saveToSes() {
+      const fn = items[curIdx]?.filename; if (!fn) return;
+      if (dOX!==0||dOY!==0||edScale!==1.0) ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale};
+      else delete ses[fn];
+    }
+    async function loadIdx(idx) {
+      curIdx=idx;
+      cntEl.textContent=`${idx+1} / ${items.length}`;
+      prevB.disabled=idx===0; nextB.disabled=idx===items.length-1;
+      prevB.style.opacity=idx===0?"0.35":"1";
+      nextB.style.opacity=idx===items.length-1?"0.35":"1";
+      edImg=null; redraw();
+      await new Promise(res=>{
+        const el=new Image(); el.crossOrigin="anonymous";
+        el.onload=()=>{
+          edImg=el; edNatW=el.naturalWidth; edNatH=el.naturalHeight;
+          syncCvs();
+          const t=ses[items[idx].filename];
+          dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
+          updLbl(); redraw(); res();
+        };
+        el.onerror=res; el.src=items[idx].src;
+      });
+    }
+
+    // ── events ───────────────────────────────────────────────
+    function onPanMove(e) {
+      if (!panSt) return;
+      dOX=panSt.ox+(e.clientX-panSt.x); dOY=panSt.oy+(e.clientY-panSt.y); redraw();
+    }
+    function onPanUp() { if (panSt) { panSt=null; ca.style.cursor="grab"; } }
+    cvs.addEventListener("mousedown", e=>{
+      if (e.button!==0) return;
+      panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
+    });
+    window.addEventListener("mousemove", onPanMove);
+    window.addEventListener("mouseup",   onPanUp);
+    cvs.addEventListener("wheel", e=>{
+      e.preventDefault();
+      const f=e.deltaY<0?1.12:0.89;
+      const r=cvs.getBoundingClientRect();
+      const mx=e.clientX-r.left-frameCX, my=e.clientY-r.top-frameCY;
+      dOX=(dOX-mx)*f+mx; dOY=(dOY-my)*f+my;
+      edScale=Math.max(0.05,Math.min(20,edScale*f)); updLbl(); redraw();
+    },{passive:false});
+    const ro=new ResizeObserver(()=>redraw()); ro.observe(ca);
+    function onKey(e) {
+      if (e.key==="ArrowLeft"  && curIdx>0)               { saveToSes(); loadIdx(curIdx-1); }
+      if (e.key==="ArrowRight" && curIdx<items.length-1)  { saveToSes(); loadIdx(curIdx+1); }
+      if (e.key==="Escape") doClose();
+    }
+    window.addEventListener("keydown", onKey);
+    prevB.addEventListener("click", ()=>{ if(curIdx>0)             { saveToSes(); loadIdx(curIdx-1); } });
+    nextB.addEventListener("click", ()=>{ if(curIdx<items.length-1){ saveToSes(); loadIdx(curIdx+1); } });
+
+    // ── apply / cancel / close ────────────────────────────────
+    function doClose() {
+      cancelAnimationFrame(rafId); ro.disconnect();
+      window.removeEventListener("keydown",    onKey);
+      window.removeEventListener("mousemove",  onPanMove);
+      window.removeEventListener("mouseup",    onPanUp);
+      ov.remove();
+    }
+    function doApply() {
+      saveToSes();
+      const valid=new Set(items.map(i=>i.filename));
+      // commit session to cropMap
+      for (const fn of valid) {
+        const t=ses[fn];
+        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0)) cropMap[fn]=t;
+        else delete cropMap[fn];
+      }
+      persistCropData(); render(); persist(); doClose();
+    }
+    applyB.addEventListener("click",  doApply);
+    cancelB.addEventListener("click", doClose);
+    closeB.addEventListener("click",  doApply);
+    ov.addEventListener("click", e=>{ if(e.target===ov) doClose(); });
+
+    // ── init ───────────────────────────────────────────────
+    async function init() {
+      // Prime edRefW/H from image[0]
+      if (items.length>0) await new Promise(r=>{
+        const el0=new Image(); el0.crossOrigin="anonymous";
+        el0.onload=()=>{ edRefW=el0.naturalWidth; edRefH=el0.naturalHeight; r(); };
+        el0.onerror=r; el0.src=items[0].src;
+      });
+      syncCvs();
+      await loadIdx(startIdx);
+    }
+    init();
+  }
 
   return root;
 }
@@ -754,7 +1071,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "fit_mode"];
+        const hiddenNames = ["image_list", "fit_mode", "crop_data"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";

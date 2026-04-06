@@ -94,6 +94,35 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Ima
     return img.resize((target_w, target_h), Image.LANCZOS)
 
 
+def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int) -> Image.Image:
+    """
+    Apply a user-defined pan/zoom transform and crop the result to canvas_w × canvas_h.
+    transform keys:
+      ox    – horizontal offset of image centre from canvas centre, as a fraction of canvas_w
+      oy    – vertical offset of image centre from canvas centre, as a fraction of canvas_h
+      scale – zoom factor relative to letterbox-fit scale (1.0 = image fits entirely in canvas)
+    """
+    ox    = float(transform.get("ox",    0.0))
+    oy    = float(transform.get("oy",    0.0))
+    scale = float(transform.get("scale", 1.0))
+    if scale <= 0:
+        scale = 1.0
+
+    src_w, src_h = img.size
+    base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+    eff_scale    = base_scale * scale
+    new_w        = max(1, round(src_w * eff_scale))
+    new_h        = max(1, round(src_h * eff_scale))
+    resized      = img.resize((new_w, new_h), Image.LANCZOS)
+
+    paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
+    paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
+
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+    canvas.paste(resized, (paste_x, paste_y))
+    return canvas
+
+
 class MultiImageLoader:
     """
     Loads multiple images uploaded directly in the UI (no folder needed).
@@ -115,7 +144,8 @@ class MultiImageLoader:
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list": ("STRING", {"default": "[]"}),
                 "fit_mode": (["letterbox", "crop"],),
-                "thumb_size": (["small", "medium", "large"],),  # UI-only: thumbnail display size
+                "thumb_size": (["small", "medium", "large"],),  # UI-only
+                "crop_data":  ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
             },
         }
 
@@ -126,23 +156,27 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", thumb_size="medium"):
-        return hashlib.md5(image_list.encode()).hexdigest()
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", thumb_size="medium", crop_data="{}"):
+        return hashlib.md5((image_list + crop_data).encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox", thumb_size="medium"):
+    def load_images(self, image_list="[]", fit_mode="letterbox", thumb_size="medium", crop_data="{}"):
         try:
             filenames = json.loads(image_list)
         except Exception:
             filenames = []
 
-        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        try:
+            transforms = json.loads(crop_data) if crop_data else {}
+        except Exception:
+            transforms = {}
 
+        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         if not filenames:
             return (placeholder,)
 
         input_dir = Path(folder_paths.get_input_directory())
-        tensors = []
-        reference_size = None
+        tensors   = []
+        ref_w = ref_h = None
 
         for fname in filenames:
             fpath = input_dir / fname
@@ -154,11 +188,14 @@ class MultiImageLoader:
                 img = ImageOps.exif_transpose(img)
                 img = img.convert("RGB")
 
-                if reference_size is None:
-                    reference_size = img.size
-                elif img.size != reference_size:
-                    target_w, target_h = reference_size
-                    img = _fit_image(img, target_w, target_h, fit_mode)
+                if ref_w is None:
+                    ref_w, ref_h = img.size
+
+                t = transforms.get(fname)
+                if t:
+                    img = _apply_crop_transform(img, t, ref_w, ref_h)
+                elif img.size != (ref_w, ref_h):
+                    img = _fit_image(img, ref_w, ref_h, fit_mode)
 
                 arr = np.array(img).astype(np.float32) / 255.0
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))
