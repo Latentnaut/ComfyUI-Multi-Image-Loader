@@ -220,6 +220,7 @@ function createWidget(node) {
     box-sizing: border-box;
   `;
   const statusLabel = document.createElement("span");
+  statusLabel.style.whiteSpace = "pre-line";
 
   // Right-side button group
   const btnGroup = document.createElement("div");
@@ -427,7 +428,7 @@ function createWidget(node) {
     const count = items.length;
     statusLabel.textContent =
       count > 0
-        ? `${count} image${count !== 1 ? "s" : ""} queued · drag to reorder`
+        ? `${count} image${count !== 1 ? "s" : ""} queued\nDrag to reorder`
         : "";
     clearBtn.style.display    = count > 0 ? "inline-block" : "none";
     previewBtn.style.display  = count > 1 ? "inline-block" : "none";
