@@ -24,6 +24,7 @@ const STATUS_H       = 46;
 const GAP            = 6;
 const THUMB_W        = 72;
 const THUMB_GAP      = 5;
+const MAX_GRID_ROWS  = 4;   // rows visible before scroll kicks in
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,8 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
   const innerW   = nodeWidth - 24;
   const cols     = Math.max(1, Math.floor((innerW + THUMB_GAP) / (THUMB_W + THUMB_GAP)));
   const rows     = count > 0 ? Math.ceil(count / cols) : 0;
-  const gridH    = rows > 0 ? rows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
+  const visRows  = Math.min(rows, MAX_GRID_ROWS);
+  const gridH    = visRows > 0 ? visRows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
   const extraGap = rows > 0 ? GAP * 2 : GAP;
 
   return (
