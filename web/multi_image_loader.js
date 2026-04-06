@@ -153,6 +153,11 @@ function createWidget(node) {
   const dropZone = document.createElement("div");
   dropZone.style.cssText = `
     flex-shrink: 0;
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
     border: 2px dashed #5a7abf;
     border-radius: 10px;
     padding: 14px 10px;
