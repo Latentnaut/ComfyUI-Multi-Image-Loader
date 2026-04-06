@@ -379,14 +379,37 @@ function createWidget(node) {
     for (const item of items) {
       const t = cropMap[item.filename];
       if (!t) { item.previewSrc = undefined; continue; }
+      const bgRaw = t.bg ?? "#808080";
+      const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
+
+      if (isInpaint) {
+        // Use Python server to generate thumbnail (exact same pipeline as queue time)
+        try {
+          const resp = await fetch("/multi_image_loader/preview", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({filename: item.filename, transform: t, refW, refH})
+          });
+          if (resp.ok) {
+            const { dataUrl } = await resp.json();
+            item.previewSrc = dataUrl;
+          } else {
+            console.warn("[MIL] inpaint thumbnail failed:", item.filename, resp.status);
+          }
+        } catch(e) {
+          console.warn("[MIL] inpaint thumbnail error:", item.filename, e);
+        }
+        continue;
+      }
+
+      // Solid-fill path — JS canvas rendering
       try {
         const el = await loadImage(item.src);
         const cvs = document.createElement("canvas");
         cvs.width = refW; cvs.height = refH;
         const ctx = cvs.getContext("2d");
-        const bgRaw = t.bg ?? "#808080";
-        const bgC   = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
-                    : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
+        const bgC = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
+                  : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
         ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
 
         const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
@@ -1086,7 +1109,7 @@ function createWidget(node) {
           };
           img.src = dataUrl;
         } catch(e) {
-          console.warn("[MIL] inpaint preview error:", e.message);
+          console.error("[MIL] inpaint preview error (rotate="+edRotate+" bg="+edBg+"):", e.message);
           edInpaintDirty = false; redraw();
         }
       }, 350);
@@ -1248,7 +1271,7 @@ function createWidget(node) {
       // commit session to cropMap
       for (const fn of valid) {
         const t=ses[fn];
-        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0)) cropMap[fn]=t;
+        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!=="#808080"))) cropMap[fn]=t;
         else delete cropMap[fn];
       }
       persistCropData(); persist(); doClose();
