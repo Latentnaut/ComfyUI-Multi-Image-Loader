@@ -886,9 +886,15 @@ function createWidget(node) {
     const body = document.createElement("div");
     body.style.cssText = "flex:1;display:flex;min-height:0;";
 
-    // left panel
+    // left panel — outer shell
     const pnl = document.createElement("div");
-    pnl.style.cssText = "width:168px;flex-shrink:0;background:#111;border-right:1px solid #222;padding:12px 10px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;";
+    pnl.style.cssText = "width:168px;flex-shrink:0;background:#111;border-right:1px solid #222;display:flex;flex-direction:column;";
+    // scrollable controls body
+    const pnlBody = document.createElement("div");
+    pnlBody.style.cssText = "flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:12px 10px;display:flex;flex-direction:column;gap:5px;";
+    // sticky footer: zoom label + Apply + Cancel
+    const pnlFoot = document.createElement("div");
+    pnlFoot.style.cssText = "flex-shrink:0;padding:6px 10px 8px;border-top:1px solid #222;display:flex;flex-direction:column;gap:5px;";
     function mkSec(t) {
       const d = document.createElement("div");
       d.style.cssText = "color:#444;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:5px;";
@@ -916,18 +922,18 @@ function createWidget(node) {
     cancelB.style.cssText = "background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:6px;padding:7px;font-size:12px;cursor:pointer;width:100%;";
     cancelB.addEventListener("mouseenter", () => { cancelB.style.background="#3a2020"; cancelB.style.color="#ff8888"; cancelB.style.borderColor="#553333"; });
     cancelB.addEventListener("mouseleave", () => { cancelB.style.background="#2a2a2a"; cancelB.style.color="#aaa"; cancelB.style.borderColor="#444"; });
-    pnl.appendChild(mkSec("Quick Fit"));
-    pnl.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
-    pnl.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
-    pnl.appendChild(mkPB("\u2194 Fit Width",  doFitW));
-    pnl.appendChild(mkPB("\u2195 Fit Height", doFitH));
-    pnl.appendChild(mkSec("Flip"));
-    pnl.appendChild(mkPB("\u2194 Flip Horizontal", ()=>{ edFlipH=!edFlipH; }));
-    pnl.appendChild(mkPB("\u2195 Flip Vertical",   ()=>{ edFlipV=!edFlipV; }));
-    pnl.appendChild(mkSec("Rotate"));
+    pnlBody.appendChild(mkSec("Quick Fit"));
+    pnlBody.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
+    pnlBody.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
+    pnlBody.appendChild(mkPB("\u2194 Fit Width",  doFitW));
+    pnlBody.appendChild(mkPB("\u2195 Fit Height", doFitH));
+    pnlBody.appendChild(mkSec("Flip"));
+    pnlBody.appendChild(mkPB("\u2194 Flip Horizontal", ()=>{ edFlipH=!edFlipH; }));
+    pnlBody.appendChild(mkPB("\u2195 Flip Vertical",   ()=>{ edFlipV=!edFlipV; }));
+    pnlBody.appendChild(mkSec("Rotate"));
     // slider + click-to-type angle
     const rotRow = document.createElement("div");
-    rotRow.style.cssText = "display:flex;align-items:center;gap:5px;";
+    rotRow.style.cssText = "display:flex;align-items:center;gap:5px;width:100%;overflow:hidden;";
     const rotSlider = document.createElement("input");
     rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
     rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
@@ -957,10 +963,10 @@ function createWidget(node) {
       requestInpaintPreview();
     });
     rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
-    pnl.appendChild(rotRow);
+    pnlBody.appendChild(rotRow);
 
     // Background Fill section
-    pnl.appendChild(mkSec("Background Fill"));
+    pnlBody.appendChild(mkSec("Background Fill"));
     const bgSelect = document.createElement("select");
     bgSelect.style.cssText="width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer;";
     [["#808080","Gray (default)"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
@@ -998,14 +1004,15 @@ function createWidget(node) {
       if(isCust){ bgColorPick.value=edBg; bgHexInp.value=edBg; }
       bgNote.style.display=(edBg==="telea"||edBg==="navier-stokes")?"block":"none";
     }
-    pnl.appendChild(bgSelect); pnl.appendChild(bgCustomRow); pnl.appendChild(bgNote);
+    pnlBody.appendChild(bgSelect); pnlBody.appendChild(bgCustomRow); pnlBody.appendChild(bgNote);
 
-    pnl.appendChild(mkSec("Transform"));
-    pnl.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0;edBg="#808080"; syncRotUI(); syncBgUI(); updLbl(); }));
-    pnl.appendChild(zoomLbl);
-    pnl.appendChild(spacer);
-    pnl.appendChild(applyB);
-    pnl.appendChild(cancelB);
+    pnlBody.appendChild(mkSec("Transform"));
+    pnlBody.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0;edBg="#808080"; syncRotUI(); syncBgUI(); updLbl(); }));
+    pnlFoot.appendChild(zoomLbl);
+    pnlFoot.appendChild(applyB);
+    pnlFoot.appendChild(cancelB);
+    pnl.appendChild(pnlBody);
+    pnl.appendChild(pnlFoot);
 
     // canvas area
     const ca = document.createElement("div");
