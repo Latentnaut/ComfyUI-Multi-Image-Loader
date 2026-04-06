@@ -115,6 +115,7 @@ class MultiImageLoader:
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list": ("STRING", {"default": "[]"}),
                 "fit_mode": (["letterbox", "crop"],),
+                "thumb_size": (["small", "medium", "large"],),  # UI-only: thumbnail display size
             },
         }
 
@@ -125,10 +126,10 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox"):
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", thumb_size="medium"):
         return hashlib.md5(image_list.encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox"):
+    def load_images(self, image_list="[]", fit_mode="letterbox", thumb_size="medium"):
         try:
             filenames = json.loads(image_list)
         except Exception:

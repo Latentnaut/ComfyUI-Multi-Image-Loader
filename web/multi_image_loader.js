@@ -26,6 +26,7 @@ const THUMB_W            = 72;
 const THUMB_GAP          = 5;
 const MAX_GRID_ROWS      = 4;   // rows visible before scroll kicks in
 const COMPACT_DROPZONE_H = 32;  // collapsed height when images are loaded
+const THUMB_SIZES        = { small: 52, medium: 72, large: 100 }; // px widths
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -124,10 +125,10 @@ function injectStyles() {
 
 // ─── height calculation ───────────────────────────────────────────────────────
 
-function computeIdealHeight(count, nodeWidth, thumbH) {
-  const th       = thumbH || THUMB_W;
+function computeIdealHeight(count, nodeWidth, thumbH, thumbW = THUMB_W) {
+  const th       = thumbH || thumbW;
   const innerW   = nodeWidth - 24;
-  const cols     = Math.max(1, Math.floor((innerW + THUMB_GAP) / (THUMB_W + THUMB_GAP)));
+  const cols     = Math.max(1, Math.floor((innerW + THUMB_GAP) / (thumbW + THUMB_GAP)));
   const rows     = count > 0 ? Math.ceil(count / cols) : 0;
   const visRows  = Math.min(rows, MAX_GRID_ROWS);
   const gridH    = visRows > 0 ? visRows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
@@ -343,10 +344,17 @@ function createWidget(node) {
     node.setDirtyCanvas(true, true);
   }
 
+  function getEffectiveThumbW() {
+    const w = node.widgets?.find((ww) => ww.name === "thumb_size");
+    return THUMB_SIZES[w?.value] ?? THUMB_W;
+  }
+
   function resizeNode() {
     const curW   = node.size[0];
     const curH   = node.size[1];
-    const idealH = computeIdealHeight(items.length, curW, thumbH);
+    const tw     = getEffectiveThumbW();
+    const th     = Math.max(20, Math.round(tw * thumbH / THUMB_W));
+    const idealH = computeIdealHeight(items.length, curW, th, tw);
     // Only grow — never shrink below the user's manually-set size
     if (idealH > curH) node.setSize([curW, idealH]);
   }
@@ -382,8 +390,8 @@ function createWidget(node) {
   function render() {
     statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
-    const tw = THUMB_W;
-    const th = thumbH;
+    const tw = getEffectiveThumbW();
+    const th = Math.max(20, Math.round(tw * thumbH / THUMB_W));
 
     items.forEach((item, idx) => {
 
@@ -697,8 +705,17 @@ function createWidget(node) {
   // ── initial render ────────────────────────────────────────────────────────
   render();
 
-  root._addFiles = addFiles;
-  root._restore  = restore;
+  root._addFiles         = addFiles;
+  root._restore          = restore;
+  root._renderWithResize = () => {
+    // Force resize+render when thumb_size changes (bypasses grow-only logic)
+    const curW   = node.size[0];
+    const tw     = getEffectiveThumbW();
+    const th     = Math.max(20, Math.round(tw * thumbH / THUMB_W));
+    const idealH = computeIdealHeight(items.length, curW, th, tw);
+    node.setSize([curW, idealH]);
+    render();
+  };
 
   return root;
 }
@@ -729,7 +746,7 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
-            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 3 - NODE_PADDING_V)];
+            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 4 - NODE_PADDING_V)];
           },
         }
       );
@@ -744,6 +761,15 @@ app.registerExtension({
             w.inputEl?.remove?.();
           }
         });
+        // Re-render+resize when user changes thumbnail size
+        const tsW = node.widgets?.find((w) => w.name === "thumb_size");
+        if (tsW) {
+          const origCb = tsW.callback;
+          tsW.callback = function (...args) {
+            origCb?.apply(this, args);
+            node._milDomWidget?.element?._renderWithResize?.();
+          };
+        }
         node.setDirtyCanvas(true);
       }, 0);
 
