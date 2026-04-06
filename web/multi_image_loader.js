@@ -326,8 +326,6 @@ function createWidget(node) {
   // Preview state
   let previewActive = false;
 
-  // Selection state (Set of filenames that are selected = part of selected_images output)
-  let selectedSet = new Set();
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -623,18 +621,6 @@ function createWidget(node) {
     if (!filenames?.length) return;
 
     items = filenames.map((fn) => ({ filename: fn, src: viewURL(fn) }));
-
-    // Restore selection state from selected_list widget
-    const ws = getSelectedListWidget();
-    let selectedFns;
-    try { selectedFns = JSON.parse(ws?.value || "null"); } catch { selectedFns = null; }
-
-    if (selectedFns && selectedFns.length > 0) {
-      selectedFns.forEach(fn => selectedSet.add(fn));
-    } else {
-      // Nothing persisted yet → select all by default
-      items.forEach(i => selectedSet.add(i.filename));
-    }
 
     try {
       const { w: iw, h: ih } = await getImageDimensions(viewURL(filenames[0]));
