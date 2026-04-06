@@ -52,47 +52,25 @@ async def upload_images_handler(request):
 
 @PromptServer.instance.routes.post("/multi_image_loader/preview")
 async def preview_transform_handler(request):
-    """
-    Apply a crop transform to an uploaded image and return the result as
-    a base64 JPEG DataURL.  Called from the JavaScript crop editor for
-    Telea / Navier-Stokes inpaint preview.
-    """
+    """Apply crop transform and return base64 JPEG for live inpaint preview."""
     import asyncio, base64, io as _io
-    from urllib.parse import urlparse, parse_qs
 
     try:
-        data     = await request.json()
-        src_url  = data.get("src", "")
+        data      = await request.json()
+        filename  = data.get("filename", "")
         transform = data.get("transform", {})
-        ref_w    = max(32, int(data.get("refW", 512)))
-        ref_h    = max(32, int(data.get("refH", 512)))
-
-        # ── resolve image file from ComfyUI view URL ──────────────────────────
-        parsed   = urlparse(src_url)
-        params   = parse_qs(parsed.query)
-        filename = params.get("filename", [None])[0]
-        subfolder = params.get("subfolder", [""])[0]
-        ftype    = params.get("type", ["input"])[0]
+        ref_w     = max(32, int(data.get("refW", 512)))
+        ref_h     = max(32, int(data.get("refH", 512)))
 
         if not filename:
-            return web.Response(status=400, text="No filename in src URL")
+            return web.Response(status=400, text="Missing filename")
 
-        if ftype == "input":
-            base_dir = folder_paths.get_input_directory()
-        elif ftype == "temp":
-            base_dir = folder_paths.get_temp_directory()
-        else:
-            base_dir = folder_paths.get_output_directory()
-
-        # path traversal guard
-        path = os.path.normpath(os.path.join(base_dir, subfolder, filename) if subfolder
-                                else os.path.join(base_dir, filename))
-        if not path.startswith(os.path.normpath(base_dir)):
-            return web.Response(status=403, text="Forbidden")
+        # Sanitise: no directory traversal
+        filename = os.path.basename(filename)
+        path = os.path.join(folder_paths.get_input_directory(), filename)
         if not os.path.isfile(path):
-            return web.Response(status=404, text="File not found")
+            return web.Response(status=404, text=f"File not found: {filename}")
 
-        # ── run transform in a thread (cv2 can be slow) ───────────────────────
         loop = asyncio.get_event_loop()
         def _run():
             img = Image.open(path).convert("RGB")
@@ -103,10 +81,11 @@ async def preview_transform_handler(request):
         buf = _io.BytesIO()
         result.save(buf, format="JPEG", quality=88)
         b64 = base64.b64encode(buf.getvalue()).decode()
-
         return web.json_response({"dataUrl": f"data:image/jpeg;base64,{b64}"})
 
     except Exception as e:
+        import traceback
+        print(f"[MIL preview] error: {e}\n{traceback.format_exc()}")
         return web.Response(status=500, text=str(e))
 
 

@@ -1064,18 +1064,19 @@ function createWidget(node) {
         ox:dOX/frameW, oy:dOY/frameH, scale:edScale,
         flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
       };
-      const cacheKey = JSON.stringify(transform) + "|" + (items[curIdx]?.src ?? "");
+      const fn = items[curIdx]?.filename ?? "";
+      const cacheKey = JSON.stringify(transform) + "|" + fn;
       edReqHandle = setTimeout(async () => {
-        if (!edImg || !items[curIdx]) return;
+        if (!edImg || !fn) return;
         const cached = edPreviewCache.get(cacheKey);
         if (cached) { edInpaintPreview=cached; edInpaintDirty=false; redraw(); return; }
         try {
           const resp = await fetch("/multi_image_loader/preview", {
             method: "POST",
             headers: {"Content-Type":"application/json"},
-            body: JSON.stringify({src:items[curIdx].src, transform, refW:edRefW, refH:edRefH})
+            body: JSON.stringify({filename: fn, transform, refW:edRefW, refH:edRefH})
           });
-          if (!resp.ok) throw new Error(await resp.text());
+          if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
           const { dataUrl } = await resp.json();
           const img = new Image();
           img.onload = () => {
@@ -1085,7 +1086,7 @@ function createWidget(node) {
           };
           img.src = dataUrl;
         } catch(e) {
-          console.warn("[MIL] inpaint preview error:", e);
+          console.warn("[MIL] inpaint preview error:", e.message);
           edInpaintDirty = false; redraw();
         }
       }, 350);
