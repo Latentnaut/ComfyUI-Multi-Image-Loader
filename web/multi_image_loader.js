@@ -19,7 +19,7 @@ const UPLOAD_URL = "/multi_image_loader/upload";
 const NODE_HEADER_H  = 30;
 const NODE_SLOT_H    = 22;
 const NODE_PADDING_V = 12;
-const DROPZONE_H     = 128;
+const DROPZONE_H     = 110;
 const STATUS_H       = 46;
 const GAP            = 6;
 const THUMB_W        = 72;
@@ -168,7 +168,7 @@ function createWidget(node) {
     box-sizing: border-box;
   `;
   dropZone.innerHTML = `
-    <div style="font-size:28px;margin-bottom:4px;">🖼️</div>
+    <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
     <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
     <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
     <div style="opacity:0.5;margin-top:6px;font-size:9px;">Drag thumbnails below · First image = canvas reference</div>
