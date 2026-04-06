@@ -387,7 +387,7 @@ function createWidget(node) {
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  function render() {
+  function render(doResize = true) {
     statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const tw = THUMB_W;
@@ -477,7 +477,7 @@ function createWidget(node) {
         if (selectedSet.has(item.filename)) selectedSet.delete(item.filename);
         else selectedSet.add(item.filename);
         persist();
-        render();
+        render(false); // visual-only repaint — keep user's manual node size
       });
 
       // ── drag-to-reorder events ────────────────────────────────────────────
@@ -543,7 +543,7 @@ function createWidget(node) {
     clearBtn.style.display   = count > 0 ? "inline-block" : "none";
     previewBtn.style.display = count > 1 ? "inline-block" : "none";
 
-    resizeNode();
+    if (doResize) resizeNode();
     requestAnimationFrame(updateScrollFade);
   }
 
@@ -693,6 +693,7 @@ function createWidget(node) {
 
       filenames.forEach((fn, i) => {
         items.push({ filename: fn, src: dataURLs[i] });
+        selectedSet.add(fn); // auto-select on upload
       });
 
       statusLabel.style.color = "#8899bb";
