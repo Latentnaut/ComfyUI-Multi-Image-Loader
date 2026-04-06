@@ -177,7 +177,7 @@ function createWidget(node) {
     <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
     <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
     <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
-    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Drag thumbnails below · First image = canvas reference</div>
+    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using first image as canvas reference</div>
   `;
 
   dropZone.addEventListener("mouseenter", () => {
