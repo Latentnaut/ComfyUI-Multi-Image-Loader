@@ -71,19 +71,19 @@ function injectStyles() {
   style.textContent = `
     .mil-grid {
       scrollbar-width: thin;
-      scrollbar-color: #5a7abf #1e2535;
+      scrollbar-color: #606060 #252525;
     }
     .mil-grid::-webkit-scrollbar { width: 7px; }
     .mil-grid::-webkit-scrollbar-track {
-      background: #1e2535;
+      background: #252525;
       border-radius: 4px;
     }
     .mil-grid::-webkit-scrollbar-thumb {
-      background: #5a7abf;
+      background: #606060;
       border-radius: 4px;
-      border: 1px solid #1e2535;
+      border: 1px solid #252525;
     }
-    .mil-grid::-webkit-scrollbar-thumb:hover { background: #7aacff; }
+    .mil-grid::-webkit-scrollbar-thumb:hover { background: #888; }
 
     /* Drag-to-reorder */
     .mil-thumb { cursor: grab; }
@@ -113,7 +113,7 @@ function injectStyles() {
     .mil-scroll-fade {
       position: absolute; bottom: 0; left: 0; right: 7px;
       height: 24px;
-      background: linear-gradient(transparent, rgba(30,37,53,0.92));
+      background: linear-gradient(transparent, rgba(28,28,28,0.95));
       pointer-events: none;
       display: none;
       z-index: 1;
@@ -254,7 +254,7 @@ function createWidget(node) {
     padding: 6px 2px 4px;
     min-height: ${STATUS_H}px;
     box-sizing: border-box;
-    gap: 3px;
+    gap: 8px;
   `;
   const statusLabel = document.createElement("span");
   statusLabel.style.textAlign = "center";
