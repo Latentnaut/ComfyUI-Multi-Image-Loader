@@ -1,12 +1,11 @@
 /**
  * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.4
  *
- * Changes in v1.4:
- *  - Removed 'fill' resize mode (no distortion policy)
- *  - Thumbnail drag-to-reorder: drag any thumbnail to change its position
- *  - The first image in the list sets the reference canvas for fit_mode
- *  - "★ First" badge shows on image #1; reordering updates image_list automatically
- *  - On workflow Run the new order is already persisted → backend uses correct reference
+ * Changes in v1.5:
+ *  - "🔄 Preview Fit" button: appears when drag-reorder changes image #1
+ *  - Clicking renders a canvas-based letterbox/crop preview for every thumbnail
+ *  - Preview is purely visual; files are not modified
+ *  - Button auto-hides after preview is applied or list changes
  */
 
 import { app } from "../../scripts/app.js";
@@ -221,6 +220,25 @@ function createWidget(node) {
     box-sizing: border-box;
   `;
   const statusLabel = document.createElement("span");
+
+  // Right-side button group
+  const btnGroup = document.createElement("div");
+  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;`;
+
+  const previewBtn = document.createElement("button");
+  previewBtn.textContent = "🔄 Preview Fit";
+  previewBtn.title = "Render letterbox/crop preview for all thumbnails";
+  previewBtn.style.cssText = `
+    background: #1a3a28;
+    color: #44cc88;
+    border: 1px solid #336644;
+    border-radius: 4px;
+    padding: 1px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    display: none;
+  `;
+
   const clearBtn = document.createElement("button");
   clearBtn.textContent = "✕ Clear all";
   clearBtn.style.cssText = `
@@ -233,25 +251,34 @@ function createWidget(node) {
     cursor: pointer;
     display: none;
   `;
+  btnGroup.appendChild(previewBtn);
+  btnGroup.appendChild(clearBtn);
   statusBar.appendChild(statusLabel);
-  statusBar.appendChild(clearBtn);
+  statusBar.appendChild(btnGroup);
 
   root.appendChild(dropZone);
   root.appendChild(grid);
   root.appendChild(statusBar);
 
   // ── state ─────────────────────────────────────────────────────────────────
-  // Each item: { filename: string, src: string }
+  // Each item: { filename: string, src: string, previewSrc?: string }
   let items  = [];
   let thumbH = THUMB_W;  // updated from first image's aspect ratio
 
   // Drag-reorder state
   let dragSrcIdx = null;
 
+  // Preview state
+  let previewActive = false;
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   function getImageListWidget() {
     return node.widgets?.find((w) => w.name === "image_list");
+  }
+
+  function getFitModeWidget() {
+    return node.widgets?.find((w) => w.name === "fit_mode");
   }
 
   function persist() {
@@ -291,7 +318,8 @@ function createWidget(node) {
 
       // ── image ──────────────────────────────────────────────────────────
       const img = document.createElement("img");
-      img.src = item.src;
+      // Show canvas-rendered preview if available, otherwise original src
+      img.src = item.previewSrc || item.src;
       img.style.cssText = `width:${tw}px;height:${th}px;object-fit:cover;display:block;pointer-events:none;`;
       img.title = item.filename;
 
@@ -372,9 +400,16 @@ function createWidget(node) {
         wrapper.classList.remove("mil-drag-over");
         if (dragSrcIdx === null || dragSrcIdx === idx) return;
 
+        // Track whether position-0 is involved (first image will change)
+        const firstWillChange = dragSrcIdx === 0 || idx === 0;
+
         // Reorder: remove from old position, insert at new position
         const [moved] = items.splice(dragSrcIdx, 1);
         items.splice(idx, 0, moved);
+
+        // Clear all previews — they're stale after reorder
+        items.forEach((it) => delete it.previewSrc);
+        previewActive = false;
 
         // Update thumbH from the new first image
         updateThumbHFromFirst();
@@ -394,7 +429,8 @@ function createWidget(node) {
       count > 0
         ? `${count} image${count !== 1 ? "s" : ""} queued · drag to reorder`
         : "";
-    clearBtn.style.display = count > 0 ? "inline-block" : "none";
+    clearBtn.style.display    = count > 0 ? "inline-block" : "none";
+    previewBtn.style.display  = count > 1 ? "inline-block" : "none";
 
     resizeNode();
   }
@@ -407,6 +443,82 @@ function createWidget(node) {
       thumbH = Math.max(20, Math.round(THUMB_W * h / w));
     } catch {
       thumbH = THUMB_W;
+    }
+  }
+
+  // ── canvas fit preview ─────────────────────────────────────────────────────
+
+  /** Loads any URL/dataURL as an HTMLImageElement. */
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload  = () => resolve(img);
+      img.onerror = () => reject(new Error(`Load failed: ${src}`));
+      img.src = src;
+    });
+  }
+
+  /**
+   * Renders a canvas-based fit preview for every non-first thumbnail.
+   * The first image dimensions become the target canvas size.
+   * mode = "letterbox" | "crop"  (reads fit_mode widget).
+   */
+  async function renderFitPreviews() {
+    if (items.length < 2) return;
+
+    const mode = getFitModeWidget()?.value ?? "letterbox";
+    previewBtn.textContent = "⏳ Rendering…";
+    previewBtn.disabled = true;
+
+    try {
+      // Get reference dimensions from image #0
+      const refImg = await loadImage(items[0].src);
+      const targetW = refImg.naturalWidth;
+      const targetH = refImg.naturalHeight;
+
+      // Render a preview canvas for each subsequent image
+      for (let i = 1; i < items.length; i++) {
+        try {
+          const srcImg = await loadImage(items[i].src);
+          const canvas = document.createElement("canvas");
+          canvas.width  = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+
+          if (mode === "letterbox") {
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(0, 0, targetW, targetH);
+            const scale = Math.min(targetW / srcImg.naturalWidth, targetH / srcImg.naturalHeight);
+            const dw = srcImg.naturalWidth  * scale;
+            const dh = srcImg.naturalHeight * scale;
+            const dx = (targetW - dw) / 2;
+            const dy = (targetH - dh) / 2;
+            ctx.drawImage(srcImg, dx, dy, dw, dh);
+          } else { // crop
+            const scale = Math.max(targetW / srcImg.naturalWidth, targetH / srcImg.naturalHeight);
+            const sw = targetW / scale;
+            const sh = targetH / scale;
+            const sx = (srcImg.naturalWidth  - sw) / 2;
+            const sy = (srcImg.naturalHeight - sh) / 2;
+            ctx.drawImage(srcImg, sx, sy, sw, sh, 0, 0, targetW, targetH);
+          }
+
+          items[i].previewSrc = canvas.toDataURL("image/jpeg", 0.92);
+        } catch (e) {
+          console.warn(`[MIL] Preview failed for ${items[i].filename}:`, e);
+        }
+      }
+
+      previewActive = true;
+      render(); // thumbnails now use previewSrc
+    } catch (e) {
+      statusLabel.textContent = `Preview error: ${e.message}`;
+      statusLabel.style.color = "#ff6666";
+    } finally {
+      previewBtn.textContent = "🔄 Preview Fit";
+      previewBtn.disabled = false;
+      // Button stays visible — user may change fit_mode and preview again
     }
   }
 
@@ -495,9 +607,12 @@ function createWidget(node) {
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
 
+  previewBtn.addEventListener("click", () => renderFitPreviews());
+
   clearBtn.addEventListener("click", () => {
     items  = [];
     thumbH = THUMB_W;
+    previewActive = false;
     render();
     persist();
   });
