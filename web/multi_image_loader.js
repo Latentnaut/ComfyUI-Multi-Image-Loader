@@ -224,7 +224,7 @@ function createWidget(node) {
 
   // Right-side button group
   const btnGroup = document.createElement("div");
-  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;`;
+  btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;flex-shrink:0;white-space:nowrap;`;
 
   const previewBtn = document.createElement("button");
   previewBtn.textContent = "🔄 Preview Fit";
