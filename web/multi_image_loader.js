@@ -228,7 +228,7 @@ function createWidget(node) {
     gap: 3px;
   `;
   const statusLabel = document.createElement("span");
-  statusLabel.style.whiteSpace = "pre-line";
+  statusLabel.style.textAlign = "center";
 
   // Right-side button group
   const btnGroup = document.createElement("div");
@@ -436,7 +436,7 @@ function createWidget(node) {
     const count = items.length;
     statusLabel.textContent =
       count > 0
-        ? `${count} image${count !== 1 ? "s" : ""} queued\nDrag to reorder`
+        ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
         : "";
     clearBtn.style.display    = count > 0 ? "inline-block" : "none";
     previewBtn.style.display  = count > 1 ? "inline-block" : "none";
