@@ -22,9 +22,10 @@ const NODE_PADDING_V = 12;
 const DROPZONE_H     = 110;
 const STATUS_H       = 46;
 const GAP            = 6;
-const THUMB_W        = 72;
-const THUMB_GAP      = 5;
-const MAX_GRID_ROWS  = 4;   // rows visible before scroll kicks in
+const THUMB_W            = 72;
+const THUMB_GAP          = 5;
+const MAX_GRID_ROWS      = 4;   // rows visible before scroll kicks in
+const COMPACT_DROPZONE_H = 32;  // collapsed height when images are loaded
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,16 @@ function injectStyles() {
       pointer-events: none;
       font-weight: bold;
     }
+    .mil-btn { transition: background 0.15s, border-color 0.15s; }
+    .mil-scroll-fade {
+      position: absolute; bottom: 0; left: 0; right: 7px;
+      height: 24px;
+      background: linear-gradient(transparent, rgba(30,37,53,0.92));
+      pointer-events: none;
+      display: none;
+      z-index: 1;
+      border-radius: 0 0 4px 4px;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -120,16 +131,18 @@ function computeIdealHeight(count, nodeWidth, thumbH) {
   const rows     = count > 0 ? Math.ceil(count / cols) : 0;
   const visRows  = Math.min(rows, MAX_GRID_ROWS);
   const gridH    = visRows > 0 ? visRows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
+  const dropH    = count > 0 ? COMPACT_DROPZONE_H : DROPZONE_H;
+  const statH    = count > 0 ? STATUS_H : 0;
   const extraGap = rows > 0 ? GAP * 2 : GAP;
 
   return (
-    NODE_HEADER_H  +
-    NODE_SLOT_H * 3 +  // output slot + image_list + fit_mode widgets
-    NODE_PADDING_V +
-    DROPZONE_H    +
-    extraGap      +
-    gridH         +
-    STATUS_H      +
+    NODE_HEADER_H   +
+    NODE_SLOT_H * 3 +
+    NODE_PADDING_V  +
+    dropH           +
+    extraGap        +
+    gridH           +
+    statH           +
     8
   );
 }
@@ -170,7 +183,7 @@ function createWidget(node) {
     font-size: 12px;
     font-family: sans-serif;
     background: rgba(60, 90, 150, 0.15);
-    transition: background 0.2s, border-color 0.2s;
+    transition: background 0.2s, border-color 0.2s, min-height 0.15s, padding 0.15s;
     user-select: none;
     min-height: ${DROPZONE_H}px;
     box-sizing: border-box;
@@ -200,6 +213,16 @@ function createWidget(node) {
   root.appendChild(fileInput);
 
   // ── thumbnail grid ────────────────────────────────────────────────────────
+  const gridWrapper = document.createElement("div");
+  gridWrapper.style.cssText = `
+    position: relative;
+    flex-grow: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  `;
+  const scrollFade = document.createElement("div");
+  scrollFade.className = "mil-scroll-fade";
   const grid = document.createElement("div");
   grid.className = "mil-grid";
   grid.style.cssText = `
@@ -211,7 +234,10 @@ function createWidget(node) {
     padding: 2px;
     flex-grow: 1;
     min-height: 0;
+    box-sizing: border-box;
   `;
+  gridWrapper.appendChild(grid);
+  gridWrapper.appendChild(scrollFade);
 
   // ── status bar ────────────────────────────────────────────────────────────
   const statusBar = document.createElement("div");
@@ -239,6 +265,7 @@ function createWidget(node) {
   const previewBtn = document.createElement("button");
   previewBtn.textContent = "🔄 Preview Fit";
   previewBtn.title = "Render letterbox/crop preview for all thumbnails";
+  previewBtn.className = "mil-btn";
   previewBtn.style.cssText = `
     background: #1a3a28;
     color: #44cc88;
@@ -249,9 +276,18 @@ function createWidget(node) {
     cursor: pointer;
     display: none;
   `;
+  previewBtn.addEventListener("mouseenter", () => {
+    previewBtn.style.background  = "#225540";
+    previewBtn.style.borderColor = "#44cc88";
+  });
+  previewBtn.addEventListener("mouseleave", () => {
+    previewBtn.style.background  = "#1a3a28";
+    previewBtn.style.borderColor = "#336644";
+  });
 
   const clearBtn = document.createElement("button");
   clearBtn.textContent = "✕ Clear all";
+  clearBtn.className = "mil-btn";
   clearBtn.style.cssText = `
     background: #3a2020;
     color: #ff8888;
@@ -262,13 +298,21 @@ function createWidget(node) {
     cursor: pointer;
     display: none;
   `;
+  clearBtn.addEventListener("mouseenter", () => {
+    clearBtn.style.background  = "#552828";
+    clearBtn.style.borderColor = "#ff8888";
+  });
+  clearBtn.addEventListener("mouseleave", () => {
+    clearBtn.style.background  = "#3a2020";
+    clearBtn.style.borderColor = "#884444";
+  });
   btnGroup.appendChild(previewBtn);
   btnGroup.appendChild(clearBtn);
   statusBar.appendChild(statusLabel);
   statusBar.appendChild(btnGroup);
 
   root.appendChild(dropZone);
-  root.appendChild(grid);
+  root.appendChild(gridWrapper);
   root.appendChild(statusBar);
 
   // ── state ─────────────────────────────────────────────────────────────────
@@ -304,15 +348,42 @@ function createWidget(node) {
     node.setSize([curW, idealH]);
   }
 
+  function updateScrollFade() {
+    const hasOverflow = grid.scrollHeight > grid.clientHeight + 2;
+    const atBottom    = grid.scrollHeight - grid.scrollTop <= grid.clientHeight + 4;
+    scrollFade.style.display = (hasOverflow && !atBottom) ? "block" : "none";
+  }
+  grid.addEventListener("scroll", updateScrollFade);
+
+  function updateDropZone(count) {
+    if (count > 0) {
+      dropZone.style.minHeight     = `${COMPACT_DROPZONE_H}px`;
+      dropZone.style.padding       = "0 12px";
+      dropZone.style.flexDirection = "row";
+      dropZone.innerHTML = `<span style="font-size:10px;opacity:0.6;">＋ Drop or click to add more images</span>`;
+    } else {
+      dropZone.style.minHeight     = `${DROPZONE_H}px`;
+      dropZone.style.padding       = "14px 10px";
+      dropZone.style.flexDirection = "column";
+      dropZone.innerHTML = `
+        <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
+        <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
+        <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
+        <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using first image as canvas reference</div>
+      `;
+    }
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   function render() {
+    statusLabel.style.color = "#8899bb"; // always reset error colour
     grid.innerHTML = "";
     const tw = THUMB_W;
     const th = thumbH;
 
     items.forEach((item, idx) => {
-      // ── wrapper ────────────────────────────────────────────────────────
+      // ── wrapper ──────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
       wrapper.className = "mil-thumb";
       wrapper.draggable = true;
@@ -325,16 +396,16 @@ function createWidget(node) {
         overflow: hidden;
         border: ${idx === 0 ? "2px solid #00c880" : "1px solid #3a5080"};
         flex-shrink: 0;
+        background: #1a1f2e;
       `;
 
-      // ── image ──────────────────────────────────────────────────────────
+      // ── image: contain so thumbnails are not misleadingly cropped ────────
       const img = document.createElement("img");
-      // Show canvas-rendered preview if available, otherwise original src
       img.src = item.previewSrc || item.src;
-      img.style.cssText = `width:${tw}px;height:${th}px;object-fit:cover;display:block;pointer-events:none;`;
+      img.style.cssText = `width:${tw}px;height:${th}px;object-fit:contain;display:block;pointer-events:none;`;
       img.title = item.filename;
 
-      // ── "★ First" badge on image 0 ──────────────────────────────────
+      // ── "★ First" badge on image 0 (top-left) ──────────────────────
       if (idx === 0) {
         const firstBadge = document.createElement("span");
         firstBadge.className = "mil-first-badge";
@@ -342,18 +413,18 @@ function createWidget(node) {
         wrapper.appendChild(firstBadge);
       }
 
-      // ── numeric badge (bottom-left) ────────────────────────────────────
+      // ── numeric badge (bottom-right, clear of ✕ button) ──────────────
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
       badge.style.cssText = `
-        position:absolute;bottom:2px;left:3px;
+        position:absolute;bottom:2px;right:2px;
         background:rgba(0,0,0,0.65);color:#fff;
         font-size:9px;font-family:sans-serif;
         padding:0 3px;border-radius:3px;
         pointer-events:none;
       `;
 
-      // ── remove button ──────────────────────────────────────────────────
+      // ── remove button (top-right) ──────────────────────────────────
       const removeBtn = document.createElement("button");
       removeBtn.textContent = "✕";
       removeBtn.title = "Remove";
@@ -370,17 +441,18 @@ function createWidget(node) {
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         items.splice(idx, 1);
+        items.forEach((it) => delete it.previewSrc); // clear stale previews
+        previewActive = false;
         if (items.length === 0) thumbH = THUMB_W;
         render();
         persist();
       });
 
-      // ── drag-to-reorder events ─────────────────────────────────────────
+      // ── drag-to-reorder events ────────────────────────────────────────
       wrapper.addEventListener("dragstart", (e) => {
         dragSrcIdx = idx;
         wrapper.classList.add("mil-dragging");
         e.dataTransfer.effectAllowed = "move";
-        // Needed for Firefox
         e.dataTransfer.setData("text/plain", String(idx));
       });
 
@@ -436,14 +508,16 @@ function createWidget(node) {
     });
 
     const count = items.length;
-    statusLabel.textContent =
-      count > 0
-        ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
-        : "";
-    clearBtn.style.display    = count > 0 ? "inline-block" : "none";
-    previewBtn.style.display  = count > 1 ? "inline-block" : "none";
+    updateDropZone(count);
+    statusBar.style.display  = count > 0 ? "flex" : "none";
+    statusLabel.textContent  = count > 0
+      ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
+      : "";
+    clearBtn.style.display   = count > 0 ? "inline-block" : "none";
+    previewBtn.style.display = count > 1 ? "inline-block" : "none";
 
     resizeNode();
+    requestAnimationFrame(updateScrollFade);
   }
 
   // Update thumbH from whatever image is now first
@@ -606,8 +680,9 @@ function createWidget(node) {
     dropZone.style.background = "rgba(90, 122, 191, 0.45)";
     dropZone.style.borderColor = "#aaccff";
   });
-  dropZone.addEventListener("dragleave", () => {
-    dropZone.style.background = "rgba(60, 90, 150, 0.15)";
+  dropZone.addEventListener("dragleave", (e) => {
+    if (dropZone.contains(e.relatedTarget)) return; // cursor still inside
+    dropZone.style.background  = "rgba(60, 90, 150, 0.15)";
     dropZone.style.borderColor = "#5a7abf";
   });
   dropZone.addEventListener("drop", (e) => {
