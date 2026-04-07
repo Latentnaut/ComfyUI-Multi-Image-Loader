@@ -1019,6 +1019,21 @@ function createWidget(node) {
     node.setSize([curW, idealH]);
     render();
   };
+  root._onAspectRatioChange = async () => {
+    // Called whenever aspect_ratio, fit_mode, or megapixels changes.
+    // Re-renders all thumbnails and resizes node to reflect the new canvas shape.
+    if (items.length === 0) return;
+    await updateThumbHFromFirst();
+    // Clear cached previews so they get regenerated
+    items.forEach(it => delete it.previewSrc);
+    previewActive = false;
+    render();
+    resizeNode();
+    // Regenerate fit previews for all images
+    await renderFitPreviews();
+    // Regenerate crop previews for items that have a crop transform
+    await renderCropPreviews();
+  };
 
   // ── openCropEditor ───────────────────────────────────────────────────
   function openCropEditor(startIdx) {
@@ -1514,6 +1529,18 @@ app.registerExtension({
             node._milDomWidget?.element?._renderWithResize?.();
           };
         }
+        // Auto-preview when aspect_ratio, fit_mode, or megapixels change
+        const autoPreviewWidgets = ["aspect_ratio", "megapixels"];
+        autoPreviewWidgets.forEach(wName => {
+          const w = node.widgets?.find(ww => ww.name === wName);
+          if (w) {
+            const origCb = w.callback;
+            w.callback = function (...args) {
+              origCb?.apply(this, args);
+              node._milDomWidget?.element?._onAspectRatioChange?.();
+            };
+          }
+        });
         node.setDirtyCanvas(true);
       }, 0);
 
