@@ -100,6 +100,19 @@ async def preview_transform_handler(request):
 
 # ─── Node ─────────────────────────────────────────────────────────────────────
 
+def _scale_to_megapixels(img: Image.Image, megapixels: float) -> Image.Image:
+    """Scale `img` down if it exceeds `megapixels` * 1 000 000 total pixels.
+    Aspect ratio is preserved. Never upscales."""
+    if megapixels <= 0:
+        return img
+    target_px = int(megapixels * 1_000_000)
+    w, h = img.size
+    if w * h <= target_px:
+        return img
+    scale = (target_px / (w * h)) ** 0.5
+    return img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+
+
 def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
     """
     Resize `img` to (target_w, target_h) using the requested fit strategy.
@@ -293,6 +306,7 @@ class MultiImageLoader:
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list": ("STRING", {"default": "[]"}),
                 "fit_mode": (["letterbox", "crop"],),
+                "megapixels": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
                 "thumb_size": (["small", "medium", "large"],),  # UI-only
                 "crop_data":  ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
             },
@@ -305,10 +319,10 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", thumb_size="medium", crop_data="{}"):
-        return hashlib.md5((image_list + crop_data).encode()).hexdigest()
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+        return hashlib.md5((image_list + crop_data + str(megapixels)).encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox", thumb_size="medium", crop_data="{}"):
+    def load_images(self, image_list="[]", fit_mode="letterbox", megapixels=1.0, thumb_size="medium", crop_data="{}"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -337,8 +351,12 @@ class MultiImageLoader:
                 img = ImageOps.exif_transpose(img)
                 img = img.convert("RGB")
 
+                # Scale down to megapixel budget before anything else
+                img = _scale_to_megapixels(img, megapixels)
+
                 if ref_w is None:
                     ref_w, ref_h = img.size
+                    print(f"[MultiImageLoader] ref size: {ref_w}×{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
 
                 t = transforms.get(fname)
                 if t:
