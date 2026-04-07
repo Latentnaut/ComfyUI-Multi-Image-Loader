@@ -650,6 +650,28 @@ function createWidget(node) {
     statusLabel.textContent  = count > 0
       ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
       : "";
+
+    if (count > 0) {
+      (async () => {
+        try {
+          const { w, h } = await getImageDimensions(items[0].src);
+          const mpWidget = node.widgets?.find(wid => wid.name === "megapixels");
+          const mp = mpWidget ? mpWidget.value : 1.0;
+          let mw = w, mh = h;
+          if (mp > 0) {
+            const targetPx = mp * 1000000;
+            if (w * h > targetPx) {
+              const scale = Math.sqrt(targetPx / (w * h));
+              mw = Math.max(1, Math.round(w * scale));
+              mh = Math.max(1, Math.round(h * scale));
+            }
+          }
+          statusLabel.textContent = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${mw} x ${mh}`;
+        } catch(e) {
+          // ignore error, keep default text
+        }
+      })();
+    }
     clearBtn.style.display   = count > 0 ? "inline-block" : "none";
     previewBtn.style.display = count > 1 ? "inline-block" : "none";
 
