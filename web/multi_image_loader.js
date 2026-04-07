@@ -641,32 +641,22 @@ function createWidget(node) {
       });
       copyBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        try {
-          const imgEl = new Image();
-          imgEl.crossOrigin = "anonymous";
-          imgEl.onload = () => {
-            const cvs = document.createElement("canvas");
-            cvs.width = imgEl.naturalWidth;
-            cvs.height = imgEl.naturalHeight;
-            cvs.getContext("2d").drawImage(imgEl, 0, 0);
-            cvs.toBlob(async (blob) => {
-              if (blob) {
-                try {
-                  await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
-                  copyBtn.style.color = "#5f5";
-                } catch(err) {
-                  copyBtn.style.color = "#f55";
-                  console.error("[MIL] Clipboard write failed:", err);
-                }
-              }
-              setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
-            }, "image/png");
-          };
-          imgEl.src = item.previewSrc || item.src;
-        } catch(err) {
-          copyBtn.style.color = "#f55";
-          setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
-        }
+        copyBtn.textContent = "⏳";
+        (async () => {
+          try {
+            const dataUrl = await renderItemToDataUrl(item, idx);
+            const resp = await fetch(dataUrl);
+            const blob = await resp.blob();
+            await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
+            copyBtn.style.color = "#5f5";
+          } catch(err) {
+            copyBtn.style.color = "#f55";
+            console.error("[MIL] Copy failed:", err);
+          } finally {
+            copyBtn.textContent = "⎘";
+            setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
+          }
+        })();
       });
 
       // ── crop-active badge (bottom-right, always visible) ──────────────────
@@ -748,6 +738,89 @@ function createWidget(node) {
       img.onerror = () => reject(new Error(`Load failed: ${src}`));
       img.src = src;
     });
+  }
+
+  /**
+   * Renders a single item to a PNG data URL using the same composite pipeline
+   * as `renderCropPreviews` and `renderFitPreviews`. Used by the copy button.
+   * - idx === 0 (reference image): returns raw src (no fitting needed)
+   * - Has crop transform + inpaint bg: fetches from Python server
+   * - Has crop transform + solid bg:   canvas crop/transform path
+   * - No crop transform, idx > 0:      letterbox/crop fit against ref dims
+   */
+  async function renderItemToDataUrl(item, idx) {
+    // Reference image — return as-is
+    if (idx === 0) {
+      return item.src;
+    }
+
+    // Get reference dims from first image
+    const r0 = await getImageDimensions(items[0].src);
+    const refW = r0.w, refH = r0.h;
+
+    const t = cropMap[item.filename];
+
+    if (t) {
+      // Crop-transform path
+      const bgRaw = t.bg ?? "#808080";
+      const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
+
+      if (isInpaint) {
+        const resp = await fetch("/multi_image_loader/preview", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({filename: item.filename, transform: t, refW, refH})
+        });
+        if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+        const { dataUrl } = await resp.json();
+        return dataUrl;
+      }
+
+      // Solid-fill crop path
+      const el = await loadImage(item.src);
+      const cvs = document.createElement("canvas");
+      cvs.width = refW; cvs.height = refH;
+      const ctx = cvs.getContext("2d");
+      const bgC = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
+                : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
+      ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
+      const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
+      const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
+      const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
+      const rW = el.naturalWidth * cosA + el.naturalHeight * sinA;
+      const rH = el.naturalWidth * sinA + el.naturalHeight * cosA;
+      const bf = Math.min(refW / rW, refH / rH);
+      const eff = bf * sc;
+      const dw = el.naturalWidth * eff, dh = el.naturalHeight * eff;
+      ctx.save();
+      ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
+      ctx.rotate(rot);
+      ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
+      ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+      return cvs.toDataURL("image/png");
+    }
+
+    // No crop transform — apply letterbox/crop fit vs reference dims
+    const mode = getFitModeWidget()?.value ?? "letterbox";
+    const el = await loadImage(item.src);
+    const cvs = document.createElement("canvas");
+    cvs.width = refW; cvs.height = refH;
+    const ctx = cvs.getContext("2d");
+
+    if (mode === "letterbox") {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, refW, refH);
+      const scale = Math.min(refW / el.naturalWidth, refH / el.naturalHeight);
+      const dw = el.naturalWidth * scale, dh = el.naturalHeight * scale;
+      ctx.drawImage(el, (refW - dw) / 2, (refH - dh) / 2, dw, dh);
+    } else { // crop
+      const scale = Math.max(refW / el.naturalWidth, refH / el.naturalHeight);
+      const sw = refW / scale, sh = refH / scale;
+      const sx = (el.naturalWidth - sw) / 2, sy = (el.naturalHeight - sh) / 2;
+      ctx.drawImage(el, sx, sy, sw, sh, 0, 0, refW, refH);
+    }
+    return cvs.toDataURL("image/png");
   }
 
   /**
