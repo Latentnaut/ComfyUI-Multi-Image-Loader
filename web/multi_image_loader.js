@@ -1464,12 +1464,20 @@ function createWidget(node) {
 
     // ── init ───────────────────────────────────────────────
     async function init() {
-      // Prime edRefW/H from image[0]
-      if (items.length>0) await new Promise(r=>{
-        const el0=new Image(); el0.crossOrigin="anonymous";
-        el0.onload=()=>{ edRefW=el0.naturalWidth; edRefH=el0.naturalHeight; r(); };
-        el0.onerror=r; el0.src=items[0].src;
-      });
+      // Prime edRefW/H from aspect_ratio + megapixels (or first image if "none")
+      if (items.length > 0) {
+        try {
+          const { refW, refH } = await computeRefDims();
+          edRefW = refW; edRefH = refH;
+        } catch {
+          // fallback: load first image naturally
+          await new Promise(r => {
+            const el0 = new Image(); el0.crossOrigin = "anonymous";
+            el0.onload = () => { edRefW = el0.naturalWidth; edRefH = el0.naturalHeight; r(); };
+            el0.onerror = r; el0.src = items[0].src;
+          });
+        }
+      }
       syncCvs();
       await loadIdx(startIdx);
     }
