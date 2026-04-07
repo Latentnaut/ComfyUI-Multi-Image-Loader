@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import math
 import hashlib
@@ -97,6 +97,83 @@ async def preview_transform_handler(request):
         import traceback
         print(f"[MIL preview] error: {e}\n{traceback.format_exc()}")
         return web.Response(status=500, text=str(e))
+
+
+# ─── Rembg route ──────────────────────────────────────────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/rembg")
+async def rembg_handler(request):
+    """Apply rembg background removal to an uploaded image.
+    Overwrites the source file in the input dir as PNG RGBA.
+    Returns a base64 PNG data URL for immediate editor preview.
+    """
+    import asyncio, base64, io as _io, sys, subprocess
+
+    try:
+        data = await request.json()
+        filename  = data.get("filename", "")
+        model     = data.get("model", "isnet-general-use")
+        post_proc = bool(data.get("post_processing", False))
+        a_matt    = bool(data.get("alpha_matting", False))
+        fg_thr    = int(data.get("fg_threshold", 240))
+        bg_thr    = int(data.get("bg_threshold", 10))
+        erode     = int(data.get("erode_size", 10))
+        only_mask = bool(data.get("only_mask", False))
+
+        if not filename:
+            return web.Response(status=400, text="Missing filename")
+
+        filename = os.path.basename(filename)
+        path = os.path.join(folder_paths.get_input_directory(), filename)
+        if not os.path.isfile(path):
+            return web.Response(status=404, text=f"File not found: {filename}")
+
+        # Lazy install rembg if not available
+        try:
+            import rembg as _rembg_test  # noqa
+        except ImportError:
+            print("[MIL rembg] rembg not found — installing…")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "rembg"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
+            )
+
+        from rembg import remove, new_session
+
+        # Store rembg models alongside other ComfyUI models
+        os.environ["U2NET_HOME"] = os.path.join(folder_paths.models_dir, "rembg")
+        os.makedirs(os.environ["U2NET_HOME"], exist_ok=True)
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            img = Image.open(path).convert("RGBA")
+            result = remove(
+                img,
+                session=new_session(model),
+                post_process_mask=post_proc,
+                alpha_matting=a_matt,
+                alpha_matting_foreground_threshold=fg_thr,
+                alpha_matting_background_threshold=bg_thr,
+                alpha_matting_erode_size=erode,
+                only_mask=only_mask,
+            )
+            result = result.convert("RGBA")
+            # Overwrite source file as RGBA PNG
+            result.save(path, format="PNG")
+            # Encode for immediate preview
+            buf = _io.BytesIO()
+            result.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        b64 = await loop.run_in_executor(None, _run)
+        print(f"[MIL rembg] done: {filename}  model={model}")
+        return web.json_response({"success": True, "dataUrl": f"data:image/png;base64,{b64}"})
+
+    except Exception as e:
+        import traceback
+        print(f"[MIL rembg] error: {e}\n{traceback.format_exc()}")
+        return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
 # ─── Node ─────────────────────────────────────────────────────────────────────

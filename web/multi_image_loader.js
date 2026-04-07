@@ -1,11 +1,11 @@
 /**
- * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.4
+ * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.6
  *
- * Changes in v1.5:
- *  - "🔄 Preview Fit" button: appears when drag-reorder changes image #1
- *  - Clicking renders a canvas-based letterbox/crop preview for every thumbnail
- *  - Preview is purely visual; files are not modified
- *  - Button auto-hides after preview is applied or list changes
+ * Changes in v1.6:
+ *  - "Remove Background" section in Crop Editor modal panel
+ *  - Powered by rembg via /multi_image_loader/rembg backend endpoint
+ *  - Model selector, post-process/alpha-matting options, collapsible advanced params
+ *  - Result overwrites source file as RGBA PNG; canvas updates immediately
  */
 
 import { app } from "../../scripts/app.js";
@@ -1206,6 +1206,96 @@ function createWidget(node) {
 
     pnlBody.appendChild(mkSec("Transform"));
     pnlBody.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0;edBg="#808080"; syncRotUI(); syncBgUI(); updLbl(); }));
+
+    // ── Remove Background ───────────────────────────────────────
+    pnlBody.appendChild(mkSec("Remove Background"));
+
+    // Model select
+    const rbModelSel = document.createElement("select");
+    rbModelSel.title = "rembg model";
+    rbModelSel.style.cssText = "width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer;";
+    [
+      ["isnet-general-use", "isnet-general-use ★"],
+      ["u2net",             "u2net"],
+      ["u2net_human_seg",   "u2net human"],
+      ["isnet-anime",       "isnet-anime"],
+      ["silueta",           "silueta"],
+      ["u2netp",            "u2netp (fast)"],
+    ].forEach(([v, l]) => {
+      const o = document.createElement("option"); o.value = v; o.textContent = l; rbModelSel.appendChild(o);
+    });
+    pnlBody.appendChild(rbModelSel);
+
+    // Status label
+    const rbStatus = document.createElement("div");
+    rbStatus.style.cssText = "font-size:9px;text-align:center;min-height:11px;color:#666;transition:color 0.2s;";
+
+    // Main button
+    const rbBtn = document.createElement("button");
+    rbBtn.textContent = "\uD83E\uDE84 Remove BG";
+    rbBtn.style.cssText = [
+      "background:#1a1a3a;color:#88aaff;border:1px solid #334488;",
+      "border-radius:6px;padding:7px;font-size:11px;font-weight:600;",
+      "cursor:pointer;width:100%;margin-top:3px;",
+      "transition:background 0.15s,border-color 0.15s;",
+    ].join("");
+    rbBtn.addEventListener("mouseenter", () => { rbBtn.style.background = "#222255"; rbBtn.style.borderColor = "#5566cc"; });
+    rbBtn.addEventListener("mouseleave", () => { rbBtn.style.background = "#1a1a3a"; rbBtn.style.borderColor = "#334488"; });
+
+    async function doRembg() {
+      const fn = items[curIdx]?.filename;
+      if (!fn) return;
+      rbBtn.textContent = "\u23F3 Processing\u2026";
+      rbBtn.disabled = true;
+      rbStatus.textContent = "";
+      rbStatus.style.color = "#888";
+      try {
+        const resp = await fetch("/multi_image_loader/rembg", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: fn,
+            model:    rbModelSel.value,
+          }),
+        });
+        const json = await resp.json();
+        if (!json.success) throw new Error(json.error || "Unknown error");
+
+        // Update the item's src to the new transparent PNG
+        items[curIdx].src = json.dataUrl;
+        delete items[curIdx].previewSrc;
+
+        rbStatus.textContent = "\u2713 Done — BG removed";
+        rbStatus.style.color = "#44cc88";
+
+        // Reload ONLY the image element — preserve all editor state (bg, pan, zoom, etc.)
+        await new Promise(res => {
+          const el = new Image();
+          el.crossOrigin = "anonymous";
+          el.onload = () => {
+            edImg = el; edNatW = el.naturalWidth; edNatH = el.naturalHeight;
+            syncCvs(); redraw(); res();
+          };
+          el.onerror = res;
+          el.src = json.dataUrl;
+        });
+        // Refresh thumbnail grid
+        render();
+      } catch (e) {
+        console.error("[MIL rembg]", e);
+        rbStatus.textContent = "\u2717 " + e.message;
+        rbStatus.style.color = "#ff6666";
+      } finally {
+        rbBtn.textContent = "\uD83E\uDE84 Remove BG";
+        rbBtn.disabled = false;
+      }
+    }
+
+    rbBtn.addEventListener("click", doRembg);
+    pnlBody.appendChild(rbStatus);
+    pnlBody.appendChild(rbBtn);
+
+
     pnlFoot.appendChild(zoomLbl);
     pnlFoot.appendChild(applyB);
     pnlFoot.appendChild(cancelB);
