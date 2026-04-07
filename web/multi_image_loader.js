@@ -501,7 +501,7 @@ function createWidget(node) {
         overflow: hidden;
         border: 1px solid #3a5080;
         flex-shrink: 0;
-        background: #1a1f2e;
+        background: #000;
       `;
 
       // ── image ─────────────────────────────────────────────────────────────
