@@ -341,6 +341,10 @@ function createWidget(node) {
     return node.widgets?.find((w) => w.name === "image_list");
   }
 
+  function getAspectRatioWidget() {
+    return node.widgets?.find((w) => w.name === "aspect_ratio");
+  }
+
   function getFitModeWidget() {
     return node.widgets?.find((w) => w.name === "fit_mode");
   }
@@ -367,13 +371,28 @@ function createWidget(node) {
 
   // Auto-update thumbnails after crop editor Apply.
   // Draws each image through the same canvas transform as the editor.
+  async function computeRefDims() {
+    const ar = getAspectRatioWidget()?.value ?? "none";
+    const mp = node.widgets?.find(w => w.name === "megapixels")?.value ?? 1.0;
+    if (ar !== "none") {
+      const [aw, ah] = ar.split(":").map(Number);
+      const totalPx = Math.max(1, mp * 1_000_000);
+      const refW = Math.max(1, Math.round(Math.sqrt(totalPx * aw / ah)));
+      const refH = Math.max(1, Math.round(Math.sqrt(totalPx * ah / aw)));
+      return { refW, refH };
+    }
+    // "none" → use first image natural dims
+    const r0 = await getImageDimensions(items[0].src);
+    return { refW: r0.w, refH: r0.h };
+  }
+
   async function renderCropPreviews() {
     if (items.length === 0) return;
-    // Get reference dims from first image
+    // Get reference dims (aspect_ratio-aware)
     let refW, refH;
     try {
-      const r0 = await getImageDimensions(items[0].src);
-      refW = r0.w; refH = r0.h;
+      const dims = await computeRefDims();
+      refW = dims.refW; refH = dims.refH;
     } catch { return; }
 
     for (const item of items) {
@@ -689,34 +708,33 @@ function createWidget(node) {
     if (count > 0) {
       (async () => {
         try {
-          const { w, h } = await getImageDimensions(items[0].src);
-          const mpWidget = node.widgets?.find(wid => wid.name === "megapixels");
-          const mp = mpWidget ? mpWidget.value : 1.0;
-          let mw = w, mh = h;
-          if (mp > 0) {
-            const targetPx = mp * 1000000;
-            if (w * h > targetPx) {
-              const scale = Math.sqrt(targetPx / (w * h));
-              mw = Math.max(1, Math.round(w * scale));
-              mh = Math.max(1, Math.round(h * scale));
-            }
-          }
-          statusLabel.textContent = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${mw} x ${mh}`;
+          const { refW, refH } = await computeRefDims();
+          const ar = getAspectRatioWidget()?.value ?? "none";
+          const arLabel = ar !== "none" ? ` · ${ar}` : "";
+          statusLabel.textContent = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${arLabel}`;
         } catch(e) {
           // ignore error, keep default text
         }
       })();
     }
     clearBtn.style.display   = count > 0 ? "inline-block" : "none";
-    previewBtn.style.display = count > 1 ? "inline-block" : "none";
+    // Show preview when AR is set (even 1 image) or when there are 2+ images
+    const arVal = getAspectRatioWidget()?.value ?? "none";
+    previewBtn.style.display = (count > 0 && arVal !== "none") || count > 1 ? "inline-block" : "none";
 
     resizeNode();
     requestAnimationFrame(updateScrollFade);
   }
 
-  // Update thumbH from whatever image is now first
+  // Update thumbH: respects aspect_ratio if set, otherwise uses first image
   async function updateThumbHFromFirst() {
     if (items.length === 0) { thumbH = THUMB_W; return; }
+    const ar = getAspectRatioWidget()?.value ?? "none";
+    if (ar !== "none") {
+      const [aw, ah] = ar.split(":").map(Number);
+      thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
+      return;
+    }
     try {
       const { w, h } = await getImageDimensions(items[0].src);
       thumbH = Math.max(20, Math.round(THUMB_W * h / w));
@@ -741,20 +759,20 @@ function createWidget(node) {
   /**
    * Renders a single item to a PNG data URL using the same composite pipeline
    * as `renderCropPreviews` and `renderFitPreviews`. Used by the copy button.
-   * - idx === 0 (reference image): returns raw src (no fitting needed)
    * - Has crop transform + inpaint bg: fetches from Python server
    * - Has crop transform + solid bg:   canvas crop/transform path
-   * - No crop transform, idx > 0:      letterbox/crop fit against ref dims
+   * - No crop transform:               letterbox/crop fit against ref dims
+   * When aspect_ratio is set, even idx=0 is fitted to the fixed canvas.
    */
   async function renderItemToDataUrl(item, idx) {
-    // Reference image — return as-is
-    if (idx === 0) {
+    // Reference image with no aspect_ratio override — return raw
+    const ar = getAspectRatioWidget()?.value ?? "none";
+    if (idx === 0 && ar === "none") {
       return item.src;
     }
 
-    // Get reference dims from first image
-    const r0 = await getImageDimensions(items[0].src);
-    const refW = r0.w, refH = r0.h;
+    // Get reference dims (aspect_ratio-aware)
+    const { refW, refH } = await computeRefDims();
 
     const t = cropMap[item.filename];
 
@@ -822,25 +840,27 @@ function createWidget(node) {
   }
 
   /**
-   * Renders a canvas-based fit preview for every non-first thumbnail.
-   * The first image dimensions become the target canvas size.
+   * Renders a canvas-based fit preview for thumbnails.
+   * When aspect_ratio is set: renders ALL images (including #0) to the fixed canvas.
+   * When aspect_ratio is "none": renders images #1+ against image #0 as reference.
    * mode = "letterbox" | "crop"  (reads fit_mode widget).
    */
   async function renderFitPreviews() {
-    if (items.length < 2) return;
+    if (items.length < 1) return;
 
     const mode = getFitModeWidget()?.value ?? "letterbox";
+    const ar = getAspectRatioWidget()?.value ?? "none";
     previewBtn.textContent = "⏳ Rendering…";
     previewBtn.disabled = true;
 
     try {
-      // Get reference dimensions from image #0
-      const refImg = await loadImage(items[0].src);
-      const targetW = refImg.naturalWidth;
-      const targetH = refImg.naturalHeight;
+      // Get reference dimensions (aspect_ratio-aware)
+      const { refW: targetW, refH: targetH } = await computeRefDims();
 
-      // Render a preview canvas for each subsequent image
-      for (let i = 1; i < items.length; i++) {
+      // When aspect_ratio is set, render ALL images; otherwise start from idx=1
+      const startIdx = ar !== "none" ? 0 : 1;
+
+      for (let i = startIdx; i < items.length; i++) {
         try {
           const srcImg = await loadImage(items[i].src);
           const canvas = document.createElement("canvas");

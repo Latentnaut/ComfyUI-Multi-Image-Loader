@@ -1,5 +1,6 @@
-import os
+﻿import os
 import json
+import math
 import hashlib
 import numpy as np
 import torch
@@ -111,6 +112,21 @@ def _scale_to_megapixels(img: Image.Image, megapixels: float) -> Image.Image:
         return img
     scale = (target_px / (w * h)) ** 0.5
     return img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+
+
+def _compute_canvas_dims(aspect_ratio: str, megapixels: float, first_img_size=None):
+    """
+    Return (canvas_w, canvas_h) based on the selected aspect ratio.
+    When aspect_ratio is 'none', returns first_img_size unchanged.
+    When set, computes dimensions whose product ≈ megapixels * 1 000 000.
+    """
+    if aspect_ratio == "none" or not aspect_ratio:
+        return first_img_size  # may be None if not yet known
+    aw, ah = map(int, aspect_ratio.split(":"))
+    total_px = max(1, megapixels * 1_000_000)
+    w = max(1, round(math.sqrt(total_px * aw / ah)))
+    h = max(1, round(math.sqrt(total_px * ah / aw)))
+    return (w, h)
 
 
 def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
@@ -304,11 +320,13 @@ class MultiImageLoader:
             "required": {},
             "optional": {
                 # JSON list of filenames persisted in the workflow JSON.
-                "image_list": ("STRING", {"default": "[]"}),
-                "fit_mode": (["letterbox", "crop"],),
-                "megapixels": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
-                "thumb_size": (["small", "medium", "large"],),  # UI-only
-                "crop_data":  ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
+                "image_list":   ("STRING", {"default": "[]"}),
+                "fit_mode":     (["letterbox", "crop"],),
+                "aspect_ratio": (["none", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+                                 {"default": "none"}),
+                "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
+                "thumb_size":   (["small", "medium", "large"],),  # UI-only
+                "crop_data":    ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
             },
         }
 
@@ -319,10 +337,10 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", megapixels=1.0, thumb_size="medium", crop_data="{}"):
-        return hashlib.md5((image_list + crop_data + str(megapixels)).encode()).hexdigest()
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+        return hashlib.md5((image_list + crop_data + aspect_ratio + str(megapixels)).encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+    def load_images(self, image_list="[]", fit_mode="letterbox", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -339,7 +357,15 @@ class MultiImageLoader:
 
         input_dir = Path(folder_paths.get_input_directory())
         tensors   = []
-        ref_w = ref_h = None
+
+        # When aspect_ratio is set, pre-compute the fixed canvas size.
+        # Otherwise the first loaded image defines the reference (legacy behaviour).
+        fixed_canvas = aspect_ratio != "none" and bool(aspect_ratio)
+        if fixed_canvas:
+            ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
+            print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
+        else:
+            ref_w = ref_h = None
 
         for fname in filenames:
             fpath = input_dir / fname
