@@ -529,15 +529,13 @@ function createWidget(node) {
       removeBtn.title = "Remove";
       removeBtn.style.cssText = `
         position:absolute;top:2px;right:2px;
-        background:rgba(180,30,30,0.88);color:#fff;
+        background:rgba(180,30,30,0.85);color:#fff;
         border:none;border-radius:3px;
-        width:16px;height:16px;font-size:10px;
-        cursor:pointer;padding:0;line-height:16px;text-align:center;
+        width:14px;height:14px;font-size:8px;
+        cursor:pointer;padding:0;line-height:14px;text-align:center;
         opacity:0;transition:opacity 0.15s;
         z-index:2;
       `;
-      wrapper.addEventListener("mouseenter", () => (removeBtn.style.opacity = "1"));
-      wrapper.addEventListener("mouseleave", () => (removeBtn.style.opacity = "0"));
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         items.splice(idx, 1);
@@ -601,12 +599,12 @@ function createWidget(node) {
       cropBtn.title = "Edit crop";
       const cropActive = hasCrop(item.filename);
       cropBtn.style.cssText = `
-        position:absolute;top:2px;right:20px;
+        position:absolute;top:2px;right:18px;
         background:${cropActive ? "rgba(110,110,110,0.9)" : "rgba(40,40,40,0.82)"};
         color:#eee;
         border:none;border-radius:3px;
-        width:16px;height:16px;font-size:9px;
-        cursor:pointer;padding:0;line-height:16px;text-align:center;
+        width:14px;height:14px;font-size:8px;
+        cursor:pointer;padding:0;line-height:14px;text-align:center;
         opacity:0;transition:opacity 0.15s;
         z-index:2;
       `;
@@ -620,12 +618,12 @@ function createWidget(node) {
       copyBtn.textContent = "⎘";
       copyBtn.title = "Copy image";
       copyBtn.style.cssText = `
-        position:absolute;top:2px;right:38px;
+        position:absolute;top:2px;right:34px;
         background:rgba(40,40,40,0.82);
         color:#eee;
         border:none;border-radius:3px;
-        width:16px;height:16px;font-size:10px;
-        cursor:pointer;padding:0;line-height:16px;text-align:center;
+        width:14px;height:14px;font-size:8px;
+        cursor:pointer;padding:0;line-height:14px;text-align:center;
         opacity:0;transition:opacity 0.15s, color 0.15s;
         z-index:2;
       `;
