@@ -72,9 +72,17 @@ async def preview_transform_handler(request):
             return web.Response(status=404, text=f"File not found: {filename}")
 
         loop = asyncio.get_event_loop()
+        PREVIEW_MAX = 768  # cap preview resolution for speed
         def _run():
             img = Image.open(path).convert("RGB")
-            return _apply_crop_transform(img, transform, ref_w, ref_h)
+            # Downscale source + ref dimensions proportionally for fast inpaint
+            w, h = img.size
+            if max(ref_w, ref_h) > PREVIEW_MAX:
+                s = PREVIEW_MAX / max(ref_w, ref_h)
+                p_ref_w, p_ref_h = max(32, int(ref_w * s)), max(32, int(ref_h * s))
+            else:
+                p_ref_w, p_ref_h = ref_w, ref_h
+            return _apply_crop_transform(img, transform, p_ref_w, p_ref_h)
 
         result = await loop.run_in_executor(None, _run)
 
@@ -207,7 +215,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
 
         # Rotate (expand=True so corners don't clip; transparent fill)
         if rotate != 0:
-            rgba = rgba.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+            rgba = rgba.rotate(-rotate, expand=True, resample=Image.BICUBIC,
                                fillcolor=(0, 0, 0, 0))
 
         # Scale to fit canvas, applying user zoom
