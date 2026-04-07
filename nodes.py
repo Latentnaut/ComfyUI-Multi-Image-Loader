@@ -89,11 +89,8 @@ async def preview_transform_handler(request):
         buf = _io.BytesIO()
         result.save(buf, format="JPEG", quality=88)
         b64 = base64.b64encode(buf.getvalue()).decode()
-        print(f"[MIL preview] served: rotate={transform.get('rotate', 0):.1f}° bg={transform.get('bg','#808080')} size={result.size}")
-        return web.json_response({
-            "dataUrl": f"data:image/jpeg;base64,{b64}",
-            "debug": {"rotate": transform.get("rotate", 0), "bg": transform.get("bg", "#808080")}
-        })
+        print(f"[MIL preview] served: rotate={transform.get('rotate', 0):.1f}° bg={transform.get('bg','#808080')}")
+        return web.json_response({"dataUrl": f"data:image/jpeg;base64,{b64}"})
 
     except Exception as e:
         import traceback

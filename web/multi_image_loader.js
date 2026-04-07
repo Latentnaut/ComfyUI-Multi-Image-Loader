@@ -1098,7 +1098,6 @@ function createWidget(node) {
         if (!edImg || !fn) return;
         const cached = edPreviewCache.get(cacheKey);
         if (cached) { edInpaintPreview=cached; edInpaintDirty=false; redraw(); return; }
-        console.log(`%c[MIL] Requesting inpaint preview: rotate=${transform.rotate}° bg=${transform.bg} fn=${fn}`, "color:#5af;font-weight:bold");
         try {
           const resp = await fetch("/multi_image_loader/preview", {
             method: "POST",
@@ -1106,15 +1105,11 @@ function createWidget(node) {
             body: JSON.stringify({filename: fn, transform, refW:edRefW, refH:edRefH})
           });
           if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
-          const { dataUrl, debug } = await resp.json();
-          console.log(`%c[MIL] Preview received: server applied rotate=${debug?.rotate}° bg=${debug?.bg}`, "color:#5f5");
+          const { dataUrl } = await resp.json();
           const img = new Image();
           img.onload = () => {
-            console.log(`%c[MIL] Preview decoded: ${img.naturalWidth}×${img.naturalHeight}`, "color:#5f5");
             if (edPreviewCache.size > 30) edPreviewCache.delete(edPreviewCache.keys().next().value);
             edPreviewCache.set(cacheKey, img);
-            // Store the rotation baked into this preview so the badge is accurate
-            img._rotate = transform.rotate;
             edInpaintPreview = img; edInpaintDirty = false; redraw();
           };
           img.src = dataUrl;
@@ -1170,17 +1165,6 @@ function createWidget(node) {
         if (isInpaint && edInpaintPreview && !edInpaintDirty) {
           // Server-rendered result — draw it filling the reference frame (already fully transformed)
           ctx.drawImage(edInpaintPreview, fx, fy, frameW, frameH);
-          // ── DEBUG BADGE: shows the rotation baked into the preview ──
-          const rot = edInpaintPreview._rotate ?? 0;
-          const label = `srv rot=${rot}°`;
-          ctx.save();
-          ctx.font = "bold 11px monospace";
-          const tw = ctx.measureText(label).width;
-          ctx.fillStyle = "rgba(0,0,0,0.65)";
-          ctx.fillRect(fx+4, fy+4, tw+8, 17);
-          ctx.fillStyle = rot !== 0 ? "#5af" : "#fa5";
-          ctx.fillText(label, fx+8, fy+16);
-          ctx.restore();
         } else {
           if (edImg) {
             const eff=bFit*edScale;
