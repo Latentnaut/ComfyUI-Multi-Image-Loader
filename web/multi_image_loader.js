@@ -1513,7 +1513,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "fit_mode", "crop_data"];
+        const hiddenNames = ["image_list", "crop_data"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "hidden";
@@ -1530,7 +1530,7 @@ app.registerExtension({
           };
         }
         // Auto-preview when aspect_ratio, fit_mode, or megapixels change
-        const autoPreviewWidgets = ["aspect_ratio", "megapixels"];
+        const autoPreviewWidgets = ["aspect_ratio", "fit_mode", "megapixels"];
         autoPreviewWidgets.forEach(wName => {
           const w = node.widgets?.find(ww => ww.name === wName);
           if (w) {
