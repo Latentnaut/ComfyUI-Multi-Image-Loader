@@ -610,17 +610,63 @@ function createWidget(node) {
         opacity:0;transition:opacity 0.15s;
         z-index:2;
       `;
+      cropBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCropEditor(idx);
+      });
+
+      // ── copy button (top-right, next to crop btn) ──────────────────────
+      const copyBtn = document.createElement("button");
+      copyBtn.textContent = "⎘";
+      copyBtn.title = "Copy image";
+      copyBtn.style.cssText = `
+        position:absolute;top:2px;right:38px;
+        background:rgba(40,40,40,0.82);
+        color:#eee;
+        border:none;border-radius:3px;
+        width:16px;height:16px;font-size:10px;
+        cursor:pointer;padding:0;line-height:16px;text-align:center;
+        opacity:0;transition:opacity 0.15s, color 0.15s;
+        z-index:2;
+      `;
       wrapper.addEventListener("mouseenter", () => {
         removeBtn.style.opacity = "1";
         cropBtn.style.opacity   = "1";
+        copyBtn.style.opacity   = "1";
       });
       wrapper.addEventListener("mouseleave", () => {
         removeBtn.style.opacity = "0";
         cropBtn.style.opacity   = "0";
+        copyBtn.style.opacity   = "0";
       });
-      cropBtn.addEventListener("click", (e) => {
+      copyBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        openCropEditor(idx);
+        try {
+          const imgEl = new Image();
+          imgEl.crossOrigin = "anonymous";
+          imgEl.onload = () => {
+            const cvs = document.createElement("canvas");
+            cvs.width = imgEl.naturalWidth;
+            cvs.height = imgEl.naturalHeight;
+            cvs.getContext("2d").drawImage(imgEl, 0, 0);
+            cvs.toBlob(async (blob) => {
+              if (blob) {
+                try {
+                  await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
+                  copyBtn.style.color = "#5f5";
+                } catch(err) {
+                  copyBtn.style.color = "#f55";
+                  console.error("[MIL] Clipboard write failed:", err);
+                }
+              }
+              setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
+            }, "image/png");
+          };
+          imgEl.src = item.previewSrc || item.src;
+        } catch(err) {
+          copyBtn.style.color = "#f55";
+          setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
+        }
       });
 
       // ── crop-active badge (bottom-right, always visible) ──────────────────
@@ -639,6 +685,7 @@ function createWidget(node) {
 
       wrapper.appendChild(img);
       wrapper.appendChild(badge);
+      wrapper.appendChild(copyBtn);
       wrapper.appendChild(cropBtn);
       wrapper.appendChild(removeBtn);
       grid.appendChild(wrapper);
