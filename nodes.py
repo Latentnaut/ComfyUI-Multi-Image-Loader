@@ -147,7 +147,17 @@ async def rembg_handler(request):
         loop = asyncio.get_event_loop()
 
         def _run():
-            img = Image.open(path).convert("RGBA")
+            # Always work from the untouched original image.
+            # On first call, save a backup; on re-runs, read from it.
+            stem, ext = os.path.splitext(path)
+            backup = f"{stem}_original{ext}"
+            if not os.path.isfile(backup):
+                # First rembg on this file — save the original
+                import shutil
+                shutil.copy2(path, backup)
+            source = backup  # always rembg from the pristine original
+
+            img = Image.open(source).convert("RGBA")
             result = remove(
                 img,
                 session=new_session(model),
@@ -159,7 +169,7 @@ async def rembg_handler(request):
                 only_mask=only_mask,
             )
             result = result.convert("RGBA")
-            # Overwrite source file as RGBA PNG
+            # Overwrite the working file as RGBA PNG
             result.save(path, format="PNG")
             # Encode for immediate preview
             buf = _io.BytesIO()
