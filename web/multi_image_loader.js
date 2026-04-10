@@ -1,5 +1,11 @@
 /**
- * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.8
+ * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.9
+ *
+ * Changes in v1.9:
+ *  - Double-click on any thumbnail now opens the crop/edit modal panel directly,
+ *    as an alternative to hovering and clicking the ✂ button.
+ *  - Fixed: aspect_ratio / fit_mode / megapixels now update thumbnails live;
+ *    dead previewBtn references that threw a silent TypeError were removed.
  *
  * Changes in v1.8:
  *  - Ctrl+V paste from clipboard: select the node and press Ctrl+V to add a
@@ -37,7 +43,8 @@ const THUMB_W            = 72;
 const THUMB_GAP          = 5;
 const MAX_GRID_ROWS      = 4;   // rows visible before scroll kicks in
 const COMPACT_DROPZONE_H = 32;  // collapsed height when images are loaded
-const THUMB_SIZES        = { small: 52, medium: 72, large: 100 }; // px widths
+const THUMB_SIZES        = { small: 52, medium: 72, large: 100 }; // px widths (grid mode)
+const ROW_VIEW_HEIGHTS   = { small: 80, medium: 120, large: 160 }; // px heights (row mode)
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -147,12 +154,14 @@ function injectStyles() {
 
 // ─── height calculation ───────────────────────────────────────────────────────
 
-function computeIdealHeight(count, nodeWidth, thumbH, thumbW = THUMB_W) {
+function computeIdealHeight(count, nodeWidth, thumbH, thumbW, rowView = false) {
   const th       = thumbH || thumbW;
   const innerW   = nodeWidth - 24;
-  const cols     = Math.max(1, Math.floor((innerW + THUMB_GAP) / (thumbW + THUMB_GAP)));
+  const cols     = rowView ? 1 : Math.max(1, Math.floor((innerW + THUMB_GAP) / (thumbW + THUMB_GAP)));
   const rows     = count > 0 ? Math.ceil(count / cols) : 0;
-  const visRows  = Math.min(rows, MAX_GRID_ROWS);
+  // Row mode: show 1 visible row minimum so the node stays compact/shrinkable.
+  // Grid mode: show up to MAX_GRID_ROWS before scrolling kicks in.
+  const visRows  = rows > 0 ? (rowView ? 1 : Math.min(rows, MAX_GRID_ROWS)) : 0;
   const gridH    = visRows > 0 ? visRows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
   const dropH    = count > 0 ? COMPACT_DROPZONE_H : DROPZONE_H;
   const statH    = count > 0 ? STATUS_H : 0;
@@ -251,6 +260,7 @@ function createWidget(node) {
   grid.style.cssText = `
     display: flex;
     flex-wrap: wrap;
+    align-content: flex-start;
     gap: ${THUMB_GAP}px;
     overflow-y: auto;
     overflow-x: hidden;
@@ -285,31 +295,8 @@ function createWidget(node) {
   const btnGroup = document.createElement("div");
   btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;justify-content:center;flex-shrink:0;white-space:nowrap;width:100%;`;
 
-  const previewBtn = document.createElement("button");
-  previewBtn.textContent = "🔄 Preview Fit";
-  previewBtn.title = "Render letterbox/crop preview for all thumbnails";
-  previewBtn.className = "mil-btn";
-  previewBtn.style.cssText = `
-    background: #1a3a28;
-    color: #44cc88;
-    border: 1px solid #336644;
-    border-radius: 4px;
-    padding: 3px 10px;
-    font-size: 10px;
-    cursor: pointer;
-    display: none;
-  `;
-  previewBtn.addEventListener("mouseenter", () => {
-    previewBtn.style.background  = "#225540";
-    previewBtn.style.borderColor = "#44cc88";
-  });
-  previewBtn.addEventListener("mouseleave", () => {
-    previewBtn.style.background  = "#1a3a28";
-    previewBtn.style.borderColor = "#336644";
-  });
-
   const clearBtn = document.createElement("button");
-  clearBtn.textContent = "✕ Clear all";
+  clearBtn.textContent = "\u2715 Clear all";
   clearBtn.className = "mil-btn";
   clearBtn.style.cssText = `
     background: #3a2020;
@@ -329,8 +316,6 @@ function createWidget(node) {
     clearBtn.style.background  = "#3a2020";
     clearBtn.style.borderColor = "#884444";
   });
-  btnGroup.appendChild(previewBtn);
-  btnGroup.appendChild(clearBtn);
   statusBar.appendChild(statusLabel);
   statusBar.appendChild(btnGroup);
 
@@ -342,6 +327,7 @@ function createWidget(node) {
   // Each item: { filename: string, src: string, previewSrc?: string }
   let items  = [];
   let thumbH = THUMB_W;  // updated from first image's aspect ratio
+  let viewMode = "grid"; // "grid" | "row"
 
   // Drag-reorder state
   let dragSrcIdx = null;
@@ -351,6 +337,41 @@ function createWidget(node) {
   // Per-image crop transforms: { filename → { ox, oy, scale } }
   let cropMap = {};
 
+  // ── view-mode toggle button ────────────────────────────────────────────────
+  const viewToggleBtn = document.createElement("button");
+  viewToggleBtn.title = "Toggle row / grid view";
+  viewToggleBtn.className = "mil-btn";
+  viewToggleBtn.style.cssText = `
+    background: #252525;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 3px 7px;
+    font-size: 11px;
+    cursor: pointer;
+    display: none;
+    line-height: 1;
+  `;
+  function syncViewToggleBtn() {
+    viewToggleBtn.textContent = viewMode === "row" ? "⊞" : "☰";
+    viewToggleBtn.title = viewMode === "row" ? "Switch to grid view" : "Switch to row view";
+    viewToggleBtn.style.color  = viewMode === "row" ? "#7ab0ff" : "#aaa";
+    viewToggleBtn.style.borderColor = viewMode === "row" ? "#5a7abf" : "#444";
+  }
+  viewToggleBtn.addEventListener("mouseenter", () => {
+    viewToggleBtn.style.background = "#333";
+  });
+  viewToggleBtn.addEventListener("mouseleave", () => {
+    viewToggleBtn.style.background = "#252525";
+  });
+  viewToggleBtn.addEventListener("click", () => {
+    viewMode = viewMode === "grid" ? "row" : "grid";
+    syncViewToggleBtn();
+    render();
+  });
+  syncViewToggleBtn();
+  btnGroup.appendChild(viewToggleBtn);
+  btnGroup.appendChild(clearBtn);
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -366,6 +387,22 @@ function createWidget(node) {
     return node.widgets?.find((w) => w.name === "fit_mode");
   }
 
+  function getBgColorWidget() {
+    return node.widgets?.find((w) => w.name === "bg_color");
+  }
+
+  /** Returns the effective hex bg color from the bg_color widget.
+   *  Handles both word labels (gray/black/white) and legacy hex (#808080/#000000/#ffffff). */
+  function getEffectiveBgColor() {
+    const val = getBgColorWidget()?.value ?? "gray";
+    // Word labels (new)
+    const wordMap = { gray: "#808080", black: "#000000", white: "#ffffff" };
+    if (wordMap[val]) return wordMap[val];
+    // Hex values (legacy / pre-restart compatibility)
+    if (/^#[0-9a-fA-F]{6}$/.test(val)) return val;
+    return "#808080";
+  }
+
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
@@ -379,8 +416,9 @@ function createWidget(node) {
   function hasCrop(filename) {
     const t = cropMap[filename];
     return !!(t && (t.ox!==0 || t.oy!==0 || t.scale!==1.0 || t.flipH || t.flipV ||
-              (t.rotate||0)!==0 || (t.bg && t.bg !== "#808080") ||
-              (t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1))));
+              (t.rotate||0)!==0 || (t.bg && t.bg !== getEffectiveBgColor()) ||
+              (t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1)) ||
+              (t.lassoOps && t.lassoOps.length > 0) || t.lassoInverted));
   }
   function persistCropData() {
     const w = getCropDataWidget();
@@ -416,7 +454,7 @@ function createWidget(node) {
     for (const item of items) {
       const t = cropMap[item.filename];
       if (!t) { item.previewSrc = undefined; continue; }
-      const bgRaw = t.bg ?? "#808080";
+      const bgRaw = t.bg ?? getEffectiveBgColor();
       const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
 
       if (isInpaint) {
@@ -445,8 +483,7 @@ function createWidget(node) {
         const cvs = document.createElement("canvas");
         cvs.width = refW; cvs.height = refH;
         const ctx = cvs.getContext("2d");
-        const bgC = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
-                  : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
+        const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
         ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
 
         const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
@@ -469,6 +506,30 @@ function createWidget(node) {
         ctx.rotate(rot);
         ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
         ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
+        // Lasso mask overlay for thumbnail
+        const tOps = t.lassoOps;
+        if (tOps && tOps.length > 0) {
+          const mw = Math.ceil(dw), mh = Math.ceil(dh);
+          const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh;
+          const mx = mc.getContext('2d');
+          for (const op of tOps) {
+            if (op.points.length < 3) continue;
+            mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+            mx.fillStyle = "white"; mx.beginPath();
+            mx.moveTo(op.points[0][0]*mw, op.points[0][1]*mh);
+            for (let k=1;k<op.points.length;k++) mx.lineTo(op.points[k][0]*mw, op.points[k][1]*mh);
+            mx.closePath(); mx.fill();
+          }
+          if (t.lassoInverted) { mx.globalCompositeOperation="xor"; mx.fillStyle="white"; mx.fillRect(0,0,mw,mh); }
+          mx.globalCompositeOperation="source-over";
+          const oc = document.createElement('canvas'); oc.width=mw; oc.height=mh;
+          const ox2 = oc.getContext('2d');
+          ox2.fillStyle = bgC; ox2.fillRect(0,0,mw,mh);
+          ox2.globalCompositeOperation = 'destination-out';
+          ox2.drawImage(mc, 0, 0);
+          ox2.globalCompositeOperation = 'source-over';
+          ctx.drawImage(oc, -dw/2, -dh/2);
+        }
         ctx.restore();
 
         item.previewSrc = cvs.toDataURL("image/jpeg", 0.92);
@@ -480,19 +541,62 @@ function createWidget(node) {
     render();
   }
 
-  function getEffectiveThumbW() {
+  function getMinThumbW() {
     const w = node.widgets?.find((ww) => ww.name === "thumb_size");
     return THUMB_SIZES[w?.value] ?? THUMB_W;
+  }
+
+  /** Compute actual display thumb width, filling available node width. */
+  function getEffectiveThumbW() {
+    const minW   = getMinThumbW();
+    const innerW = Math.max(minW, node.size[0] - 24);
+    if (viewMode === "row") return innerW;
+    // Grid: fit as many columns of at-least-minW as possible, then spread to fill
+    const cols = Math.max(1, Math.floor((innerW + THUMB_GAP) / (minW + THUMB_GAP)));
+    // Width that exactly fills the row
+    return Math.floor((innerW - (cols - 1) * THUMB_GAP) / cols);
+  }
+
+  /** Compute actual display thumb height, mode-aware.
+   *  Grid: proportional to tw based on image AR.  Row: fixed comfortable height. */
+  function getEffectiveThumbH(tw) {
+    if (viewMode === "row") {
+      const w = node.widgets?.find((ww) => ww.name === "thumb_size");
+      return ROW_VIEW_HEIGHTS[w?.value] ?? 120;
+    }
+    return Math.max(20, Math.round(tw * thumbH / THUMB_W));
   }
 
   function resizeNode() {
     const curW   = node.size[0];
     const curH   = node.size[1];
     const tw     = getEffectiveThumbW();
-    const th     = Math.max(20, Math.round(tw * thumbH / THUMB_W));
-    const idealH = computeIdealHeight(items.length, curW, th, tw);
-    // Only grow — never shrink below the user's manually-set size
+    const th     = getEffectiveThumbH(tw);
+    const minW   = getMinThumbW();
+    const idealH = computeIdealHeight(items.length, curW, th, viewMode === 'row' ? tw : minW, viewMode === 'row');
+    // Only grow — never shrink (user may manually set a larger size)
     if (idealH > curH) node.setSize([curW, idealH]);
+  }
+
+  /** Snap node to ideal height — used on mode switch (shrinks AND grows).
+   *  Always shows up to MAX_GRID_ROWS visible rows in both grid and row modes. */
+  function snapNodeToIdealH() {
+    const curW   = node.size[0];
+    const tw     = getEffectiveThumbW();
+    const th     = getEffectiveThumbH(tw);
+    const minW   = getMinThumbW();
+    // For snapping: always use MAX_GRID_ROWS cap in both modes
+    const count  = items.length;
+    const cols   = viewMode === 'row' ? 1
+                 : Math.max(1, Math.floor((curW - 24 + THUMB_GAP) / (minW + THUMB_GAP)));
+    const rows   = count > 0 ? Math.ceil(count / cols) : 0;
+    const vis    = Math.min(rows, MAX_GRID_ROWS);
+    const gridH  = vis > 0 ? vis * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
+    const dropH  = count > 0 ? COMPACT_DROPZONE_H : DROPZONE_H;
+    const statH  = count > 0 ? STATUS_H : 0;
+    const snapH  = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V
+                 + dropH + (rows > 0 ? GAP * 2 : GAP) + gridH + statH + 8;
+    node.setSize([curW, snapH]);
   }
 
   function updateScrollFade() {
@@ -527,7 +631,7 @@ function createWidget(node) {
     statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const tw = getEffectiveThumbW();
-    const th = Math.max(20, Math.round(tw * thumbH / THUMB_W));
+    const th = getEffectiveThumbH(tw);
 
     items.forEach((item, idx) => {
 
@@ -536,21 +640,41 @@ function createWidget(node) {
       wrapper.className = "mil-thumb";
       wrapper.draggable = true;
       wrapper.dataset.idx = idx;
-      wrapper.style.cssText = `
-        position: relative;
-        width: ${tw}px;
-        height: ${th}px;
-        border-radius: 6px;
-        overflow: hidden;
-        border: 1px solid #3a5080;
-        flex-shrink: 0;
-        background: #000;
-      `;
+      if (viewMode === "row") {
+        wrapper.style.cssText = `
+          position: relative;
+          width: 100%;
+          box-sizing: border-box;
+          height: ${th}px;
+          border-radius: 6px;
+          overflow: hidden;
+          border: 1px solid #444;
+          flex-shrink: 0;
+          background: #353535;
+        `;
+      } else {
+        const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
+        wrapper.style.cssText = `
+          position: relative;
+          min-width: ${tw}px;
+          max-width: ${Math.round(tw * 1.5)}px;
+          aspect-ratio: ${arRatio.toFixed(4)};
+          border-radius: 6px;
+          overflow: hidden;
+          border: 1px solid #444;
+          flex: 1 0 ${tw}px;
+          background: #353535;
+        `;
+      }
 
       // ── image ─────────────────────────────────────────────────────────────
       const img = document.createElement("img");
       img.src = item.previewSrc || item.src;
-      img.style.cssText = `width:${tw}px;height:${th}px;object-fit:contain;display:block;pointer-events:none;`;
+      // previewSrc already has letterbox/crop baked in — use cover in grid to fill wrapper seamlessly
+      // In row (list) mode always use contain so the full image is visible
+      const fit = (viewMode === "row") ? "contain" : (item.previewSrc ? "cover" : "contain");
+      const imgH = (viewMode === "row") ? `${th}px` : "100%";
+      img.style.cssText = `width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
       img.title = item.filename;
 
       // ── numeric badge (bottom-left, clear of ✕ button) ───────────────────
@@ -714,6 +838,12 @@ function createWidget(node) {
         wrapper.appendChild(cropBadge);
       }
 
+      // ── double-click → open crop editor ──────────────────────────────────
+      wrapper.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        openCropEditor(idx);
+      });
+
       wrapper.appendChild(img);
       wrapper.appendChild(badge);
       wrapper.appendChild(copyBtn);
@@ -721,6 +851,20 @@ function createWidget(node) {
       wrapper.appendChild(removeBtn);
       grid.appendChild(wrapper);
     });
+
+    // In grid mode, add invisible spacers so the last row doesn't over-stretch
+    if (viewMode === "grid" && items.length > 0) {
+      const innerW = grid.clientWidth || (node.size[0] - 24);
+      const cols = Math.max(1, Math.floor((innerW + THUMB_GAP) / (tw + THUMB_GAP)));
+      const remainder = items.length % cols;
+      if (remainder > 0) {
+        for (let s = 0; s < cols - remainder; s++) {
+          const spacer = document.createElement("div");
+          spacer.style.cssText = `flex:1 0 ${tw}px;min-width:${tw}px;height:0;visibility:hidden;`;
+          grid.appendChild(spacer);
+        }
+      }
+    }
 
     const count = items.length;
     updateDropZone(count);
@@ -741,10 +885,8 @@ function createWidget(node) {
         }
       })();
     }
-    clearBtn.style.display   = count > 0 ? "inline-block" : "none";
-    // Show preview when AR is set (even 1 image) or when there are 2+ images
-    const arVal = getAspectRatioWidget()?.value ?? "none";
-    previewBtn.style.display = (count > 0 && arVal !== "none") || count > 1 ? "inline-block" : "none";
+    clearBtn.style.display      = count > 0 ? "inline-block" : "none";
+    viewToggleBtn.style.display = count > 0 ? "inline-block" : "none";
 
     resizeNode();
     requestAnimationFrame(updateScrollFade);
@@ -802,7 +944,7 @@ function createWidget(node) {
 
     if (t) {
       // Crop-transform path
-      const bgRaw = t.bg ?? "#808080";
+      const bgRaw = t.bg ?? getEffectiveBgColor();
       const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
 
       if (isInpaint) {
@@ -818,6 +960,7 @@ function createWidget(node) {
 
       // Solid-fill crop path — crop region is a PRE-step on the source
       const el = await loadImage(item.src);
+      const mode = getFitModeWidget()?.value ?? "letterbox";
       // Effective source dimensions after pre-crop
       const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
       const srcX = hasCR ? t.cx * el.naturalWidth  : 0;
@@ -827,15 +970,17 @@ function createWidget(node) {
       const cvs = document.createElement("canvas");
       cvs.width = refW; cvs.height = refH;
       const ctx = cvs.getContext("2d");
-      const bgC = bgRaw === "black" ? "#000000" : bgRaw === "white" ? "#ffffff"
-                : /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : "#808080";
+      const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
       ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
       const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
       const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
       const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
       const rW = srcW * cosA + srcH * sinA;
       const rH = srcW * sinA + srcH * cosA;
-      const bf = Math.min(refW / rW, refH / rH);
+      // respect fit_mode for base scale
+      const bf = mode === "crop"
+        ? Math.max(refW / rW, refH / rH)
+        : Math.min(refW / rW, refH / rH);
       const eff = bf * sc;
       const dw = srcW * eff, dh = srcH * eff;
       ctx.save();
@@ -855,7 +1000,7 @@ function createWidget(node) {
     const ctx = cvs.getContext("2d");
 
     if (mode === "letterbox") {
-      ctx.fillStyle = "#000000";
+      ctx.fillStyle = getEffectiveBgColor();  // node bg_color (no per-image override for non-crop items)
       ctx.fillRect(0, 0, refW, refH);
       const scale = Math.min(refW / el.naturalWidth, refH / el.naturalHeight);
       const dw = el.naturalWidth * scale, dh = el.naturalHeight * scale;
@@ -880,8 +1025,6 @@ function createWidget(node) {
 
     const mode = getFitModeWidget()?.value ?? "letterbox";
     const ar = getAspectRatioWidget()?.value ?? "none";
-    previewBtn.textContent = "⏳ Rendering…";
-    previewBtn.disabled = true;
 
     try {
       // Get reference dimensions (aspect_ratio-aware)
@@ -899,7 +1042,9 @@ function createWidget(node) {
           const ctx = canvas.getContext("2d");
 
           if (mode === "letterbox") {
-            ctx.fillStyle = "#000000";
+            // Check for per-image bg override from cropMap
+            const itemBg = cropMap[items[i].filename]?.bg;
+            ctx.fillStyle = (itemBg && /^#[0-9a-fA-F]{6}$/.test(itemBg)) ? itemBg : getEffectiveBgColor();
             ctx.fillRect(0, 0, targetW, targetH);
             const scale = Math.min(targetW / srcImg.naturalWidth, targetH / srcImg.naturalHeight);
             const dw = srcImg.naturalWidth  * scale;
@@ -927,11 +1072,73 @@ function createWidget(node) {
     } catch (e) {
       statusLabel.textContent = `Preview error: ${e.message}`;
       statusLabel.style.color = "#ff6666";
-    } finally {
-      previewBtn.textContent = "🔄 Preview Fit";
-      previewBtn.disabled = false;
-      // Button stays visible — user may change fit_mode and preview again
     }
+  }
+
+  /**
+   * Regenerates thumbnails for items that have a crop/editor transform stored
+   * in cropMap. Respects fit_mode and aspect_ratio, same as renderItemToDataUrl.
+   * Must be called after renderFitPreviews so all items get a consistent preview.
+   */
+  async function renderCropPreviews() {
+    if (items.length < 1) return;
+    const { refW, refH } = await computeRefDims();
+    const mode = getFitModeWidget()?.value ?? "letterbox";
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const t = cropMap[item.filename];
+      if (!t) continue;  // no transform — handled by renderFitPreviews
+      try {
+        const bgRaw = t.bg ?? getEffectiveBgColor();
+        const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
+        if (isInpaint) {
+          // Inpaint path — Python server renders this
+          const resp = await fetch("/multi_image_loader/preview", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({filename: item.filename, transform: t, refW, refH})
+          });
+          if (resp.ok) {
+            const { dataUrl } = await resp.json();
+            item.previewSrc = dataUrl;
+          }
+        } else {
+          // Solid-fill path — canvas rendering
+          const el = await loadImage(item.src);
+          const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
+          const srcX = hasCR ? t.cx * el.naturalWidth  : 0;
+          const srcY = hasCR ? t.cy * el.naturalHeight : 0;
+          const srcW = hasCR ? t.cw * el.naturalWidth  : el.naturalWidth;
+          const srcH = hasCR ? t.ch * el.naturalHeight : el.naturalHeight;
+          const cvs = document.createElement("canvas");
+          cvs.width = refW; cvs.height = refH;
+          const ctx = cvs.getContext("2d");
+          const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
+          ctx.fillStyle = bgC; ctx.fillRect(0, 0, refW, refH);
+          const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
+          const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
+          const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
+          const rW = srcW * cosA + srcH * sinA;
+          const rH = srcW * sinA + srcH * cosA;
+          const bf = mode === "crop"
+            ? Math.max(refW / rW, refH / rH)
+            : Math.min(refW / rW, refH / rH);
+          const eff = bf * sc;
+          const dw = srcW * eff, dh = srcH * eff;
+          ctx.save();
+          ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
+          ctx.rotate(rot);
+          ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
+          ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
+          ctx.restore();
+          item.previewSrc = cvs.toDataURL("image/jpeg", 0.92);
+        }
+      } catch(e) {
+        console.warn(`[MIL] renderCropPreviews failed for ${item.filename}:`, e);
+      }
+    }
+    previewActive = items.some(it => it.previewSrc);
+    render();
   }
 
   // ── restore (called on page load / workflow reload) ───────────────────────
@@ -962,6 +1169,10 @@ function createWidget(node) {
     }
 
     render();
+    // Re-generate previews after restore so fit/crop thumbnails are correct
+    await updateThumbHFromFirst();
+    await renderFitPreviews();
+    await renderCropPreviews();
   }
 
   // ── addFiles (called by drag-drop / file picker) ──────────────────────────
@@ -977,27 +1188,27 @@ function createWidget(node) {
       const dataURLs  = await Promise.all(imageFiles.map(fileToDataURL));
       const filenames = await uploadFiles(imageFiles);
 
-      const isFirstBatch = items.length === 0;
-      if (isFirstBatch && dataURLs.length > 0) {
-        const { w, h } = await getImageDimensions(dataURLs[0]);
-        thumbH = Math.max(20, Math.round(THUMB_W * h / w));
-      }
-
       const insertedCount = filenames.length;
       filenames.forEach((fn, i) => {
         items.push({ filename: fn, src: dataURLs[i] });
       });
 
+      // Compute thumbH respecting aspect_ratio widget (1:1, 16:9, etc.)
+      await updateThumbHFromFirst();
+
       statusLabel.style.color = "#8899bb";
       render();
       persist();
+
+      // Generate fit/crop previews so thumbnails reflect current aspect_ratio + fit_mode
+      await renderFitPreviews();
+      await renderCropPreviews();
 
       // Flash newly added thumbnails with a green border that fades over 5 s
       requestAnimationFrame(() => {
         const allThumbs = grid.querySelectorAll(".mil-thumb");
         const start = allThumbs.length - insertedCount;
         for (let i = Math.max(0, start); i < allThumbs.length; i++) {
-          // Re-trigger animation in case the same element is reused
           allThumbs[i].classList.remove("mil-paste-flash");
           void allThumbs[i].offsetWidth; // force reflow
           allThumbs[i].classList.add("mil-paste-flash");
@@ -1037,7 +1248,6 @@ function createWidget(node) {
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
 
-  previewBtn.addEventListener("click", () => renderFitPreviews());
 
   clearBtn.addEventListener("click", () => {
     items  = [];
@@ -1053,13 +1263,9 @@ function createWidget(node) {
 
   root._addFiles         = addFiles;
   root._restore          = restore;
+  root._render           = render;
   root._renderWithResize = () => {
-    // Force resize+render when thumb_size changes (bypasses grow-only logic)
-    const curW   = node.size[0];
-    const tw     = getEffectiveThumbW();
-    const th     = Math.max(20, Math.round(tw * thumbH / THUMB_W));
-    const idealH = computeIdealHeight(items.length, curW, th, tw);
-    node.setSize([curW, idealH]);
+    // Re-render thumbnails when thumb_size changes — no height change
     render();
   };
   root._onAspectRatioChange = async () => {
@@ -1090,7 +1296,7 @@ function createWidget(node) {
     let edRefW = 1, edRefH = 1;  // reference canvas = first-image dims
     let dOX = 0, dOY = 0, edScale = 1.0;
     let edFlipH = false, edFlipV = false, edRotate = 0;  // intrinsic transforms
-    let edBg = "#808080";  // background fill
+    let edBg = getEffectiveBgColor();  // initialize from node bg_color widget
     let edInpaintPreview = null, edInpaintDirty = true, edReqHandle = null;
     const edPreviewCache = new Map();
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
@@ -1098,6 +1304,36 @@ function createWidget(node) {
     let edCropMode = false, edCropBox = null;
     let edCropDrag = null;
     let edAppliedCrop = null; // committed crop {cx,cy,cw,ch} — applied BEFORE transforms
+
+    // Lasso state
+    let edLassoMode = false;
+    let edLassoTool = "freehand";
+    let edLassoOps = [];
+    let edLassoInverted = false;
+    let edLassoCurrentPts = [];
+    let edLassoDrawing = false;
+    let edLassoAntsOffset = 0;
+    let edLassoAntsRaf = null;
+    let _lassoOverlayCvs = null;
+    let _lassoOverlayBg = null;
+    let _lassoMaskDirty = true;
+    let _lassoCursorNorm = null;
+    // Cached mask + edge data for performance
+    let _cachedMaskCvs = null;
+    let _cachedMaskW = 0, _cachedMaskH = 0;
+    let _cachedEdgePixels = null; // Int32Array [x0,y0, x1,y1, ...]
+    // Custom lasso cursors (crosshair with +/- modifiers)
+    const _lassoCursors = (() => {
+      const mk = (extra) => {
+        const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><line x1='16' y1='2' x2='16' y2='30' stroke='white' stroke-width='2'/><line x1='2' y1='16' x2='30' y2='16' stroke='white' stroke-width='2'/><line x1='16' y1='2' x2='16' y2='30' stroke='black' stroke-width='1'/><line x1='2' y1='16' x2='30' y2='16' stroke='black' stroke-width='1'/>${extra}</svg>`;
+        return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+      };
+      return {
+        normal: 'crosshair',
+        add:      mk(`<circle cx='24' cy='8' r='6' fill='#44cc88' stroke='white' stroke-width='1'/><line x1='24' y1='4' x2='24' y2='12' stroke='white' stroke-width='1.5'/><line x1='20' y1='8' x2='28' y2='8' stroke='white' stroke-width='1.5'/>`)  ,
+        subtract: mk(`<circle cx='24' cy='8' r='6' fill='#ff6666' stroke='white' stroke-width='1'/><line x1='20' y1='8' x2='28' y2='8' stroke='white' stroke-width='1.5'/>`),
+      };
+    })();
 
     // ── UI scale: gentle bump for wide viewports ───────────────────────
     // The OS DPI scaling already makes text/buttons readable at native resolution.
@@ -1169,10 +1405,21 @@ function createWidget(node) {
     // sticky footer: zoom label + Apply + Cancel
     const pnlFoot = document.createElement("div");
     pnlFoot.style.cssText = `flex-shrink:0;padding:${_pad4} ${_pad10} ${_pad8};border-top:1px solid #222;display:flex;flex-direction:column;gap:${_gap5};`;
-    function mkSec(t) {
+    function mkSec(t, resetCb, resetTip) {
       const d = document.createElement("div");
-      d.style.cssText = `color:#444;font-size:${_fs10};text-transform:uppercase;letter-spacing:1px;margin-top:${_gap5};`;
-      d.textContent = t; return d;
+      d.style.cssText = `color:#444;font-size:${_fs10};text-transform:uppercase;letter-spacing:1px;margin-top:${_gap5};display:flex;align-items:center;justify-content:space-between;`;
+      const lbl = document.createElement("span"); lbl.textContent = t; d.appendChild(lbl);
+      if (resetCb) {
+        const rb = document.createElement("button");
+        rb.title = resetTip || ("Reset " + t);
+        rb.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.36"/></svg>`;
+        rb.style.cssText = `background:none;border:none;cursor:pointer;color:#383838;padding:1px 2px;border-radius:3px;display:flex;align-items:center;transition:color 0.15s;flex-shrink:0;`;
+        rb.addEventListener("mouseenter", () => { rb.style.color = "#ff9f43"; });
+        rb.addEventListener("mouseleave", () => { rb.style.color = "#383838"; });
+        rb.addEventListener("click", (e) => { e.stopPropagation(); resetCb(); redraw(); requestInpaintPreview(); });
+        d.appendChild(rb);
+      }
+      return d;
     }
     const zoomLbl = document.createElement("div");
     zoomLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;padding:1px 0;`;
@@ -1217,7 +1464,13 @@ function createWidget(node) {
     pnlBody.appendChild(dimEffLbl);
 
     // ── Crop Region (first step) ─────────────────────────────────
-    pnlBody.appendChild(mkSec("Crop Region"));
+    pnlBody.appendChild(mkSec("Crop Region", () => {
+      edCropBox = null; edAppliedCrop = null; edCropMode = false;
+      edLassoOps = []; edLassoInverted = false; _lassoMaskDirty = true;
+      dOX = 0; dOY = 0; edScale = 1.0;
+      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
+      syncCvs(); updLbl();
+    }, "Reset Crop Region"));
     const cropToggleB = document.createElement("button");
     cropToggleB.textContent = "\u2702 Enable Crop";
     cropToggleB.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;transition:background 0.15s,border-color 0.15s,color 0.15s;`;
@@ -1232,8 +1485,31 @@ function createWidget(node) {
         cropToggleB.textContent = "\u2702 Enable Crop";
         cropToggleB.style.background = "#1e1e1e"; cropToggleB.style.color = "#aaa"; cropToggleB.style.borderColor = "#333";
         cropApplyB.style.background = "#2a2a2a"; cropApplyB.style.color = "#555"; cropApplyB.style.borderColor = "#333";
-        ca.style.cursor = "grab";
-        hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+        if (!edLassoMode) {
+          ca.style.cursor = "grab";
+          hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+        }
+      }
+    }
+    function syncLassoToggle() {
+      // OFF state for both buttons
+      const offS = {bg:'#1e1e1e',col:'#aaa',bc:'#333'};
+      const onFree = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
+      const onPoly = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
+      if (edLassoMode) {
+        const f = edLassoTool==="freehand" ? onFree : offS;
+        const p = edLassoTool==="polygonal" ? onPoly : offS;
+        lassoFreehandB.style.background=f.bg; lassoFreehandB.style.color=f.col; lassoFreehandB.style.borderColor=f.bc;
+        lassoPolyB.style.background=p.bg; lassoPolyB.style.color=p.col; lassoPolyB.style.borderColor=p.bc;
+        ca.style.cursor = "crosshair";
+        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: add \u00b7 Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: add \u00b7 Alt: subtract";
+      } else {
+        lassoFreehandB.style.background=offS.bg; lassoFreehandB.style.color=offS.col; lassoFreehandB.style.borderColor=offS.bc;
+        lassoPolyB.style.background=offS.bg; lassoPolyB.style.color=offS.col; lassoPolyB.style.borderColor=offS.bc;
+        if (!edCropMode) {
+          ca.style.cursor = "grab";
+          hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+        }
       }
     }
 
@@ -1279,6 +1555,11 @@ function createWidget(node) {
 
     cropToggleB.addEventListener("click", () => {
       edCropMode = !edCropMode;
+      // Mutual exclusion: disable lasso if crop is enabled
+      if (edCropMode && edLassoMode) {
+        edLassoMode = false; edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+        stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      }
       // Auto-initialize crop box on first enable (centered, 50% scale, tensor AR)
       if (edCropMode && !edCropBox) {
         const eW = effNatW(), eH = effNatH();
@@ -1311,7 +1592,9 @@ function createWidget(node) {
     cropArLockB.addEventListener("click", () => { edCropArLock = !edCropArLock; syncArLockUI(); });
     const cropArInput = document.createElement("input");
     cropArInput.type = "text";
-    cropArInput.value = _simplifyAR(edRefW, edRefH);
+    const _nodeArWidget = getAspectRatioWidget();
+    const _nodeArVal = _nodeArWidget?.value;
+    cropArInput.value = (_nodeArVal && _nodeArVal !== 'none') ? _nodeArVal : _simplifyAR(edRefW, edRefH);
     cropArInput.placeholder = "16:9";
     cropArInput.style.cssText = `flex:1;background:#1a1a1a;color:#ccc;border:1px solid #333;border-radius:${_r5};padding:${_pad4};font-size:${_fs11};text-align:center;min-width:0;`;
     cropArInput.addEventListener("focus", () => { cropArInput.style.borderColor = '#5a7abf'; });
@@ -1343,40 +1626,254 @@ function createWidget(node) {
         edAppliedCrop = { cx: edCropBox.x, cy: edCropBox.y, cw: edCropBox.w, ch: edCropBox.h };
       }
       edCropBox = null; edCropMode = false;
+      edLassoOps = []; edLassoInverted = false; _lassoMaskDirty = true;
       // Reset transforms since we're now working on a new "image"
       dOX = 0; dOY = 0; edScale = 1.0;
       syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
       syncCvs(); updLbl(); redraw(); requestInpaintPreview();
     });
     pnlBody.appendChild(cropApplyB);
-    const cropResetB = mkPB("\u27F2 Reset All Crop", () => {
-      edCropBox = null; edAppliedCrop = null; edCropMode = false;
-      dOX = 0; dOY = 0; edScale = 1.0;
-      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
-      syncCvs(); updLbl(); requestInpaintPreview();
-    });
-    pnlBody.appendChild(cropResetB);
+
     const cropInfoLbl = document.createElement("div");
     cropInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
     pnlBody.appendChild(cropInfoLbl);
 
-    pnlBody.appendChild(mkSec("Quick Fit"));
+    // ══════════════════════════════════════════════════════════════════
+    // ── Lasso Selection Section ─────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════
+    pnlBody.appendChild(mkSec("Lasso Selection", () => {
+      edLassoOps = []; edLassoInverted = false;
+      edLassoCurrentPts = []; edLassoDrawing = false;
+      _lassoMaskDirty = true; _lassoCursorNorm = null;
+      stopLassoAnts();
+      syncLassoInvertBtn(); updateLassoInfoLbl();
+    }, "Reset Lasso Selection"));
+
+    // Tool buttons: Lasso / Polygonal — act as mode toggles
+    const lassoToolRow = document.createElement("div");
+    lassoToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
+    const lassoFreehandB = document.createElement("button");
+    lassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
+    lassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    const lassoPolyB = document.createElement("button");
+    lassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Polygonal`;
+    lassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    function toggleLassoTool(tool) {
+      if (edLassoMode && edLassoTool === tool) {
+        edLassoMode = false; edLassoDrawing = false;
+        edLassoCurrentPts = []; _lassoCursorNorm = null; stopLassoAnts();
+      } else {
+        edLassoMode = true; edLassoTool = tool;
+        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+        if (edCropMode) { edCropMode = false; syncCropToggle(); }
+        if (edLassoOps.length > 0) startLassoAnts();
+      }
+      syncLassoToggle(); redraw();
+    }
+    lassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
+    lassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
+    lassoToolRow.appendChild(lassoFreehandB); lassoToolRow.appendChild(lassoPolyB);
+    pnlBody.appendChild(lassoToolRow);
+
+    // Invert Selection
+    const lassoInvertB = mkPB("\u2298 Invert Selection", () => {
+      edLassoInverted = !edLassoInverted;
+      _lassoMaskDirty = true;
+      syncLassoInvertBtn(); requestInpaintPreview(); redraw();
+    });
+    function syncLassoInvertBtn() {
+      if (edLassoInverted) {
+        lassoInvertB.style.background = "#2a1a3a"; lassoInvertB.style.color = "#bb88ff"; lassoInvertB.style.borderColor = "#553388";
+      } else {
+        lassoInvertB.style.background = ""; lassoInvertB.style.color = ""; lassoInvertB.style.borderColor = "";
+      }
+    }
+    pnlBody.appendChild(lassoInvertB);
+
+    // Hint + Info
+    const lassoHintLbl = document.createElement("div");
+    lassoHintLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;line-height:1.3;`;
+    lassoHintLbl.textContent = "Shift: add \u00b7 Alt: subtract";
+    pnlBody.appendChild(lassoHintLbl);
+    const lassoInfoLbl = document.createElement("div");
+    lassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
+    pnlBody.appendChild(lassoInfoLbl);
+
+    function updateLassoInfoLbl() {
+      if (edLassoOps.length === 0 && !edLassoInverted) { lassoInfoLbl.textContent = ''; return; }
+      const addN = edLassoOps.filter(o => o.mode === "add").length;
+      const subN = edLassoOps.filter(o => o.mode === "subtract").length;
+      let txt = `${edLassoOps.length} op${edLassoOps.length !== 1 ? 's' : ''}`;
+      if (addN && subN) txt += ` (${addN} add, ${subN} sub)`;
+      if (edLassoInverted) txt += " \u00b7 inverted";
+      lassoInfoLbl.textContent = txt;
+    }
+
+    // ── Commit a completed polygon/freehand shape ──
+    function commitLassoShape(points, e) {
+      if (points.length < 3) return;
+      const normalized = points.map(p => [p.x, p.y]);
+      let mode = "add";
+      if (e && e.altKey) mode = "subtract";
+      if (!e || (!e.shiftKey && !e.altKey)) edLassoOps = [];
+      edLassoOps.push({ mode, points: normalized });
+      edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+      _lassoMaskDirty = true;
+      startLassoAnts(); updateLassoInfoLbl(); requestInpaintPreview(); redraw();
+    }
+
+    // ── Marching ants animation ──
+    let _lastAntTick = 0;
+    function startLassoAnts() {
+      if (edLassoAntsRaf) return;
+      function tick(now) {
+        if (now - _lastAntTick > 50) { edLassoAntsOffset = (edLassoAntsOffset + 0.5) % 24; _lastAntTick = now; redraw(); }
+        edLassoAntsRaf = requestAnimationFrame(tick);
+      }
+      edLassoAntsRaf = requestAnimationFrame(tick);
+    }
+    function stopLassoAnts() { if (edLassoAntsRaf) { cancelAnimationFrame(edLassoAntsRaf); edLassoAntsRaf = null; } }
+
+    // ── Lasso mask canvas builder (cached) ──
+    function getLassoMaskCanvas(w, h) {
+      if (!_lassoMaskDirty && _cachedMaskCvs && _cachedMaskW === w && _cachedMaskH === h) return _cachedMaskCvs;
+      if (!_cachedMaskCvs) _cachedMaskCvs = document.createElement('canvas');
+      _cachedMaskCvs.width = w; _cachedMaskCvs.height = h;
+      _cachedMaskW = w; _cachedMaskH = h;
+      const x = _cachedMaskCvs.getContext('2d');
+      x.clearRect(0, 0, w, h);
+      for (const op of edLassoOps) {
+        if (op.points.length < 3) continue;
+        x.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+        x.fillStyle = "white"; x.beginPath();
+        x.moveTo(op.points[0][0] * w, op.points[0][1] * h);
+        for (let i = 1; i < op.points.length; i++) x.lineTo(op.points[i][0] * w, op.points[i][1] * h);
+        x.closePath(); x.fill();
+      }
+      if (edLassoInverted) { x.globalCompositeOperation = "xor"; x.fillStyle = "white"; x.fillRect(0, 0, w, h); }
+      x.globalCompositeOperation = "source-over";
+      // Pre-compute edge pixels
+      const imgd = x.getImageData(0, 0, w, h).data;
+      const edges = [];
+      for (let y = 0; y < h; y++) {
+        for (let px = 0; px < w; px++) {
+          const i = (y * w + px) * 4;
+          if (imgd[i] < 128) continue;
+          const left  = px > 0   ? imgd[(y * w + px - 1) * 4] : 0;
+          const right = px < w-1 ? imgd[(y * w + px + 1) * 4] : 0;
+          const up    = y > 0    ? imgd[((y-1) * w + px) * 4] : 0;
+          const down  = y < h-1  ? imgd[((y+1) * w + px) * 4] : 0;
+          if (left < 128 || right < 128 || up < 128 || down < 128) edges.push(px, y);
+        }
+      }
+      _cachedEdgePixels = new Int32Array(edges);
+      _lassoMaskDirty = false;
+      return _cachedMaskCvs;
+    }
+    // Legacy alias
+    function buildLassoMaskCanvas(w, h) { return getLassoMaskCanvas(w, h); }
+
+    // ── Lasso overlay rendering ──
+    function drawLassoOverlay(ctx) {
+      if (!edLassoMode) return; // hide ants when lasso tool is off
+      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+      // Marching ants along composite mask boundary (cached)
+      if (edLassoOps.length > 0) {
+        const mw = Math.ceil(frameW), mh = Math.ceil(frameH);
+        if (mw > 0 && mh > 0) {
+          getLassoMaskCanvas(mw, mh); // ensure edge cache is for frame dims
+          if (_cachedEdgePixels && _cachedEdgePixels.length > 0) {
+            ctx.save();
+            ctx.strokeStyle = '#ff9f43'; ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 5]); ctx.lineDashOffset = -edLassoAntsOffset;
+            ctx.beginPath();
+            for (let i = 0; i < _cachedEdgePixels.length; i += 2) {
+              ctx.rect(fx + _cachedEdgePixels[i], fy + _cachedEdgePixels[i+1], 1, 1);
+            }
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineDashOffset = -edLassoAntsOffset + 3;
+            ctx.stroke();
+            ctx.setLineDash([]); ctx.restore();
+          }
+        }
+      }
+      // Current in-progress path
+      if (edLassoCurrentPts.length >= 1) {
+        const pts = edLassoCurrentPts.map(p => ({ px: fx + p.x * frameW, py: fy + p.y * frameH }));
+        ctx.save(); ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 1.5;
+        if (edLassoTool === "freehand") {
+          if (pts.length >= 2) {
+            ctx.beginPath(); ctx.moveTo(pts[0].px, pts[0].py);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].px, pts[i].py);
+            ctx.stroke();
+          }
+        } else {
+          ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(pts[0].px, pts[0].py);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].px, pts[i].py);
+          if (_lassoCursorNorm) ctx.lineTo(fx + _lassoCursorNorm.x * frameW, fy + _lassoCursorNorm.y * frameH);
+          ctx.stroke(); ctx.setLineDash([]);
+          ctx.fillStyle = '#ffcc00';
+          for (const p of pts) { ctx.beginPath(); ctx.arc(p.px, p.py, 3, 0, Math.PI * 2); ctx.fill(); }
+          if (_lassoCursorNorm && pts.length >= 3) {
+            const dist = Math.hypot((_lassoCursorNorm.x - edLassoCurrentPts[0].x) * frameW, (_lassoCursorNorm.y - edLassoCurrentPts[0].y) * frameH);
+            if (dist < 10) { ctx.strokeStyle = '#44ff44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pts[0].px, pts[0].py, 6, 0, Math.PI * 2); ctx.stroke(); }
+          }
+        }
+        ctx.restore();
+      }
+    }
+
+    pnlBody.appendChild(mkSec("Quick Fit", () => {
+      dOX=0; dOY=0; edScale=1; updLbl();
+    }, "Reset to Letterbox"));
     pnlBody.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
     pnlBody.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
     pnlBody.appendChild(mkPB("\u2194 Fit Width",  doFitW));
     pnlBody.appendChild(mkPB("\u2195 Fit Height", doFitH));
-    pnlBody.appendChild(mkSec("Flip"));
-    pnlBody.appendChild(mkPB("\u2194 Flip Horizontal", ()=>{ edFlipH=!edFlipH; }));
-    pnlBody.appendChild(mkPB("\u2195 Flip Vertical",   ()=>{ edFlipV=!edFlipV; }));
-    pnlBody.appendChild(mkSec("Rotate"));
+    pnlBody.appendChild(mkSec("Flip", () => {
+      edFlipH=false; edFlipV=false; syncFlipUI();
+    }, "Reset Flip"));
+    const flipRow = document.createElement("div");
+    flipRow.style.cssText = `display:flex;gap:0;width:100%;`;
+    function mkFlipBtn(icon, tip, half) {
+      const b = document.createElement("button");
+      b.title = tip;
+      b.textContent = icon;
+      const br = half === "L" ? (_r5 + " 0 0 " + _r5) : ("0 " + _r5 + " " + _r5 + " 0");
+      b.style.cssText = [
+        "flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;",
+        "border-radius:" + br + ";",
+        "padding:" + _btnPadW + ";font-size:" + _fs13 + ";cursor:pointer;",
+        "transition:background 0.15s,border-color 0.15s,color 0.15s;",
+      ].join("");
+      return b;
+    }
+    const flipHBtn = mkFlipBtn("\u2194", "Flip Horizontal", "L");
+    const flipVBtn = mkFlipBtn("\u2195", "Flip Vertical",   "R");
+    function syncFlipUI() {
+      flipHBtn.style.background   = edFlipH ? "#1a2a3a" : "#1e1e1e";
+      flipHBtn.style.color        = edFlipH ? "#7ab0ff" : "#aaa";
+      flipHBtn.style.borderColor  = edFlipH ? "#5a7abf" : "#333";
+      flipVBtn.style.background   = edFlipV ? "#1a2a3a" : "#1e1e1e";
+      flipVBtn.style.color        = edFlipV ? "#7ab0ff" : "#aaa";
+      flipVBtn.style.borderColor  = edFlipV ? "#5a7abf" : "#333";
+    }
+    flipHBtn.addEventListener("click", () => { edFlipH=!edFlipH; syncFlipUI(); redraw(); requestInpaintPreview(); });
+    flipVBtn.addEventListener("click", () => { edFlipV=!edFlipV; syncFlipUI(); redraw(); requestInpaintPreview(); });
+    flipRow.appendChild(flipHBtn);
+    flipRow.appendChild(flipVBtn);
+    pnlBody.appendChild(flipRow);
+    pnlBody.appendChild(mkSec("Rotate", () => {
+      edRotate=0; syncRotUI();
+    }, "Reset Rotation"));
     // slider + click-to-type angle
     const rotRow = document.createElement("div");
-    rotRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;overflow:hidden;`;
+    rotRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
     const rotSlider = document.createElement("input");
     rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
     rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
     const rotValEl = document.createElement("div");
-    rotValEl.style.cssText=`color:#888;font-size:${_fs10};min-width:${Math.round(34*uiScale)}px;text-align:right;cursor:text;user-select:none;`;
+    rotValEl.style.cssText=`color:#888;font-size:${_fs10};min-width:${Math.round(38*uiScale)}px;text-align:right;cursor:text;user-select:none;flex-shrink:0;`;
     rotValEl.textContent="0\u00b0";
     function syncRotUI(){
       rotSlider.value = edRotate;
@@ -1403,8 +1900,7 @@ function createWidget(node) {
     rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
     pnlBody.appendChild(rotRow);
 
-    // Background Fill section
-    pnlBody.appendChild(mkSec("Background Fill"));
+    // Background fill elements (created here, appended later — after Remove BG)
     const bgSelect = document.createElement("select");
     bgSelect.style.cssText=`width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${Math.round(4*uiScale)}px ${Math.round(5*uiScale)}px;font-size:${_fs10};cursor:pointer;`;
     [["#808080","Gray (default)"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
@@ -1430,25 +1926,27 @@ function createWidget(node) {
       const v=bgSelect.value;
       bgCustomRow.style.display=v==="custom"?"flex":"none";
       bgNote.style.display=(v==="telea"||v==="navier-stokes")?"block":"none";
-      edBg= v==="custom" ? bgColorPick.value : v;
+      const _w2h = {"black":"#000000","white":"#ffffff"};
+      edBg= v==="custom" ? bgColorPick.value : (_w2h[v] || v);
       edInpaintPreview=null; edInpaintDirty=true;
       redraw(); requestInpaintPreview();
     });
     function syncBgUI(){
+      // Map hex values to dropdown option values
+      const hexToOpt = {"#000000":"black","#ffffff":"white"};
+      const optVal = hexToOpt[edBg?.toLowerCase()] || edBg;
       const known=["#808080","black","white","telea","navier-stokes"];
-      bgSelect.value=known.includes(edBg)?edBg:"custom";
-      const isCust=!known.includes(edBg);
+      bgSelect.value=known.includes(optVal)?optVal:"custom";
+      const isCust=!known.includes(optVal);
       bgCustomRow.style.display=isCust?"flex":"none";
       if(isCust){ bgColorPick.value=edBg; bgHexInp.value=edBg; }
       bgNote.style.display=(edBg==="telea"||edBg==="navier-stokes")?"block":"none";
     }
-    pnlBody.appendChild(bgSelect); pnlBody.appendChild(bgCustomRow); pnlBody.appendChild(bgNote);
-
-    pnlBody.appendChild(mkSec("Transform"));
-    pnlBody.appendChild(mkPB("\u27F2 Reset All", ()=>{ dOX=0;dOY=0;edScale=1;edFlipH=false;edFlipV=false;edRotate=0;edBg="#808080"; syncRotUI(); syncBgUI(); updLbl(); }));
 
     // ── Remove Background ───────────────────────────────────────
-    pnlBody.appendChild(mkSec("Remove Background"));
+    pnlBody.appendChild(mkSec("Remove Background", () => {
+      doRembgReset();
+    }, "Restore Original Image"));
 
     // Model select
     const rbModelSel = document.createElement("select");
@@ -1473,14 +1971,9 @@ function createWidget(node) {
     // Main button
     const rbBtn = document.createElement("button");
     rbBtn.textContent = "\uD83E\uDE84 Remove BG";
-    rbBtn.style.cssText = [
-      `background:#1a1a3a;color:#88aaff;border:1px solid #334488;`,
-      `border-radius:${_r6};padding:${_btnPadW};font-size:${_fs11};font-weight:600;`,
-      `cursor:pointer;width:100%;margin-top:${Math.round(3*uiScale)}px;`,
-      `transition:background 0.15s,border-color 0.15s;`,
-    ].join("");
-    rbBtn.addEventListener("mouseenter", () => { rbBtn.style.background = "#222255"; rbBtn.style.borderColor = "#5566cc"; });
-    rbBtn.addEventListener("mouseleave", () => { rbBtn.style.background = "#1a1a3a"; rbBtn.style.borderColor = "#334488"; });
+    rbBtn.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;`;
+    rbBtn.addEventListener("mouseenter", () => { rbBtn.style.background="#2a2a2a"; rbBtn.style.borderColor="#484848"; });
+    rbBtn.addEventListener("mouseleave", () => { rbBtn.style.background="#1e1e1e"; rbBtn.style.borderColor="#333"; });
 
     async function doRembg() {
       const fn = items[curIdx]?.filename;
@@ -1519,7 +2012,8 @@ function createWidget(node) {
           el.onerror = res;
           el.src = json.dataUrl;
         });
-        // Refresh thumbnail grid
+        // Refresh thumbnail grid and save current state (including bg fill)
+        saveToSes();
         render();
       } catch (e) {
         console.error("[MIL rembg]", e);
@@ -1532,8 +2026,81 @@ function createWidget(node) {
     }
 
     rbBtn.addEventListener("click", doRembg);
-    pnlBody.appendChild(rbStatus);
     pnlBody.appendChild(rbBtn);
+    pnlBody.appendChild(rbStatus);
+
+    async function doRembgReset() {
+      const fn = items[curIdx]?.filename;
+      if (!fn) return;
+      rbStatus.textContent = "\u23F3 Restoring\u2026";
+      rbStatus.style.color = "#888";
+      try {
+        const resp = await fetch("/multi_image_loader/rembg_reset", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: fn }),
+        });
+        const json = await resp.json();
+        if (!json.success) throw new Error(json.error || "Unknown error");
+
+        items[curIdx].src = json.dataUrl;
+        delete items[curIdx].previewSrc;
+
+        rbStatus.textContent = "\u2713 Original restored";
+        rbStatus.style.color = "#88cc88";
+
+        await new Promise(res => {
+          const el = new Image();
+          el.crossOrigin = "anonymous";
+          el.onload = () => { edImg = el; edNatW = el.naturalWidth; edNatH = el.naturalHeight; syncCvs(); redraw(); res(); };
+          el.onerror = res;
+          el.src = json.dataUrl;
+        });
+        render();
+      } catch (e) {
+        console.error("[MIL rembg_reset]", e);
+        rbStatus.textContent = "\u2717 " + e.message;
+        rbStatus.style.color = "#ff6666";
+      }
+    }
+
+    // ── Background Fill (last visual section) ────────────────────
+    pnlBody.appendChild(mkSec("Background Fill", () => {
+      edBg = getEffectiveBgColor(); syncBgUI();
+      edInpaintPreview=null; edInpaintDirty=true;
+    }, "Reset to Node Default"));
+    pnlBody.appendChild(bgSelect); pnlBody.appendChild(bgCustomRow); pnlBody.appendChild(bgNote);
+
+    // ── Reset All button ─────────────────────────────────────────
+    const resetAllB = document.createElement("button");
+    resetAllB.textContent = "\u27F2 Reset All";
+    resetAllB.title = "Restore image to its original state";
+    resetAllB.style.cssText = [
+      `background:#2a1a1a;color:#ff8888;border:1px solid #553333;`,
+      `border-radius:${_r6};padding:${_btnPadW};font-size:${_fs11};font-weight:600;`,
+      `cursor:pointer;width:100%;margin-top:${_pad8};`,
+      `transition:background 0.15s,border-color 0.15s,color 0.15s;`,
+    ].join("");
+    resetAllB.addEventListener("mouseenter", () => { resetAllB.style.background = "#3a2020"; resetAllB.style.borderColor = "#884444"; resetAllB.style.color = "#ffaaaa"; });
+    resetAllB.addEventListener("mouseleave", () => { resetAllB.style.background = "#2a1a1a"; resetAllB.style.borderColor = "#553333"; resetAllB.style.color = "#ff8888"; });
+    resetAllB.addEventListener("click", async () => {
+      // Reset all transforms
+      dOX=0; dOY=0; edScale=1; edFlipH=false; edFlipV=false; edRotate=0;
+      // Reset crop
+      edCropBox=null; edAppliedCrop=null; edCropMode=false;
+      // Reset lasso
+      edLassoOps=[]; edLassoInverted=false; edLassoCurrentPts=[]; edLassoDrawing=false;
+      _lassoMaskDirty=true; _lassoCursorNorm=null; stopLassoAnts();
+      // Reset bg
+      edBg=getEffectiveBgColor();
+      // Restore original image (undo rembg)
+      await doRembgReset();
+      // Sync all UI
+      syncCropToggle(); syncLassoToggle(); syncLassoInvertBtn(); syncRotUI(); syncBgUI(); syncFlipUI();
+      updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
+      syncCvs(); redraw(); requestInpaintPreview();
+    });
+    pnlBody.appendChild(resetAllB);
 
     // ── Crop Region helpers ──────────────────────────────────────
     function cropPxToNorm(px, py) {
@@ -1645,7 +2212,10 @@ function createWidget(node) {
       const c = Math.abs(Math.cos(rf)), s = Math.abs(Math.sin(rf));
       return { rW: w*c+h*s, rH: w*s+h*c };
     }
-    function _bfitOf(rW, rH) { return Math.min(frameW/rW, frameH/rH); }
+    function _bfitOf(rW, rH) {
+      const fm = getFitModeWidget()?.value ?? "letterbox";
+      return fm === "crop" ? Math.max(frameW/rW, frameH/rH) : Math.min(frameW/rW, frameH/rH);
+    }
     function doFill() {
       const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
       dOX=0;dOY=0; edScale=Math.max(frameW/(rW*bf),frameH/(rH*bf)); updLbl();
@@ -1675,6 +2245,8 @@ function createWidget(node) {
         flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
       };
       if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
+      if (edLassoOps.length > 0) { transform.lassoOps = edLassoOps; }
+      if (edLassoInverted) { transform.lassoInverted = true; }
       const fn = items[curIdx]?.filename ?? "";
       const cacheKey = JSON.stringify(transform) + "|" + fn;
       edReqHandle = setTimeout(async () => {
@@ -1714,10 +2286,14 @@ function createWidget(node) {
       else               { frameH=maxH; frameW=Math.round(maxH*asp); }
       frameCX=cw/2; frameCY=ch/2;
       // bFit accounts for rotated bounding box of effective (possibly cropped) image
+      // Respects fit_mode: crop=max (fill), letterbox=min (fit)
       const eW = effNatW(), eH = effNatH();
       const rf=edRotate*Math.PI/180, c=Math.abs(Math.cos(rf)), s=Math.abs(Math.sin(rf));
       const rW=eW*c+eH*s, rH=eW*s+eH*c;
-      bFit=Math.min(frameW/rW,frameH/rH);
+      const edFitMode = getFitModeWidget()?.value ?? "letterbox";
+      bFit = edFitMode === "crop"
+        ? Math.max(frameW/rW, frameH/rH)
+        : Math.min(frameW/rW, frameH/rH);
     }
 
     function redraw() {
@@ -1733,9 +2309,8 @@ function createWidget(node) {
           ctx.fillStyle=(r+c)%2===0?"#1a1a1a":"#141414";
           ctx.fillRect(c*T,r*T,T,T);
         }
-        // background fill inside frame
-        const bgC = edBg==="black" ? "#000000" : edBg==="white" ? "#ffffff"
-                  : /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
+        // background fill inside frame — uses per-image edBg (initialized from node bg_color, overridable per-image)
+        const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
         ctx.fillStyle=bgC; ctx.fillRect(fx,fy,frameW,frameH);
         if (edBg==="telea"||edBg==="navier-stokes") {
           ctx.save(); ctx.strokeStyle="rgba(90,122,191,0.18)"; ctx.lineWidth=1;
@@ -1765,6 +2340,34 @@ function createWidget(node) {
             } else {
               ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
             }
+            // Lasso mask overlay — show bg color outside selection
+            if (edLassoOps.length > 0) {
+              const mw = Math.ceil(dw), mh = Math.ceil(dh);
+              // Build mask canvas (white = inside selection)
+              if (!_lassoOverlayCvs) _lassoOverlayCvs = document.createElement('canvas');
+              _lassoOverlayCvs.width = mw; _lassoOverlayCvs.height = mh;
+              const mx = _lassoOverlayCvs.getContext('2d');
+              mx.clearRect(0, 0, mw, mh);
+              for (const op of edLassoOps) {
+                if (op.points.length < 3) continue;
+                mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+                mx.fillStyle = "white"; mx.beginPath();
+                mx.moveTo(op.points[0][0]*mw, op.points[0][1]*mh);
+                for (let k=1;k<op.points.length;k++) mx.lineTo(op.points[k][0]*mw, op.points[k][1]*mh);
+                mx.closePath(); mx.fill();
+              }
+              if (edLassoInverted) { mx.globalCompositeOperation="xor"; mx.fillStyle="white"; mx.fillRect(0,0,mw,mh); }
+              mx.globalCompositeOperation = "source-over";
+              // Overlay: bg color everywhere, punched out by mask
+              if (!_lassoOverlayBg) _lassoOverlayBg = document.createElement('canvas');
+              _lassoOverlayBg.width=mw; _lassoOverlayBg.height=mh;
+              const ox = _lassoOverlayBg.getContext('2d');
+              ox.fillStyle = bgC; ox.fillRect(0,0,mw,mh);
+              ox.globalCompositeOperation = 'destination-out';
+              ox.drawImage(_lassoOverlayCvs, 0, 0);
+              ox.globalCompositeOperation = 'source-over';
+              ctx.drawImage(_lassoOverlayBg, -dw/2, -dh/2);
+            }
             ctx.restore();
           }
           if (isInpaint) {
@@ -1793,6 +2396,8 @@ function createWidget(node) {
         }
         // crop region overlay
         drawCropOverlay(ctx);
+        // lasso overlay
+        drawLassoOverlay(ctx);
       });
     }
 
@@ -1800,9 +2405,12 @@ function createWidget(node) {
     function saveToSes() {
       const fn = items[curIdx]?.filename; if (!fn) return;
       const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
-      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!=="#808080"||hasAppliedCrop) {
+      const hasLasso = edLassoOps.length > 0 || edLassoInverted;
+      const nodeBg = getEffectiveBgColor();
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
+        if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
         ses[fn] = t;
       } else delete ses[fn];
     }
@@ -1813,6 +2421,10 @@ function createWidget(node) {
       prevB.style.opacity=idx===0?"0.35":"1";
       nextB.style.opacity=idx===items.length-1?"0.35":"1";
       edImg=null; redraw();
+      // Reset lasso state when switching images
+      edLassoCurrentPts = []; edLassoDrawing = false; edLassoMode = false;
+      _lassoCursorNorm = null;
+      stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
       await new Promise(res=>{
         const el=new Image(); el.crossOrigin="anonymous";
         el.onload=()=>{
@@ -1821,13 +2433,17 @@ function createWidget(node) {
           // Restore applied crop BEFORE syncCvs so bFit uses effective dims
           if (t && t.cx != null) edAppliedCrop = { cx: t.cx, cy: t.cy, cw: t.cw, ch: t.ch };
           else edAppliedCrop = null;
+          edLassoOps = (t && t.lassoOps) ? t.lassoOps : [];
+          edLassoInverted = !!(t && t.lassoInverted);
+          _lassoMaskDirty = true;
+          syncLassoInvertBtn();
           edCropBox = null; edCropDrag = null;
           syncCvs();
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
-          edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??"#808080";
+          edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??getEffectiveBgColor();
           updateDimLabels(); updateCropInfoLbl();
           edInpaintPreview=null; edInpaintDirty=true;
-          syncRotUI(); syncBgUI(); updLbl(); redraw(); requestInpaintPreview(); res();
+          syncRotUI(); syncBgUI(); syncFlipUI(); updLbl(); redraw(); requestInpaintPreview(); res();
         };
         el.onerror=res; el.src=items[idx].src;
       });
@@ -1835,6 +2451,20 @@ function createWidget(node) {
 
     // ── events ───────────────────────────────────────────────
     function onGlobalMove(e) {
+      // ── lasso draw / track ──
+      if (edLassoMode) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const { nx, ny } = cropPxToNorm(cx, cy);
+        const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
+        if (edLassoTool === "freehand" && edLassoDrawing) {
+          edLassoCurrentPts.push({ x: cNx, y: cNy }); redraw(); return;
+        }
+        if (edLassoTool === "polygonal" && edLassoCurrentPts.length > 0) {
+          _lassoCursorNorm = { x: cNx, y: cNy }; redraw(); return;
+        }
+        return; // lasso mode active — don't pan
+      }
       // ── crop drag ──
       if (edCropMode && edCropDrag) {
         const r = cvs.getBoundingClientRect();
@@ -1860,25 +2490,121 @@ function createWidget(node) {
           if (m.includes('bottom')) { h = Math.max(0.02, cNy - y); }
           edCropBox = { x, y, w, h };
         }
-        // aspect ratio constraint from AR input
+        // ── AR constraint ─────────────────────────────────────────
         const arVal = parseCropAR();
         if (arVal && m !== 'move' && edCropBox) {
           const eW = effNatW(), eH = effNatH();
-          // target: (w*eW)/(h*eH) = arVal → h = (w*eW)/(arVal*eH)
+          const b = edCropBox;
           if (m === 'top' || m === 'bottom') {
-            edCropBox.w = (edCropBox.h * eH * arVal) / eW;
+            // h is driven by drag → derive w to match AR
+            b.w = (b.h * eH * arVal) / eW;
           } else {
-            edCropBox.h = (edCropBox.w * eW) / (arVal * eH);
+            // w is driven by drag → derive h to match AR
+            b.h = (b.w * eW) / (arVal * eH);
           }
+          // Now enforce that both dimensions fit inside [0,1] without breaking AR.
+          // Anchor: the edge opposite to the drag handle stays fixed.
+          // We scale the box down if it overflows, keeping the ratio locked.
+          let scale = 1;
+          // Max size limited by image edges
+          if (m.includes('right') || m === 'bottom') {
+            // anchor is left/top edge (x,y are fixed)
+            if (b.x + b.w > 1) scale = Math.min(scale, (1 - b.x) / b.w);
+            if (b.y + b.h > 1) scale = Math.min(scale, (1 - b.y) / b.h);
+          } else if (m.includes('left') || m === 'top') {
+            // anchor is right/bottom edge (x+w, y+h are fixed)
+            const right  = b.x + b.w;
+            const bottom = b.y + b.h;
+            if (b.w > right)  scale = Math.min(scale, right  / b.w);
+            if (b.h > bottom) scale = Math.min(scale, bottom / b.h);
+          } else {
+            // corner: anchor is the opposite corner
+            if (b.x + b.w > 1) scale = Math.min(scale, (1 - b.x) / b.w);
+            if (b.y + b.h > 1) scale = Math.min(scale, (1 - b.y) / b.h);
+            if (b.x < 0)       scale = Math.min(scale, (b.x + b.w) / b.w);
+            if (b.y < 0)       scale = Math.min(scale, (b.y + b.h) / b.h);
+          }
+          if (scale < 1) {
+            // Scale both dims, keeping the far anchor fixed
+            const newW = b.w * scale, newH = b.h * scale;
+            if (m.includes('left'))   { b.x = (b.x + b.w) - newW; }
+            if (m.includes('top'))    { b.y = (b.y + b.h) - newH; }
+            b.w = newW; b.h = newH;
+          }
+          // Clamp position only (size is already valid from scale above)
+          b.x = Math.max(0, Math.min(b.x, 1 - b.w));
+          b.y = Math.max(0, Math.min(b.y, 1 - b.h));
+          b.w = Math.max(0.02, b.w);
+          b.h = Math.max(0.02, b.h);
+        } else {
+          clampCropBox();
         }
-        clampCropBox(); updateCropInfoLbl(); redraw();
+        updateCropInfoLbl(); redraw();
         return;
       }
-      // ── pan drag ──
+      // ── pan drag with snap-to-edges ──
       if (!panSt) return;
-      dOX=panSt.ox+(e.clientX-panSt.x); dOY=panSt.oy+(e.clientY-panSt.y); redraw();
+      dOX = panSt.ox + (e.clientX - panSt.x);
+      dOY = panSt.oy + (e.clientY - panSt.y);
+
+      // Uses bFit (already accounts for fit_mode in syncCvs)
+      const eW = effNatW(), eH = effNatH();
+      const rot = edRotate * Math.PI / 180;
+      const cA = Math.abs(Math.cos(rot)), sA = Math.abs(Math.sin(rot));
+      const rW = eW * cA + eH * sA, rH = eW * sA + eH * cA;
+      const hW = rW * bFit * edScale / 2;   // half-width  of image on canvas px
+      const hH = rH * bFit * edScale / 2;   // half-height of image on canvas px
+
+      // Frame half-extents (frame is centred on frameCX, frameCY)
+      const hFW = frameW / 2, hFH = frameH / 2;
+
+      // Snap threshold in canvas pixels
+      const SNAP = 8;
+
+      // Left edge of image  vs  left edge of frame
+      const imgL = dOX - hW,  frmL = -hFW;
+      const imgR = dOX + hW,  frmR =  hFW;
+      const imgT = dOY - hH,  frmT = -hFH;
+      const imgB = dOY + hH,  frmB =  hFH;
+
+      // Snap to center lines first (highest priority when near center)
+      const snapX_center = Math.abs(dOX) < SNAP;
+      const snapY_center = Math.abs(dOY) < SNAP;
+
+      // Snap X: center → left edge → right edge
+      if (snapX_center) {
+        dOX = 0;                  // snap to horizontal center
+      } else {
+        const dL = imgL - frmL, dR = imgR - frmR;
+        if (Math.abs(dL) < SNAP && (Math.abs(dL) <= Math.abs(dR))) {
+          dOX = frmL + hW;       // snap left edge flush
+        } else if (Math.abs(dR) < SNAP) {
+          dOX = frmR - hW;       // snap right edge flush
+        }
+      }
+
+      // Snap Y: center → top edge → bottom edge
+      if (snapY_center) {
+        dOY = 0;                  // snap to vertical center
+      } else {
+        const dT = imgT - frmT, dB = imgB - frmB;
+        if (Math.abs(dT) < SNAP && (Math.abs(dT) <= Math.abs(dB))) {
+          dOY = frmT + hH;       // snap top edge flush
+        } else if (Math.abs(dB) < SNAP) {
+          dOY = frmB - hH;       // snap bottom edge flush
+        }
+      }
+
+      redraw();
     }
     function onGlobalUp(e) {
+      // ── lasso freehand end ──
+      if (edLassoMode && edLassoDrawing && edLassoTool === "freehand") {
+        edLassoDrawing = false;
+        if (edLassoCurrentPts.length < 5) { edLassoCurrentPts = []; }
+        else { commitLassoShape(edLassoCurrentPts, e); }
+        redraw(); ca.style.cursor = e.shiftKey ? _lassoCursors.add : e.altKey ? _lassoCursors.subtract : _lassoCursors.normal; return;
+      }
       if (edCropMode && edCropDrag) {
         edCropDrag = null;
         const r = cvs.getBoundingClientRect();
@@ -1886,10 +2612,27 @@ function createWidget(node) {
         ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
         updateCropInfoLbl(); return;
       }
-      if (panSt) { panSt=null; ca.style.cursor="grab"; requestInpaintPreview(); }
+      if (panSt) { panSt=null; ca.style.cursor = edLassoMode ? _lassoCursors.normal : edCropMode ? "crosshair" : "grab"; requestInpaintPreview(); }
     }
     cvs.addEventListener("mousedown", e=>{
       if (e.button!==0) return;
+      // ── lasso start / polygonal click ──
+      if (edLassoMode) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const { nx, ny } = cropPxToNorm(cx, cy);
+        const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
+        if (edLassoTool === "freehand") {
+          edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; ca.style.cursor = 'crosshair';
+        } else {
+          if (edLassoCurrentPts.length >= 3) {
+            const d = Math.hypot((cNx - edLassoCurrentPts[0].x) * frameW, (cNy - edLassoCurrentPts[0].y) * frameH);
+            if (d < 10) { commitLassoShape(edLassoCurrentPts, e); return; }
+          }
+          edLassoCurrentPts.push({ x: cNx, y: cNy }); redraw();
+        }
+        return;
+      }
       if (edCropMode) {
         const r = cvs.getBoundingClientRect();
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
@@ -1911,10 +2654,24 @@ function createWidget(node) {
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
     });
     cvs.addEventListener("mousemove", e=>{
+      if (edLassoMode) {
+        ca.style.cursor = e.shiftKey ? _lassoCursors.add : e.altKey ? _lassoCursors.subtract : _lassoCursors.normal;
+        return;
+      }
       if (edCropMode && !edCropDrag) {
         const r = cvs.getBoundingClientRect();
         const hit = cropHitTest(e.clientX - r.left, e.clientY - r.top);
         ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
+      }
+    });
+    cvs.addEventListener("dblclick", e => {
+      if (edLassoMode && edLassoTool === "polygonal" && edLassoCurrentPts.length >= 3) {
+        e.preventDefault(); commitLassoShape(edLassoCurrentPts, e);
+      }
+    });
+    document.addEventListener("keydown", e => {
+      if (edLassoMode && e.key === "Escape" && edLassoCurrentPts.length > 0) {
+        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null; redraw();
       }
     });
     window.addEventListener("mousemove", onGlobalMove);
@@ -1930,11 +2687,15 @@ function createWidget(node) {
     },{passive:false});
     const ro=new ResizeObserver(()=>redraw()); ro.observe(ca);
     function onKey(e) {
-      if (e.key==="ArrowLeft"  && curIdx>0)               { saveToSes(); loadIdx(curIdx-1); }
-      if (e.key==="ArrowRight" && curIdx<items.length-1)  { saveToSes(); loadIdx(curIdx+1); }
-      if (e.key==="Escape") doClose();
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Escape") {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+      if (e.key === "ArrowLeft"  && curIdx > 0)              { saveToSes(); loadIdx(curIdx-1); }
+      if (e.key === "ArrowRight" && curIdx < items.length-1) { saveToSes(); loadIdx(curIdx+1); }
+      if (e.key === "Escape") doClose();
     }
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
     prevB.addEventListener("click", ()=>{ if(curIdx>0)             { saveToSes(); loadIdx(curIdx-1); } });
     nextB.addEventListener("click", ()=>{ if(curIdx<items.length-1){ saveToSes(); loadIdx(curIdx+1); } });
 
@@ -1942,12 +2703,21 @@ function createWidget(node) {
     function doClose() {
       clearTimeout(edReqHandle);
       cancelAnimationFrame(rafId); ro.disconnect();
-      window.removeEventListener("keydown",    onKey);
+      stopLassoAnts();
+      window.removeEventListener("keydown",    onKey, { capture: true });
       window.removeEventListener("mousemove",  onGlobalMove);
       window.removeEventListener("mouseup",    onGlobalUp);
       ov.remove();
     }
     function doApply() {
+      // Auto-commit any pending lasso contour the user forgot to apply
+      // Auto-commit any pending lasso drawing
+      if (edLassoCurrentPts.length >= 3) {
+        const normalized = edLassoCurrentPts.map(p => [p.x, p.y]);
+        edLassoOps.push({ mode: "add", points: normalized });
+        edLassoCurrentPts = []; edLassoDrawing = false;
+        _lassoMaskDirty = true; stopLassoAnts();
+      }
       // Auto-commit any pending crop box the user forgot to apply
       if (edCropBox) {
         if (edAppliedCrop) {
@@ -1964,11 +2734,12 @@ function createWidget(node) {
       }
       saveToSes();
       const valid=new Set(items.map(i=>i.filename));
+      const _nodeBg = getEffectiveBgColor();
       // commit session to cropMap
       for (const fn of valid) {
         const t=ses[fn];
-        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!=="#808080")||
-            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1)))) cropMap[fn]=t;
+        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!==_nodeBg)||
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted)) cropMap[fn]=t;
         else delete cropMap[fn];
       }
       persistCropData(); persist(); doClose();
@@ -1995,7 +2766,7 @@ function createWidget(node) {
           });
         }
       }
-      cropArInput.value = _simplifyAR(edRefW, edRefH);
+      cropArInput.value = (_nodeArVal && _nodeArVal !== 'none') ? _nodeArVal : _simplifyAR(edRefW, edRefH);
       syncCvs();
       await loadIdx(startIdx);
     }
@@ -2158,8 +2929,15 @@ app.registerExtension({
         const hiddenNames = ["image_list", "crop_data"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
-            w.type = "hidden";
-            w.inputEl?.remove?.();
+            w.type = "converted-widget";
+            w.computeSize = () => [0, -4];
+            w.draw = function() {};  // prevent LiteGraph from drawing it
+            if (w.inputEl) {
+              w.inputEl.style.display = "none";
+              w.inputEl.type = "hidden";
+            }
+            // Also hide the parent wrapper that ComfyUI may wrap the input in
+            if (w.element) w.element.style.display = "none";
           }
         });
         // Re-render+resize when user changes thumbnail size
@@ -2171,8 +2949,8 @@ app.registerExtension({
             node._milDomWidget?.element?._renderWithResize?.();
           };
         }
-        // Auto-preview when aspect_ratio, fit_mode, or megapixels change
-        const autoPreviewWidgets = ["aspect_ratio", "fit_mode", "megapixels"];
+        // Auto-preview when aspect_ratio, fit_mode, megapixels, or bg_color change
+        const autoPreviewWidgets = ["aspect_ratio", "fit_mode", "megapixels", "bg_color"];
         autoPreviewWidgets.forEach(wName => {
           const w = node.widgets?.find(ww => ww.name === wName);
           if (w) {
@@ -2183,6 +2961,19 @@ app.registerExtension({
             };
           }
         });
+
+        // Hide internal-only widgets from user
+        ["image_list", "crop_data", "custom_bg_hex"].forEach(name => {
+          const hw = node.widgets?.find(ww => ww.name === name);
+          if (hw) {
+            hw.type = "converted-widget";
+            hw.computeSize = () => [0, -4];
+            hw.draw = function() {};
+            if (hw.inputEl) { hw.inputEl.style.display = "none"; hw.inputEl.type = "hidden"; }
+            if (hw.element) hw.element.style.display = "none";
+          }
+        });
+
         node.setDirtyCanvas(true);
       }, 0);
 
@@ -2193,6 +2984,13 @@ app.registerExtension({
           node._milDomWidget?.element?._addFiles?.(e.dataTransfer.files);
         }
         return false;
+      };
+
+      node.onResize = function () {
+        // Re-render thumbnails at new fluid width whenever the node is resized
+        requestAnimationFrame(() => {
+          node._milDomWidget?.element?._render?.();
+        });
       };
     };
 

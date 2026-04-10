@@ -4,7 +4,7 @@ import math
 import hashlib
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 from pathlib import Path
 from server import PromptServer
 from aiohttp import web
@@ -186,6 +186,57 @@ async def rembg_handler(request):
         return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
+# ─── Rembg Reset route ────────────────────────────────────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/rembg_reset")
+async def rembg_reset_handler(request):
+    """Restore the original image from the _original backup created by the rembg route.
+    Overwrites the working file and returns a base64 data URL for immediate preview."""
+    import asyncio, base64, io as _io
+
+    try:
+        data     = await request.json()
+        filename = data.get("filename", "")
+
+        if not filename:
+            return web.Response(status=400, text="Missing filename")
+
+        filename = os.path.basename(filename)
+        path = os.path.join(folder_paths.get_input_directory(), filename)
+        if not os.path.isfile(path):
+            return web.Response(status=404, text=f"File not found: {filename}")
+
+        stem, ext = os.path.splitext(path)
+        backup = f"{stem}_original{ext}"
+
+        if not os.path.isfile(backup):
+            return web.json_response(
+                {"success": False, "error": "No original backup found — rembg has not been applied to this image."},
+                status=404
+            )
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            import shutil
+            shutil.copy2(backup, path)
+            img = Image.open(path)
+            buf = _io.BytesIO()
+            fmt = "PNG" if path.lower().endswith(".png") else "JPEG"
+            img.save(buf, format=fmt)
+            mime = "image/png" if fmt == "PNG" else "image/jpeg"
+            return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+        data_url = await loop.run_in_executor(None, _run)
+        print(f"[MIL rembg_reset] restored: {filename}")
+        return web.json_response({"success": True, "dataUrl": data_url})
+
+    except Exception as e:
+        import traceback
+        print(f"[MIL rembg_reset] error: {e}\n{traceback.format_exc()}")
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+
+
 # ─── Node ─────────────────────────────────────────────────────────────────────
 
 def _scale_to_megapixels(img: Image.Image, megapixels: float) -> Image.Image:
@@ -216,7 +267,24 @@ def _compute_canvas_dims(aspect_ratio: str, megapixels: float, first_img_size=No
     return (w, h)
 
 
-def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
+def _parse_hex_color(hex_str: str) -> tuple:
+    """Convert '#RRGGBB' hex string to (R, G, B) tuple. Defaults to gray."""
+    hex_str = hex_str.strip()
+    if hex_str.startswith("#") and len(hex_str) == 7:
+        try:
+            return (int(hex_str[1:3], 16), int(hex_str[3:5], 16), int(hex_str[5:7], 16))
+        except ValueError:
+            pass
+    return (128, 128, 128)
+
+
+def _parse_bg_color_word(word: str) -> tuple:
+    """Convert word label ('gray', 'black', 'white') to (R, G, B) tuple."""
+    mapping = {"gray": (128, 128, 128), "black": (0, 0, 0), "white": (255, 255, 255)}
+    return mapping.get(word.strip().lower(), (128, 128, 128))
+
+
+def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_color: tuple = (128, 128, 128)) -> Image.Image:
     """
     Resize `img` to (target_w, target_h) using the requested fit strategy.
 
@@ -240,7 +308,7 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Ima
         new_w = round(src_w * scale)
         new_h = round(src_h * scale)
         resized = img.resize((new_w, new_h), Image.LANCZOS)
-        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+        canvas = Image.new("RGB", (target_w, target_h), bg_color)
         offset_x = (target_w - new_w) // 2
         offset_y = (target_h - new_h) // 2
         canvas.paste(resized, (offset_x, offset_y))
@@ -279,7 +347,7 @@ def _apply_crop_region(img: Image.Image, transform: dict) -> Image.Image:
     return img.crop((left, top, right, bottom))
 
 
-def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int) -> Image.Image:
+def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int, fit_mode: str = "letterbox", node_bg_color: tuple = (128, 128, 128)) -> Image.Image:
     """
     Apply a user-defined pan/zoom/flip/rotate transform and crop to canvas_w × canvas_h.
     transform keys:
@@ -289,6 +357,8 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
       rotate    – clockwise degrees (-180..180)
       bg        – background fill: 'black' | 'white' | '#rrggbb' | '#808080' (default) |
                   'telea' | 'navier-stokes'
+    fit_mode      – 'letterbox' | 'crop'  controls base scale when scale==1.0
+    node_bg_color – RGB tuple for letterbox padding (from the node's bg_color widget)
     """
     import numpy as np
 
@@ -353,9 +423,12 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
             rgba = rgba.rotate(-rotate, expand=True, resample=Image.BICUBIC,
                                fillcolor=(0, 0, 0, 0))
 
-        # Scale to fit canvas, applying user zoom
+        # Scale to fit/fill canvas, applying user zoom
         src_w, src_h = rgba.size
-        base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+        if fit_mode == "crop":
+            base_scale = max(canvas_w / src_w, canvas_h / src_h)
+        else:
+            base_scale = min(canvas_w / src_w, canvas_h / src_h)
         eff_scale    = base_scale * scale
         new_w        = max(1, round(src_w * eff_scale))
         new_h        = max(1, round(src_h * eff_scale))
@@ -370,6 +443,13 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
         # Alpha channel → inpaint mask  (255 = empty area to fill, 0 = keep)
         alpha_np     = np.array(canvas_rgba.split()[3])
         inpaint_mask = np.where(alpha_np < 128, 255, 0).astype(np.uint8)
+
+        # Incorporate lasso mask — areas outside lasso selection should also be inpainted
+        lasso_mask = _generate_lasso_mask(transform, img.size, canvas_w, canvas_h)
+        if lasso_mask is not None:
+            lasso_np = np.array(lasso_mask)
+            # lasso_np: 255 = inside selection (keep), 0 = outside (inpaint)
+            inpaint_mask = np.where(lasso_np < 128, 255, inpaint_mask).astype(np.uint8)
 
         # RGB image with gray seed in empty areas (gives inpaint a neutral start)
         seed = Image.new("RGB", (canvas_w, canvas_h), (128, 128, 128))
@@ -395,7 +475,10 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
                          fillcolor=bg_color)
 
     src_w, src_h = img.size
-    base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+    if fit_mode == "crop":
+        base_scale = max(canvas_w / src_w, canvas_h / src_h)
+    else:
+        base_scale = min(canvas_w / src_w, canvas_h / src_h)
     eff_scale    = base_scale * scale
     new_w        = max(1, round(src_w * eff_scale))
     new_h        = max(1, round(src_h * eff_scale))
@@ -404,10 +487,89 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
 
-    canvas = Image.new("RGB", (canvas_w, canvas_h), bg_color)
+    # Letterbox uses the node's bg_color; crop/fill uses the editor's per-image bg
+    canvas_bg = node_bg_color if fit_mode == "letterbox" else bg_color
+    canvas = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
     canvas.paste(resized, (paste_x, paste_y))
     return canvas
 
+
+def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int, canvas_h: int) -> Image.Image:
+    """Generate a composite lasso mask from operations and apply geometric transforms.
+    Returns an 'L' mode image (canvas_w × canvas_h) — 255 inside, 0 outside.
+    Returns None if no lasso ops in transform."""
+    ops = transform.get("lassoOps", [])
+    inverted = bool(transform.get("lassoInverted", False))
+
+    # Legacy single-polygon support
+    legacy_poly = transform.get("lassoPoly")
+    if legacy_poly and not ops:
+        ops = [{"mode": "add", "points": legacy_poly}]
+
+    if not ops:
+        return None
+
+    # ── Crop region dimensions (mirror _apply_crop_region) ──
+    cx = float(transform.get("cx", 0.0))
+    cy = float(transform.get("cy", 0.0))
+    cw = float(transform.get("cw", 1.0))
+    ch = float(transform.get("ch", 1.0))
+    orig_w, orig_h = source_img_size
+    if cx <= 0 and cy <= 0 and cw >= 1 and ch >= 1:
+        crop_w, crop_h = orig_w, orig_h
+    else:
+        left   = max(0, min(round(cx * orig_w), orig_w - 1))
+        top    = max(0, min(round(cy * orig_h), orig_h - 1))
+        right  = max(left + 1, min(round((cx + cw) * orig_w), orig_w))
+        bottom = max(top + 1, min(round((cy + ch) * orig_h), orig_h))
+        crop_w = right - left
+        crop_h = bottom - top
+
+    # ── Replay operations onto mask ──
+    mask = Image.new("L", (crop_w, crop_h), 0)
+    draw = ImageDraw.Draw(mask)
+    for op in ops:
+        points = op.get("points", [])
+        if len(points) < 3:
+            continue
+        mode = op.get("mode", "add")
+        poly_px = [(p[0] * crop_w, p[1] * crop_h) for p in points]
+        fill_val = 255 if mode == "add" else 0
+        draw.polygon(poly_px, fill=fill_val)
+
+    # ── Invert if requested ──
+    if inverted:
+        mask = ImageOps.invert(mask)
+
+    # ── Geometric transforms (same as solid-fill path in _apply_crop_transform) ──
+    ox     = float(transform.get("ox",     0.0))
+    oy     = float(transform.get("oy",     0.0))
+    scale  = float(transform.get("scale",  1.0))
+    flipH  = bool(transform.get("flipH",  False))
+    flipV  = bool(transform.get("flipV",  False))
+    rotate = float(transform.get("rotate", 0.0))
+    if scale <= 0:
+        scale = 1.0
+
+    if flipH: mask = ImageOps.mirror(mask)
+    if flipV: mask = ImageOps.flip(mask)
+
+    if rotate != 0:
+        mask = mask.rotate(-rotate, expand=True, resample=Image.LANCZOS, fillcolor=0)
+
+    src_w, src_h = mask.size
+    base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+    eff_scale    = base_scale * scale
+    new_w        = max(1, round(src_w * eff_scale))
+    new_h        = max(1, round(src_h * eff_scale))
+    mask         = mask.resize((new_w, new_h), Image.LANCZOS)
+
+    paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
+    paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
+
+    canvas = Image.new("L", (canvas_w, canvas_h), 0)
+    canvas.paste(mask, (paste_x, paste_y))
+    return canvas
 
 
 class MultiImageLoader:
@@ -431,6 +593,8 @@ class MultiImageLoader:
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list":   ("STRING", {"default": "[]"}),
                 "fit_mode":     (["letterbox", "crop"],),
+                "bg_color":     (["gray", "black", "white"],
+                                 {"default": "gray"}),
                 "aspect_ratio": (["none", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
                                  {"default": "none"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
@@ -439,17 +603,17 @@ class MultiImageLoader:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image_batch",)
+    RETURN_TYPES = ("IMAGE", "MASK",)
+    RETURN_NAMES = ("image_batch", "mask_batch",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
-        return hashlib.md5((image_list + crop_data + aspect_ratio + str(megapixels)).encode()).hexdigest()
+    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+        return hashlib.md5((image_list + crop_data + aspect_ratio + fit_mode + bg_color + str(megapixels)).encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+    def load_images(self, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -460,12 +624,14 @@ class MultiImageLoader:
         except Exception:
             transforms = {}
 
-        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
         if not filenames:
-            return (placeholder,)
+            return (placeholder_img, placeholder_mask)
 
         input_dir = Path(folder_paths.get_input_directory())
-        tensors   = []
+        tensors      = []
+        mask_tensors = []
 
         # When aspect_ratio is set, pre-compute the fixed canvas size.
         # Otherwise the first loaded image defines the reference (legacy behaviour).
@@ -484,32 +650,49 @@ class MultiImageLoader:
             try:
                 img = Image.open(fpath)
                 img = ImageOps.exif_transpose(img)
+                source_size = img.size  # store before conversion for lasso mask
                 img = img.convert("RGB")
 
                 # Scale down to megapixel budget before anything else
                 img = _scale_to_megapixels(img, megapixels)
+                source_size = img.size  # update after scale
 
                 if ref_w is None:
                     ref_w, ref_h = img.size
                     print(f"[MultiImageLoader] ref size: {ref_w}×{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
 
                 t = transforms.get(fname)
+                # Resolve node-level bg_color word to RGB tuple
+                _bg_rgb = _parse_bg_color_word(bg_color)
+
                 if t:
-                    img = _apply_crop_transform(img, t, ref_w, ref_h)
+                    img = _apply_crop_transform(img, t, ref_w, ref_h, fit_mode=fit_mode, node_bg_color=_bg_rgb)
                 elif img.size != (ref_w, ref_h):
-                    img = _fit_image(img, ref_w, ref_h, fit_mode)
+                    img = _fit_image(img, ref_w, ref_h, fit_mode, bg_color=_bg_rgb)
 
                 arr = np.array(img).astype(np.float32) / 255.0
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))
+
+                # ── Lasso mask ──
+                if t and t.get("lassoPoly"):
+                    mask_img = _generate_lasso_mask(t, source_size, ref_w, ref_h)
+                    if mask_img is not None:
+                        mask_arr = np.array(mask_img).astype(np.float32) / 255.0
+                        mask_tensors.append(torch.from_numpy(mask_arr).unsqueeze(0))
+                    else:
+                        mask_tensors.append(torch.ones((1, ref_h, ref_w), dtype=torch.float32))
+                else:
+                    mask_tensors.append(torch.ones((1, ref_h, ref_w), dtype=torch.float32))
             except Exception as e:
                 print(f"[MultiImageLoader] Error loading {fname}: {e}")
                 continue
 
         if not tensors:
-            return (placeholder,)
+            return (placeholder_img, placeholder_mask)
 
-        batch = torch.cat(tensors, dim=0)
-        return (batch,)
+        batch      = torch.cat(tensors, dim=0)
+        mask_batch = torch.cat(mask_tensors, dim=0)
+        return (batch, mask_batch)
 
 
 # ─── Registrations ────────────────────────────────────────────────────────────
