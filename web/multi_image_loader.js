@@ -1,5 +1,16 @@
 /**
- * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.6
+ * ComfyUI-Multi-Image-Loader  –  Frontend Extension v1.8
+ *
+ * Changes in v1.8:
+ *  - Ctrl+V paste from clipboard: select the node and press Ctrl+V to add a
+ *    copied image directly from the system clipboard (works with screenshots,
+ *    browser images, etc.)
+ *
+ * Changes in v1.7:
+ *  - Responsive Crop Editor modal: scales properly on 4K / 5K / HiDPI displays
+ *  - Dialog grows to clamp(700px,90vw,1920px) × clamp(480px,88vh,1200px)
+ *  - uiScale factor derived from physical screen resolution (devicePixelRatio × screen.width)
+ *  - All sidebar elements (fonts, buttons, inputs, padding) scale with uiScale
  *
  * Changes in v1.6:
  *  - "Remove Background" section in Crop Editor modal panel
@@ -115,6 +126,12 @@ function injectStyles() {
       to   { opacity:1; transform:scale(1);    }
     }
     .mil-crop-enter { animation: mil-fadein 0.18s ease-out; }
+    @keyframes mil-paste-flash {
+      0%   { box-shadow: inset 0 0 0 2px #44ff88, 0 0 10px rgba(68,255,136,0.55); }
+      15%  { box-shadow: inset 0 0 0 2px #44ff88, 0 0 10px rgba(68,255,136,0.55); }
+      100% { box-shadow: inset 0 0 0 2px rgba(68,255,136,0),  0 0 0   rgba(68,255,136,0); }
+    }
+    .mil-paste-flash { animation: mil-paste-flash 5s ease-out forwards; }
     .mil-scroll-fade {
       position: absolute; bottom: 0; left: 0; right: 7px;
       height: 24px;
@@ -362,7 +379,8 @@ function createWidget(node) {
   function hasCrop(filename) {
     const t = cropMap[filename];
     return !!(t && (t.ox!==0 || t.oy!==0 || t.scale!==1.0 || t.flipH || t.flipV ||
-              (t.rotate||0)!==0 || (t.bg && t.bg !== "#808080")));
+              (t.rotate||0)!==0 || (t.bg && t.bg !== "#808080") ||
+              (t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1))));
   }
   function persistCropData() {
     const w = getCropDataWidget();
@@ -434,17 +452,23 @@ function createWidget(node) {
         const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
         const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
         const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
-        const rW = el.naturalWidth * cosA + el.naturalHeight * sinA;
-        const rH = el.naturalWidth * sinA + el.naturalHeight * cosA;
+        // Pre-crop: use source rect from crop region
+        const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
+        const srcX = hasCR ? t.cx * el.naturalWidth  : 0;
+        const srcY = hasCR ? t.cy * el.naturalHeight : 0;
+        const srcW = hasCR ? t.cw * el.naturalWidth  : el.naturalWidth;
+        const srcH = hasCR ? t.ch * el.naturalHeight : el.naturalHeight;
+        const rW = srcW * cosA + srcH * sinA;
+        const rH = srcW * sinA + srcH * cosA;
         const bf = Math.min(refW / rW, refH / rH);
         const eff = bf * sc;
-        const dw = el.naturalWidth * eff, dh = el.naturalHeight * eff;
+        const dw = srcW * eff, dh = srcH * eff;
 
         ctx.save();
         ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
         ctx.rotate(rot);
         ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
-        ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
+        ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
         ctx.restore();
 
         item.previewSrc = cvs.toDataURL("image/jpeg", 0.92);
@@ -792,8 +816,14 @@ function createWidget(node) {
         return dataUrl;
       }
 
-      // Solid-fill crop path
+      // Solid-fill crop path — crop region is a PRE-step on the source
       const el = await loadImage(item.src);
+      // Effective source dimensions after pre-crop
+      const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
+      const srcX = hasCR ? t.cx * el.naturalWidth  : 0;
+      const srcY = hasCR ? t.cy * el.naturalHeight : 0;
+      const srcW = hasCR ? t.cw * el.naturalWidth  : el.naturalWidth;
+      const srcH = hasCR ? t.ch * el.naturalHeight : el.naturalHeight;
       const cvs = document.createElement("canvas");
       cvs.width = refW; cvs.height = refH;
       const ctx = cvs.getContext("2d");
@@ -803,16 +833,16 @@ function createWidget(node) {
       const ox = t.ox ?? 0, oy = t.oy ?? 0, sc = t.scale ?? 1;
       const fH = !!(t.flipH), fV = !!(t.flipV), rot = (t.rotate || 0) * Math.PI / 180;
       const cosA = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
-      const rW = el.naturalWidth * cosA + el.naturalHeight * sinA;
-      const rH = el.naturalWidth * sinA + el.naturalHeight * cosA;
+      const rW = srcW * cosA + srcH * sinA;
+      const rH = srcW * sinA + srcH * cosA;
       const bf = Math.min(refW / rW, refH / rH);
       const eff = bf * sc;
-      const dw = el.naturalWidth * eff, dh = el.naturalHeight * eff;
+      const dw = srcW * eff, dh = srcH * eff;
       ctx.save();
       ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
       ctx.rotate(rot);
       ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
-      ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
+      ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
       ctx.restore();
       return cvs.toDataURL("image/png");
     }
@@ -953,6 +983,7 @@ function createWidget(node) {
         thumbH = Math.max(20, Math.round(THUMB_W * h / w));
       }
 
+      const insertedCount = filenames.length;
       filenames.forEach((fn, i) => {
         items.push({ filename: fn, src: dataURLs[i] });
       });
@@ -960,6 +991,18 @@ function createWidget(node) {
       statusLabel.style.color = "#8899bb";
       render();
       persist();
+
+      // Flash newly added thumbnails with a green border that fades over 5 s
+      requestAnimationFrame(() => {
+        const allThumbs = grid.querySelectorAll(".mil-thumb");
+        const start = allThumbs.length - insertedCount;
+        for (let i = Math.max(0, start); i < allThumbs.length; i++) {
+          // Re-trigger animation in case the same element is reused
+          allThumbs[i].classList.remove("mil-paste-flash");
+          void allThumbs[i].offsetWidth; // force reflow
+          allThumbs[i].classList.add("mil-paste-flash");
+        }
+      });
     } catch (err) {
       statusLabel.textContent = `Error: ${err.message}`;
       statusLabel.style.color = "#ff6666";
@@ -1052,30 +1095,63 @@ function createWidget(node) {
     const edPreviewCache = new Map();
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
     let rafId = null, panSt = null;
+    let edCropMode = false, edCropBox = null;
+    let edCropDrag = null;
+    let edAppliedCrop = null; // committed crop {cx,cy,cw,ch} — applied BEFORE transforms
+
+    // ── UI scale: gentle bump for wide viewports ───────────────────────
+    // The OS DPI scaling already makes text/buttons readable at native resolution.
+    // We only apply a *subtle* scale-up when the CSS viewport is significantly
+    // wider than 1080p, so controls don't look disproportionately tiny relative
+    // to the larger dialog. Uses sqrt for diminishing returns + cap at 1.3×.
+    //   1080p (1920 CSS px) → 1.0    |   1440p (2560) → 1.15
+    //   4K@150% (~2560)     → 1.15   |   5K@150% (~3413) → 1.3
+    const _vpW = window.innerWidth || 1920;
+    const uiScale = Math.min(1.3, Math.max(1.0, Math.sqrt(_vpW / 1920)));
+
+    // Derived sizes (all scale with uiScale)
+    const _pnlW    = Math.round(168 * uiScale);   // sidebar width px
+    const _fs10    = `${(10 * uiScale).toFixed(1)}px`;  // small text
+    const _fs11    = `${(11 * uiScale).toFixed(1)}px`;
+    const _fs12    = `${(12 * uiScale).toFixed(1)}px`;
+    const _fs13    = `${(13 * uiScale).toFixed(1)}px`;
+    const _pad4    = `${Math.round(4  * uiScale)}px`;
+    const _pad8    = `${Math.round(8  * uiScale)}px`;
+    const _pad10   = `${Math.round(10 * uiScale)}px`;
+    const _pad12   = `${Math.round(12 * uiScale)}px`;
+    const _gap5    = `${Math.round(5  * uiScale)}px`;
+    const _gap8    = `${Math.round(8  * uiScale)}px`;
+    const _btnPad  = `${Math.round(5  * uiScale)}px ${Math.round(12 * uiScale)}px`;
+    const _btnPadW = `${Math.round(7  * uiScale)}px`;
+    const _r5      = `${Math.round(5  * uiScale)}px`;
+    const _r6      = `${Math.round(6  * uiScale)}px`;
+    const _r12     = `${Math.round(12 * uiScale)}px`;
 
     // ── overlay ───────────────────────────────────────────────
     const ov = document.createElement("div");
     ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;";
     const dlg = document.createElement("div");
     dlg.className = "mil-crop-enter";
-    dlg.style.cssText = "position:relative;width:min(96vw,1080px);height:min(90vh,680px);background:#181818;border-radius:12px;border:1px solid #333;box-shadow:0 24px 80px rgba(0,0,0,0.8);display:flex;flex-direction:column;overflow:hidden;";
+    // Use clamp() so modal grows with the viewport but caps generously.
+    // On 5K: 90vw ≈ 4608px wide, 88vh ≈ 2534px tall — plenty of real estate.
+    dlg.style.cssText = `position:relative;width:clamp(700px,90vw,1920px);height:clamp(480px,88vh,1200px);background:#181818;border-radius:${_r12};border:1px solid #333;box-shadow:0 24px 80px rgba(0,0,0,0.8);display:flex;flex-direction:column;overflow:hidden;`;
 
     // ── header ───────────────────────────────────────────────
     const hdr = document.createElement("div");
-    hdr.style.cssText = "flex-shrink:0;display:flex;align-items:center;gap:8px;padding:8px 12px;background:#111;border-bottom:1px solid #2a2a2a;";
+    hdr.style.cssText = `flex-shrink:0;display:flex;align-items:center;gap:${_gap8};padding:${_pad8} ${_pad12};background:#111;border-bottom:1px solid #2a2a2a;`;
     function mkB(t, col) {
       const b = document.createElement("button");
       b.textContent = t;
-      b.style.cssText = `background:#222;color:${col||"#bbb"};border:1px solid #3a3a3a;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;`;
+      b.style.cssText = `background:#222;color:${col||"#bbb"};border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;`;
       b.addEventListener("mouseenter", () => { b.style.background="#2e2e2e"; b.style.borderColor="#555"; });
       b.addEventListener("mouseleave", () => { b.style.background="#222"; b.style.borderColor="#3a3a3a"; });
       return b;
     }
     const titleEl = document.createElement("span");
-    titleEl.style.cssText = "color:#ccc;font-size:13px;font-weight:600;flex:1;";
+    titleEl.style.cssText = `color:#ccc;font-size:${_fs13};font-weight:600;flex:1;`;
     titleEl.textContent = "\u2702  Crop Editor";
     const prevB = mkB("\u2190 Prev"); const cntEl = document.createElement("span");
-    cntEl.style.cssText = "color:#555;font-size:11px;min-width:52px;text-align:center;";
+    cntEl.style.cssText = `color:#555;font-size:${_fs11};min-width:${Math.round(52*uiScale)}px;text-align:center;`;
     const nextB = mkB("Next \u2192"); const closeB = mkB("\u2715 Close");
     hdr.appendChild(titleEl); hdr.appendChild(prevB); hdr.appendChild(cntEl);
     hdr.appendChild(nextB); hdr.appendChild(closeB);
@@ -1086,40 +1162,204 @@ function createWidget(node) {
 
     // left panel — outer shell
     const pnl = document.createElement("div");
-    pnl.style.cssText = "width:168px;flex-shrink:0;background:#111;border-right:1px solid #222;display:flex;flex-direction:column;";
+    pnl.style.cssText = `width:${_pnlW}px;flex-shrink:0;background:#111;border-right:1px solid #222;display:flex;flex-direction:column;`;
     // scrollable controls body
     const pnlBody = document.createElement("div");
-    pnlBody.style.cssText = "flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:12px 10px;display:flex;flex-direction:column;gap:5px;";
+    pnlBody.style.cssText = `flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:${_pad12} ${_pad10};display:flex;flex-direction:column;gap:${_gap5};`;
     // sticky footer: zoom label + Apply + Cancel
     const pnlFoot = document.createElement("div");
-    pnlFoot.style.cssText = "flex-shrink:0;padding:6px 10px 8px;border-top:1px solid #222;display:flex;flex-direction:column;gap:5px;";
+    pnlFoot.style.cssText = `flex-shrink:0;padding:${_pad4} ${_pad10} ${_pad8};border-top:1px solid #222;display:flex;flex-direction:column;gap:${_gap5};`;
     function mkSec(t) {
       const d = document.createElement("div");
-      d.style.cssText = "color:#444;font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:5px;";
+      d.style.cssText = `color:#444;font-size:${_fs10};text-transform:uppercase;letter-spacing:1px;margin-top:${_gap5};`;
       d.textContent = t; return d;
     }
     const zoomLbl = document.createElement("div");
-    zoomLbl.style.cssText = "color:#666;font-size:10px;text-align:center;padding:1px 0;";
+    zoomLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;padding:1px 0;`;
     function mkPB(label, cb) {
       const b = document.createElement("button");
       b.textContent = label;
-      b.style.cssText = "background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:5px 8px;font-size:11px;cursor:pointer;text-align:left;width:100%;";
+      b.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;`;
       b.addEventListener("mouseenter", () => { b.style.background="#2a2a2a"; b.style.borderColor="#484848"; });
       b.addEventListener("mouseleave", () => { b.style.background="#1e1e1e"; b.style.borderColor="#333"; });
-    b.addEventListener("click", () => { cb(); redraw(); requestInpaintPreview(); });
-    return b;
-  }
+      b.addEventListener("click", () => { cb(); redraw(); requestInpaintPreview(); });
+      return b;
+    }
     const spacer = document.createElement("div"); spacer.style.flex = "1";
     const applyB = document.createElement("button");
     applyB.textContent = "\u2713 Apply";
-    applyB.style.cssText = "background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:6px;padding:7px;font-size:12px;font-weight:600;cursor:pointer;width:100%;";
+    applyB.style.cssText = `background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};font-weight:600;cursor:pointer;width:100%;`;
     applyB.addEventListener("mouseenter", () => { applyB.style.background="#225540"; applyB.style.borderColor="#44cc88"; });
     applyB.addEventListener("mouseleave", () => { applyB.style.background="#1a3a28"; applyB.style.borderColor="#336644"; });
     const cancelB = document.createElement("button");
     cancelB.textContent = "\u2715 Cancel";
-    cancelB.style.cssText = "background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:6px;padding:7px;font-size:12px;cursor:pointer;width:100%;";
+    cancelB.style.cssText = `background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};cursor:pointer;width:100%;`;
     cancelB.addEventListener("mouseenter", () => { cancelB.style.background="#3a2020"; cancelB.style.color="#ff8888"; cancelB.style.borderColor="#553333"; });
     cancelB.addEventListener("mouseleave", () => { cancelB.style.background="#2a2a2a"; cancelB.style.color="#aaa"; cancelB.style.borderColor="#444"; });
+    // ── Image Dimensions ─────────────────────────────────────────
+    pnlBody.appendChild(mkSec("Image"));
+    const dimOrigLbl = document.createElement("div");
+    dimOrigLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;`;
+    const dimEffLbl = document.createElement("div");
+    dimEffLbl.style.cssText = `color:#888;font-size:${_fs10};text-align:center;font-weight:600;`;
+    function updateDimLabels() {
+      dimOrigLbl.textContent = `Original: ${edNatW} × ${edNatH}`;
+      if (edAppliedCrop) {
+        const cw = Math.round(edAppliedCrop.cw * edNatW), ch = Math.round(edAppliedCrop.ch * edNatH);
+        dimEffLbl.textContent = `Cropped: ${cw} × ${ch}`;
+        dimEffLbl.style.color = '#d5ff6b';
+      } else {
+        dimEffLbl.textContent = `${edNatW} × ${edNatH}`;
+        dimEffLbl.style.color = '#888';
+      }
+    }
+    pnlBody.appendChild(dimOrigLbl);
+    pnlBody.appendChild(dimEffLbl);
+
+    // ── Crop Region (first step) ─────────────────────────────────
+    pnlBody.appendChild(mkSec("Crop Region"));
+    const cropToggleB = document.createElement("button");
+    cropToggleB.textContent = "\u2702 Enable Crop";
+    cropToggleB.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;transition:background 0.15s,border-color 0.15s,color 0.15s;`;
+    function syncCropToggle() {
+      if (edCropMode) {
+        cropToggleB.textContent = "\u2702 Crop ON";
+        cropToggleB.style.background = "#1a3a28"; cropToggleB.style.color = "#44cc88"; cropToggleB.style.borderColor = "#336644";
+        cropApplyB.style.background = "#1a3a28"; cropApplyB.style.color = "#44cc88"; cropApplyB.style.borderColor = "#336644";
+        ca.style.cursor = "crosshair";
+        hint.textContent = "Draw to crop \u00b7 Drag edges to resize \u00b7 Scroll to zoom";
+      } else {
+        cropToggleB.textContent = "\u2702 Enable Crop";
+        cropToggleB.style.background = "#1e1e1e"; cropToggleB.style.color = "#aaa"; cropToggleB.style.borderColor = "#333";
+        cropApplyB.style.background = "#2a2a2a"; cropApplyB.style.color = "#555"; cropApplyB.style.borderColor = "#333";
+        ca.style.cursor = "grab";
+        hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+      }
+    }
+
+    // ── helpers ──
+    function _gcd(a, b) { a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b)); while (b) { [a, b] = [b, a % b]; } return a || 1; }
+    function _simplifyAR(w, h) { const g = _gcd(w, h); return `${w / g}:${h / g}`; }
+    let edCropArLock = true; // AR constraint starts ON
+
+    function parseCropAR() {
+      if (!edCropArLock) return null;
+      const v = cropArInput.value.trim().toLowerCase();
+      if (!v || v === 'free' || v === 'none') return null;
+      const m = v.match(/^(\d+(?:\.\d+)?)\s*[:x\/]\s*(\d+(?:\.\d+)?)$/);
+      if (m) { const w = parseFloat(m[1]), h = parseFloat(m[2]); if (w > 0 && h > 0) return w / h; }
+      const n = parseFloat(v);
+      if (n > 0 && isFinite(n)) return n;
+      return null;
+    }
+
+    /** Refit the current crop box to match a new AR, keeping center and area */
+    function refitCropBoxToAR() {
+      if (!edCropBox) return;
+      const ar = parseCropAR();
+      if (!ar) return;
+      const eW = effNatW(), eH = effNatH();
+      const cxCenter = edCropBox.x + edCropBox.w / 2;
+      const cyCenter = edCropBox.y + edCropBox.h / 2;
+      // Preserve area in pixel space
+      const areaPx = (edCropBox.w * eW) * (edCropBox.h * eH);
+      // new pixel dims: nW * nH = areaPx, nW/nH = ar → nW = sqrt(areaPx*ar), nH = sqrt(areaPx/ar)
+      let nW = Math.sqrt(areaPx * ar), nH = Math.sqrt(areaPx / ar);
+      let bw = nW / eW, bh = nH / eH;
+      // clamp to image bounds
+      if (bw > 1) { bw = 1; bh = (bw * eW) / (ar * eH); }
+      if (bh > 1) { bh = 1; bw = (bh * eH * ar) / eW; }
+      bw = Math.min(bw, 1); bh = Math.min(bh, 1);
+      let nx = cxCenter - bw / 2, ny = cyCenter - bh / 2;
+      nx = Math.max(0, Math.min(1 - bw, nx));
+      ny = Math.max(0, Math.min(1 - bh, ny));
+      edCropBox = { x: nx, y: ny, w: bw, h: bh };
+      clampCropBox(); updateCropInfoLbl(); redraw();
+    }
+
+    cropToggleB.addEventListener("click", () => {
+      edCropMode = !edCropMode;
+      // Auto-initialize crop box on first enable (centered, 50% scale, tensor AR)
+      if (edCropMode && !edCropBox) {
+        const eW = effNatW(), eH = effNatH();
+        const targetAR = parseCropAR() ?? (edRefW / edRefH);
+        const imgAR = eW / eH;
+        let bw, bh;
+        if (targetAR >= imgAR) {
+          bw = 0.5; bh = (bw * eW) / (targetAR * eH);
+        } else {
+          bh = 0.5; bw = (bh * eH * targetAR) / eW;
+        }
+        bw = Math.min(bw, 1); bh = Math.min(bh, 1);
+        edCropBox = { x: (1 - bw) / 2, y: (1 - bh) / 2, w: bw, h: bh };
+        updateCropInfoLbl();
+      }
+      syncCropToggle(); redraw();
+    });
+    pnlBody.appendChild(cropToggleB);
+
+    // AR lock + input row
+    const cropArRow = document.createElement("div");
+    cropArRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
+    const cropArLockB = document.createElement("button");
+    cropArLockB.style.cssText = `background:none;border:none;cursor:pointer;font-size:${_fs12};padding:0 2px;flex-shrink:0;transition:opacity 0.15s;`;
+    function syncArLockUI() {
+      cropArLockB.textContent = edCropArLock ? "\uD83D\uDD12" : "\uD83D\uDD13";
+      cropArLockB.style.opacity = edCropArLock ? "1" : "0.4";
+      cropArInput.style.color = edCropArLock ? "#ccc" : "#555";
+    }
+    cropArLockB.addEventListener("click", () => { edCropArLock = !edCropArLock; syncArLockUI(); });
+    const cropArInput = document.createElement("input");
+    cropArInput.type = "text";
+    cropArInput.value = _simplifyAR(edRefW, edRefH);
+    cropArInput.placeholder = "16:9";
+    cropArInput.style.cssText = `flex:1;background:#1a1a1a;color:#ccc;border:1px solid #333;border-radius:${_r5};padding:${_pad4};font-size:${_fs11};text-align:center;min-width:0;`;
+    cropArInput.addEventListener("focus", () => { cropArInput.style.borderColor = '#5a7abf'; });
+    cropArInput.addEventListener("blur", () => { cropArInput.style.borderColor = '#333'; });
+    cropArInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); cropArInput.blur(); edCropArLock = true; syncArLockUI(); refitCropBoxToAR(); }
+    });
+    syncArLockUI();
+    cropArRow.appendChild(cropArLockB);
+    cropArRow.appendChild(cropArInput);
+    pnlBody.appendChild(cropArRow);
+
+    const cropApplyB = document.createElement("button");
+    cropApplyB.textContent = "\u2713 Apply Crop";
+    cropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;`;
+    cropApplyB.addEventListener("mouseenter", () => { if(edCropMode || edCropBox) { cropApplyB.style.background="#2a5a3a"; cropApplyB.style.color="#55ee99"; cropApplyB.style.borderColor="#55ee99"; } });
+    cropApplyB.addEventListener("mouseleave", () => { syncCropToggle(); });
+    cropApplyB.addEventListener("click", () => {
+      if (!edCropBox) return;
+      // Compose with any existing applied crop
+      if (edAppliedCrop) {
+        edAppliedCrop = {
+          cx: edAppliedCrop.cx + edCropBox.x * edAppliedCrop.cw,
+          cy: edAppliedCrop.cy + edCropBox.y * edAppliedCrop.ch,
+          cw: edCropBox.w * edAppliedCrop.cw,
+          ch: edCropBox.h * edAppliedCrop.ch,
+        };
+      } else {
+        edAppliedCrop = { cx: edCropBox.x, cy: edCropBox.y, cw: edCropBox.w, ch: edCropBox.h };
+      }
+      edCropBox = null; edCropMode = false;
+      // Reset transforms since we're now working on a new "image"
+      dOX = 0; dOY = 0; edScale = 1.0;
+      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
+      syncCvs(); updLbl(); redraw(); requestInpaintPreview();
+    });
+    pnlBody.appendChild(cropApplyB);
+    const cropResetB = mkPB("\u27F2 Reset All Crop", () => {
+      edCropBox = null; edAppliedCrop = null; edCropMode = false;
+      dOX = 0; dOY = 0; edScale = 1.0;
+      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
+      syncCvs(); updLbl(); requestInpaintPreview();
+    });
+    pnlBody.appendChild(cropResetB);
+    const cropInfoLbl = document.createElement("div");
+    cropInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
+    pnlBody.appendChild(cropInfoLbl);
+
     pnlBody.appendChild(mkSec("Quick Fit"));
     pnlBody.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
     pnlBody.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
@@ -1131,12 +1371,12 @@ function createWidget(node) {
     pnlBody.appendChild(mkSec("Rotate"));
     // slider + click-to-type angle
     const rotRow = document.createElement("div");
-    rotRow.style.cssText = "display:flex;align-items:center;gap:5px;width:100%;overflow:hidden;";
+    rotRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;overflow:hidden;`;
     const rotSlider = document.createElement("input");
     rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
     rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
     const rotValEl = document.createElement("div");
-    rotValEl.style.cssText="color:#888;font-size:10px;min-width:34px;text-align:right;cursor:text;user-select:none;";
+    rotValEl.style.cssText=`color:#888;font-size:${_fs10};min-width:${Math.round(34*uiScale)}px;text-align:right;cursor:text;user-select:none;`;
     rotValEl.textContent="0\u00b0";
     function syncRotUI(){
       rotSlider.value = edRotate;
@@ -1145,7 +1385,7 @@ function createWidget(node) {
     rotValEl.addEventListener("click", () => {
       const inp = document.createElement("input");
       inp.type="number"; inp.min=-180; inp.max=180; inp.value=edRotate;
-      inp.style.cssText="width:40px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:10px;padding:1px 3px;";
+      inp.style.cssText=`width:${Math.round(40*uiScale)}px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:${_fs10};padding:1px 3px;`;
       rotValEl.innerHTML=""; rotValEl.appendChild(inp);
       inp.focus(); inp.select();
       function commit(){
@@ -1166,20 +1406,20 @@ function createWidget(node) {
     // Background Fill section
     pnlBody.appendChild(mkSec("Background Fill"));
     const bgSelect = document.createElement("select");
-    bgSelect.style.cssText="width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer;";
+    bgSelect.style.cssText=`width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${Math.round(4*uiScale)}px ${Math.round(5*uiScale)}px;font-size:${_fs10};cursor:pointer;`;
     [["#808080","Gray (default)"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
       .forEach(([v,l])=>{ const o=document.createElement("option"); o.value=v; o.textContent=l; bgSelect.appendChild(o); });
     const bgCustomRow = document.createElement("div");
     bgCustomRow.style.cssText="display:none;align-items:center;gap:4px;";
     const bgColorPick = document.createElement("input");
     bgColorPick.type="color"; bgColorPick.value="#808080";
-    bgColorPick.style.cssText="width:26px;height:22px;border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;";
+    bgColorPick.style.cssText=`width:${Math.round(26*uiScale)}px;height:${Math.round(22*uiScale)}px;border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;`;
     const bgHexInp = document.createElement("input");
     bgHexInp.type="text"; bgHexInp.value="#808080"; bgHexInp.maxLength=7;
-    bgHexInp.style.cssText="flex:1;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:10px;padding:2px 4px;min-width:0;";
+    bgHexInp.style.cssText=`flex:1;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:${_fs10};padding:2px 4px;min-width:0;`;
     bgCustomRow.appendChild(bgColorPick); bgCustomRow.appendChild(bgHexInp);
     const bgNote = document.createElement("div");
-    bgNote.style.cssText="color:#444;font-size:9px;line-height:1.3;display:none;";
+    bgNote.style.cssText=`color:#444;font-size:${_fs10};line-height:1.3;display:none;`;
     bgNote.textContent="\u2699 Applied by Python at queue";
     bgColorPick.addEventListener("input", ()=>{ bgHexInp.value=bgColorPick.value; edBg=bgColorPick.value; redraw(); });
     bgHexInp.addEventListener("change", ()=>{
@@ -1213,7 +1453,7 @@ function createWidget(node) {
     // Model select
     const rbModelSel = document.createElement("select");
     rbModelSel.title = "rembg model";
-    rbModelSel.style.cssText = "width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer;";
+    rbModelSel.style.cssText = `width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${Math.round(4*uiScale)}px ${Math.round(5*uiScale)}px;font-size:${_fs10};cursor:pointer;`;
     [
       ["isnet-general-use", "isnet-general-use ★"],
       ["u2net",             "u2net"],
@@ -1228,16 +1468,16 @@ function createWidget(node) {
 
     // Status label
     const rbStatus = document.createElement("div");
-    rbStatus.style.cssText = "font-size:9px;text-align:center;min-height:11px;color:#666;transition:color 0.2s;";
+    rbStatus.style.cssText = `font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;color:#666;transition:color 0.2s;`;
 
     // Main button
     const rbBtn = document.createElement("button");
     rbBtn.textContent = "\uD83E\uDE84 Remove BG";
     rbBtn.style.cssText = [
-      "background:#1a1a3a;color:#88aaff;border:1px solid #334488;",
-      "border-radius:6px;padding:7px;font-size:11px;font-weight:600;",
-      "cursor:pointer;width:100%;margin-top:3px;",
-      "transition:background 0.15s,border-color 0.15s;",
+      `background:#1a1a3a;color:#88aaff;border:1px solid #334488;`,
+      `border-radius:${_r6};padding:${_btnPadW};font-size:${_fs11};font-weight:600;`,
+      `cursor:pointer;width:100%;margin-top:${Math.round(3*uiScale)}px;`,
+      `transition:background 0.15s,border-color 0.15s;`,
     ].join("");
     rbBtn.addEventListener("mouseenter", () => { rbBtn.style.background = "#222255"; rbBtn.style.borderColor = "#5566cc"; });
     rbBtn.addEventListener("mouseleave", () => { rbBtn.style.background = "#1a1a3a"; rbBtn.style.borderColor = "#334488"; });
@@ -1295,6 +1535,80 @@ function createWidget(node) {
     pnlBody.appendChild(rbStatus);
     pnlBody.appendChild(rbBtn);
 
+    // ── Crop Region helpers ──────────────────────────────────────
+    function cropPxToNorm(px, py) {
+      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+      return { nx: (px - fx) / frameW, ny: (py - fy) / frameH };
+    }
+    function cropHitTest(cx, cy) {
+      if (!edCropBox) return null;
+      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+      const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
+      const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
+      const E = 8;
+      const nL = Math.abs(cx - bx) <= E, nR = Math.abs(cx - (bx + bw)) <= E;
+      const nT = Math.abs(cy - by) <= E, nB = Math.abs(cy - (by + bh)) <= E;
+      const iH = cx >= bx - E && cx <= bx + bw + E;
+      const iV = cy >= by - E && cy <= by + bh + E;
+      if (nL && nT) return 'top-left'; if (nR && nT) return 'top-right';
+      if (nL && nB) return 'bottom-left'; if (nR && nB) return 'bottom-right';
+      if (nL && iV) return 'left'; if (nR && iV) return 'right';
+      if (nT && iH) return 'top'; if (nB && iH) return 'bottom';
+      if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) return 'move';
+      return null;
+    }
+    function cropCursorFor(hit) {
+      return {'top-left':'nwse-resize','bottom-right':'nwse-resize','top-right':'nesw-resize','bottom-left':'nesw-resize','top':'ns-resize','bottom':'ns-resize','left':'ew-resize','right':'ew-resize','move':'grab'}[hit] || 'crosshair';
+    }
+    function clampCropBox() {
+      if (!edCropBox) return;
+      edCropBox.x = Math.max(0, Math.min(edCropBox.x, 1 - 0.02));
+      edCropBox.y = Math.max(0, Math.min(edCropBox.y, 1 - 0.02));
+      edCropBox.w = Math.max(0.02, Math.min(edCropBox.w, 1 - edCropBox.x));
+      edCropBox.h = Math.max(0.02, Math.min(edCropBox.h, 1 - edCropBox.y));
+    }
+    function updateCropInfoLbl() {
+      if (!edCropBox || !edCropMode) { cropInfoLbl.textContent = ''; return; }
+      const baseW = effNatW(), baseH = effNatH();
+      const w = Math.round(edCropBox.w * baseW), h = Math.round(edCropBox.h * baseH);
+      cropInfoLbl.textContent = `${w} \u00d7 ${h} px`;
+    }
+    function drawCropOverlay(ctx) {
+      if (!edCropBox || !edCropMode) return;
+      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+      const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
+      const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
+      ctx.save();
+      // dim outside crop
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.rect(bx, by, bw, bh); ctx.fill('evenodd');
+      // border
+      ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
+      // handles
+      const hs = 4;
+      ctx.fillStyle = 'rgba(140,140,50,0.7)'; ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1;
+      [[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh],
+       [bx+bw/2,by],[bx+bw/2,by+bh],[bx,by+bh/2],[bx+bw,by+bh/2]].forEach(([hx,hy]) => {
+        ctx.fillRect(hx-hs, hy-hs, hs*2, hs*2); ctx.strokeRect(hx-hs, hy-hs, hs*2, hs*2);
+      });
+      // rule-of-thirds inside crop
+      ctx.strokeStyle = 'rgba(213,255,107,0.12)'; ctx.lineWidth = 0.5;
+      for (let i = 1; i < 3; i++) {
+        ctx.beginPath(); ctx.moveTo(bx + bw/3*i, by); ctx.lineTo(bx + bw/3*i, by+bh); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx, by + bh/3*i); ctx.lineTo(bx+bw, by + bh/3*i); ctx.stroke();
+      }
+      // dimensions text
+      if (bw > 60 && bh > 30) {
+        const baseW = effNatW(), baseH = effNatH();
+        const cpW = Math.round(edCropBox.w * baseW), cpH = Math.round(edCropBox.h * baseH);
+        ctx.fillStyle = '#d5ff6b'; ctx.font = '11px system-ui';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${cpW} \u00d7 ${cpH}`, bx + bw/2, by + bh/2);
+        ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+      }
+      ctx.restore();
+    }
 
     pnlFoot.appendChild(zoomLbl);
     pnlFoot.appendChild(applyB);
@@ -1308,7 +1622,7 @@ function createWidget(node) {
     const cvs = document.createElement("canvas");
     cvs.style.cssText = "display:block;width:100%;height:100%;";
     const hint = document.createElement("div");
-    hint.style.cssText = "position:absolute;bottom:8px;left:0;right:0;text-align:center;color:#333;font-size:10px;pointer-events:none;";
+    hint.style.cssText = `position:absolute;bottom:${_pad8};left:0;right:0;text-align:center;color:#333;font-size:${_fs10};pointer-events:none;`;
     hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
     ca.appendChild(cvs); ca.appendChild(hint);
     body.appendChild(pnl); body.appendChild(ca);
@@ -1323,10 +1637,13 @@ function createWidget(node) {
       if (edFlipV)             parts.push("\u2195 V");
       zoomLbl.textContent = parts.join(" \u00b7 ");
     }
+    function effNatW() { return edAppliedCrop ? Math.round(edNatW * edAppliedCrop.cw) : edNatW; }
+    function effNatH() { return edAppliedCrop ? Math.round(edNatH * edAppliedCrop.ch) : edNatH; }
     function _rotDims() {
+      const w = effNatW(), h = effNatH();
       const rf = edRotate * Math.PI / 180;
       const c = Math.abs(Math.cos(rf)), s = Math.abs(Math.sin(rf));
-      return { rW: edNatW*c+edNatH*s, rH: edNatW*s+edNatH*c };
+      return { rW: w*c+h*s, rH: w*s+h*c };
     }
     function _bfitOf(rW, rH) { return Math.min(frameW/rW, frameH/rH); }
     function doFill() {
@@ -1357,6 +1674,7 @@ function createWidget(node) {
         ox:dOX/frameW, oy:dOY/frameH, scale:edScale,
         flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
       };
+      if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
       const fn = items[curIdx]?.filename ?? "";
       const cacheKey = JSON.stringify(transform) + "|" + fn;
       edReqHandle = setTimeout(async () => {
@@ -1395,9 +1713,10 @@ function createWidget(node) {
       if (asp>=maxW/maxH) { frameW=maxW; frameH=Math.round(maxW/asp); }
       else               { frameH=maxH; frameW=Math.round(maxH*asp); }
       frameCX=cw/2; frameCY=ch/2;
-      // bFit accounts for rotated bounding box
+      // bFit accounts for rotated bounding box of effective (possibly cropped) image
+      const eW = effNatW(), eH = effNatH();
       const rf=edRotate*Math.PI/180, c=Math.abs(Math.cos(rf)), s=Math.abs(Math.sin(rf));
-      const rW=edNatW*c+edNatH*s, rH=edNatW*s+edNatH*c;
+      const rW=eW*c+eH*s, rH=eW*s+eH*c;
       bFit=Math.min(frameW/rW,frameH/rH);
     }
 
@@ -1432,13 +1751,20 @@ function createWidget(node) {
           ctx.drawImage(edInpaintPreview, fx, fy, frameW, frameH);
         } else {
           if (edImg) {
+            const eW = effNatW(), eH = effNatH();
             const eff=bFit*edScale;
-            const dw=edNatW*eff, dh=edNatH*eff;
+            const dw=eW*eff, dh=eH*eff;
             ctx.save();
             ctx.translate(frameCX+dOX, frameCY+dOY);
             ctx.rotate(edRotate*Math.PI/180);
             ctx.scale(edFlipH?-1:1, edFlipV?-1:1);
-            ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
+            if (edAppliedCrop) {
+              const sx = edAppliedCrop.cx * edNatW, sy = edAppliedCrop.cy * edNatH;
+              const sw = edAppliedCrop.cw * edNatW, sh = edAppliedCrop.ch * edNatH;
+              ctx.drawImage(edImg, sx, sy, sw, sh, -dw/2, -dh/2, dw, dh);
+            } else {
+              ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
+            }
             ctx.restore();
           }
           if (isInpaint) {
@@ -1457,21 +1783,28 @@ function createWidget(node) {
         // frame border
         ctx.strokeStyle="rgba(255,255,255,0.35)"; ctx.lineWidth=1.5;
         ctx.strokeRect(fx+0.75,fy+0.75,frameW-1.5,frameH-1.5);
-        // rule-of-thirds
-        ctx.strokeStyle="rgba(255,255,255,0.1)"; ctx.lineWidth=0.5;
-        for(let i=1;i<3;i++) {
-          ctx.beginPath(); ctx.moveTo(fx+frameW/3*i,fy); ctx.lineTo(fx+frameW/3*i,fy+frameH); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(fx,fy+frameH/3*i); ctx.lineTo(fx+frameW,fy+frameH/3*i); ctx.stroke();
+        // rule-of-thirds (hide when crop overlay active — it draws its own)
+        if (!edCropMode || !edCropBox) {
+          ctx.strokeStyle="rgba(255,255,255,0.1)"; ctx.lineWidth=0.5;
+          for(let i=1;i<3;i++) {
+            ctx.beginPath(); ctx.moveTo(fx+frameW/3*i,fy); ctx.lineTo(fx+frameW/3*i,fy+frameH); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(fx,fy+frameH/3*i); ctx.lineTo(fx+frameW,fy+frameH/3*i); ctx.stroke();
+          }
         }
+        // crop region overlay
+        drawCropOverlay(ctx);
       });
     }
 
     // ── image load ───────────────────────────────────────────
     function saveToSes() {
       const fn = items[curIdx]?.filename; if (!fn) return;
-      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!=="#808080")
-        ses[fn]={ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
-      else delete ses[fn];
+      const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!=="#808080"||hasAppliedCrop) {
+        const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
+        if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
+        ses[fn] = t;
+      } else delete ses[fn];
     }
     async function loadIdx(idx) {
       curIdx=idx;
@@ -1484,10 +1817,15 @@ function createWidget(node) {
         const el=new Image(); el.crossOrigin="anonymous";
         el.onload=()=>{
           edImg=el; edNatW=el.naturalWidth; edNatH=el.naturalHeight;
-          syncCvs();
           const t=ses[items[idx].filename];
+          // Restore applied crop BEFORE syncCvs so bFit uses effective dims
+          if (t && t.cx != null) edAppliedCrop = { cx: t.cx, cy: t.cy, cw: t.cw, ch: t.ch };
+          else edAppliedCrop = null;
+          edCropBox = null; edCropDrag = null;
+          syncCvs();
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
           edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??"#808080";
+          updateDimLabels(); updateCropInfoLbl();
           edInpaintPreview=null; edInpaintDirty=true;
           syncRotUI(); syncBgUI(); updLbl(); redraw(); requestInpaintPreview(); res();
         };
@@ -1496,17 +1834,91 @@ function createWidget(node) {
     }
 
     // ── events ───────────────────────────────────────────────
-    function onPanMove(e) {
+    function onGlobalMove(e) {
+      // ── crop drag ──
+      if (edCropMode && edCropDrag) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const { nx, ny } = cropPxToNorm(cx, cy);
+        const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
+        const ob = edCropDrag.origBox;
+        const m = edCropDrag.mode;
+        if (edCropDrag.isNew) {
+          const ax = edCropDrag.anchorX, ay = edCropDrag.anchorY;
+          edCropBox = { x: Math.min(ax, cNx), y: Math.min(ay, cNy), w: Math.abs(cNx - ax), h: Math.abs(cNy - ay) };
+        } else if (m === 'move') {
+          const dx = (cx - edCropDrag.startX) / frameW, dy = (cy - edCropDrag.startY) / frameH;
+          let nx2 = Math.max(0, Math.min(1 - ob.w, ob.x + dx));
+          let ny2 = Math.max(0, Math.min(1 - ob.h, ob.y + dy));
+          edCropBox = { x: nx2, y: ny2, w: ob.w, h: ob.h };
+        } else {
+          let { x, y, w, h } = { ...ob };
+          const right = x + w, bottom = y + h;
+          if (m.includes('left'))   { const nX = Math.min(cNx, right - 0.02); w = right - nX; x = nX; }
+          if (m.includes('right'))  { w = Math.max(0.02, cNx - x); }
+          if (m.includes('top'))    { const nY = Math.min(cNy, bottom - 0.02); h = bottom - nY; y = nY; }
+          if (m.includes('bottom')) { h = Math.max(0.02, cNy - y); }
+          edCropBox = { x, y, w, h };
+        }
+        // aspect ratio constraint from AR input
+        const arVal = parseCropAR();
+        if (arVal && m !== 'move' && edCropBox) {
+          const eW = effNatW(), eH = effNatH();
+          // target: (w*eW)/(h*eH) = arVal → h = (w*eW)/(arVal*eH)
+          if (m === 'top' || m === 'bottom') {
+            edCropBox.w = (edCropBox.h * eH * arVal) / eW;
+          } else {
+            edCropBox.h = (edCropBox.w * eW) / (arVal * eH);
+          }
+        }
+        clampCropBox(); updateCropInfoLbl(); redraw();
+        return;
+      }
+      // ── pan drag ──
       if (!panSt) return;
       dOX=panSt.ox+(e.clientX-panSt.x); dOY=panSt.oy+(e.clientY-panSt.y); redraw();
     }
-    function onPanUp() { if (panSt) { panSt=null; ca.style.cursor="grab"; requestInpaintPreview(); } }
+    function onGlobalUp(e) {
+      if (edCropMode && edCropDrag) {
+        edCropDrag = null;
+        const r = cvs.getBoundingClientRect();
+        const hit = cropHitTest(e.clientX - r.left, e.clientY - r.top);
+        ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
+        updateCropInfoLbl(); return;
+      }
+      if (panSt) { panSt=null; ca.style.cursor="grab"; requestInpaintPreview(); }
+    }
     cvs.addEventListener("mousedown", e=>{
       if (e.button!==0) return;
+      if (edCropMode) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const hit = cropHitTest(cx, cy);
+        if (hit) {
+          edCropDrag = { mode: hit, startX: cx, startY: cy, origBox: { ...edCropBox } };
+          ca.style.cursor = hit === 'move' ? 'grabbing' : cropCursorFor(hit);
+        } else {
+          const fx = frameCX - frameW/2, fy = frameCY - frameH/2;
+          if (cx >= fx && cy >= fy && cx <= fx+frameW && cy <= fy+frameH) {
+            const { nx, ny } = cropPxToNorm(cx, cy);
+            edCropBox = { x: nx, y: ny, w: 0.001, h: 0.001 };
+            edCropDrag = { mode:'bottom-right', startX:cx, startY:cy, origBox:{x:nx,y:ny,w:0.001,h:0.001}, isNew:true, anchorX:nx, anchorY:ny };
+            ca.style.cursor = 'crosshair';
+          }
+        }
+        return;
+      }
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
     });
-    window.addEventListener("mousemove", onPanMove);
-    window.addEventListener("mouseup",   onPanUp);
+    cvs.addEventListener("mousemove", e=>{
+      if (edCropMode && !edCropDrag) {
+        const r = cvs.getBoundingClientRect();
+        const hit = cropHitTest(e.clientX - r.left, e.clientY - r.top);
+        ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
+      }
+    });
+    window.addEventListener("mousemove", onGlobalMove);
+    window.addEventListener("mouseup",   onGlobalUp);
     cvs.addEventListener("wheel", e=>{
       e.preventDefault();
       const f=e.deltaY<0?1.12:0.89;
@@ -1531,17 +1943,32 @@ function createWidget(node) {
       clearTimeout(edReqHandle);
       cancelAnimationFrame(rafId); ro.disconnect();
       window.removeEventListener("keydown",    onKey);
-      window.removeEventListener("mousemove",  onPanMove);
-      window.removeEventListener("mouseup",    onPanUp);
+      window.removeEventListener("mousemove",  onGlobalMove);
+      window.removeEventListener("mouseup",    onGlobalUp);
       ov.remove();
     }
     function doApply() {
+      // Auto-commit any pending crop box the user forgot to apply
+      if (edCropBox) {
+        if (edAppliedCrop) {
+          edAppliedCrop = {
+            cx: edAppliedCrop.cx + edCropBox.x * edAppliedCrop.cw,
+            cy: edAppliedCrop.cy + edCropBox.y * edAppliedCrop.ch,
+            cw: edCropBox.w * edAppliedCrop.cw,
+            ch: edCropBox.h * edAppliedCrop.ch,
+          };
+        } else {
+          edAppliedCrop = { cx: edCropBox.x, cy: edCropBox.y, cw: edCropBox.w, ch: edCropBox.h };
+        }
+        edCropBox = null; edCropMode = false;
+      }
       saveToSes();
       const valid=new Set(items.map(i=>i.filename));
       // commit session to cropMap
       for (const fn of valid) {
         const t=ses[fn];
-        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!=="#808080"))) cropMap[fn]=t;
+        if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!=="#808080")||
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1)))) cropMap[fn]=t;
         else delete cropMap[fn];
       }
       persistCropData(); persist(); doClose();
@@ -1568,11 +1995,35 @@ function createWidget(node) {
           });
         }
       }
+      cropArInput.value = _simplifyAR(edRefW, edRefH);
       syncCvs();
       await loadIdx(startIdx);
     }
     init();
   }
+
+  // ── clipboard paste (Ctrl+V while node is selected) ─────────────────────
+  // Expose a paste handler callable by the global extension setup hook.
+  // root._addFiles is already set above; this only adds _pasteFromClipboard.
+  root._pasteFromClipboard = async function (clipboardItems) {
+    const imageItems = clipboardItems.filter(item =>
+      item.types.some(t => t.startsWith("image/"))
+    );
+    if (!imageItems.length) return;
+    const files = [];
+    for (const item of imageItems) {
+      const mimeType = item.types.find(t => t.startsWith("image/")) || "image/png";
+      try {
+        const blob = await item.getType(mimeType);
+        const ext  = mimeType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+        const ts   = Date.now();
+        files.push(new File([blob], `clipboard_${ts}.${ext}`, { type: mimeType }));
+      } catch (e) {
+        console.warn("[MIL] clipboard read failed:", e);
+      }
+    }
+    if (files.length) await addFiles(files);
+  };
 
   return root;
 }
@@ -1581,6 +2032,99 @@ function createWidget(node) {
 
 app.registerExtension({
   name: "MultiImageLoader",
+
+  // ── Global Ctrl+V clipboard paste ──────────────────────────────────────────
+  setup() {
+    /**
+     * Listen for the native `paste` event (triggered by Ctrl+V in most browsers)
+     * and also for our own keydown fallback using the async Clipboard API.
+     *
+     * Routing logic:
+     *   1. Find all MIL nodes in the current graph.
+     *   2. Among those, pick the ones that are selected (LiteGraph sets
+     *      node.is_selected = true for selected nodes; also check via
+     *      app.canvas.selected_nodes).
+     *   3. If exactly one is selected, forward the clipboard image to it.
+     */
+    function getMILNodes() {
+      return (app.graph._nodes || []).filter(n => n.type === NODE_TYPE);
+    }
+    function getTargetNode() {
+      const milNodes = getMILNodes();
+      if (!milNodes.length) return null;
+      // Must be explicitly selected
+      const selected = milNodes.filter(n =>
+        n.is_selected ||
+        (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
+      );
+      if (selected.length === 1) return selected[0];
+      return null;
+    }
+
+    // Handle native paste events (Ctrl+V → ClipboardEvent with clipboardData)
+    // ── Capture-phase paste listener ─────────────────────────────────────────
+    // Registering with { capture: true } makes our handler run BEFORE
+    // ComfyUI's bubble-phase paste listener (which would create a Load Image
+    // node). When we take over the event we call stopImmediatePropagation()
+    // so ComfyUI never sees it — no modification to core code needed.
+    document.addEventListener("paste", async (e) => {
+      // Don't intercept paste when the user is typing in a text input
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+
+      const items = e.clipboardData?.items
+        ? Array.from(e.clipboardData.items)
+        : [];
+      const imageItems = items.filter(i => i.kind === "file" && i.type.startsWith("image/"));
+      if (!imageItems.length) return;
+
+      const node = getTargetNode();
+      if (!node) return;
+
+      // We're handling this — stop ComfyUI from also acting on it
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      const el = node._milDomWidget?.element;
+      if (!el) return;
+
+      const files = imageItems.map(i => {
+        const blob = i.getAsFile();
+        const ext  = i.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+        return new File([blob], `clipboard_${Date.now()}.${ext}`, { type: i.type });
+      });
+      await el._addFiles(files);
+    }, { capture: true });
+
+    // ── Capture-phase keydown listener (async Clipboard API fallback) ─────────
+    // For cases where the native `paste` event doesn't fire (e.g. when the
+    // LiteGraph canvas element has focus). We stop propagation synchronously
+    // as soon as we know a MIL node is selected, then read the clipboard async.
+    document.addEventListener("keydown", async (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "v") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+
+      const node = getTargetNode();
+      if (!node) return;
+
+      // Stop immediately — prevents any Ctrl+V keydown handler in ComfyUI
+      e.stopImmediatePropagation();
+
+      // Use async Clipboard API to read the image
+      try {
+        const clipItems = await navigator.clipboard.read();
+        const el = node._milDomWidget?.element;
+        if (el?._pasteFromClipboard) await el._pasteFromClipboard(clipItems);
+      } catch (err) {
+        // Clipboard API may be denied; the capture-phase paste event above
+        // will have already handled it in that case.
+        if (!err.message?.includes("denied")) {
+          console.warn("[MIL] Clipboard API error:", err);
+        }
+      }
+    }, { capture: true });
+  },
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_TYPE) return;

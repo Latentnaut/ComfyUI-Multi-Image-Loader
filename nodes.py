@@ -260,6 +260,25 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str) -> Ima
     return img.resize((target_w, target_h), Image.LANCZOS)
 
 
+
+def _apply_crop_region(img: Image.Image, transform: dict) -> Image.Image:
+    """Apply a crop region sub-selection to the SOURCE image.
+    cx/cy/cw/ch are fractions of the source image dimensions.
+    Returns the cropped sub-image (NOT resized)."""
+    cx = float(transform.get("cx", 0.0))
+    cy = float(transform.get("cy", 0.0))
+    cw = float(transform.get("cw", 1.0))
+    ch = float(transform.get("ch", 1.0))
+    if cx <= 0.0 and cy <= 0.0 and cw >= 1.0 and ch >= 1.0:
+        return img  # no crop region
+    w, h = img.size
+    left   = max(0, min(round(cx * w), w - 1))
+    top    = max(0, min(round(cy * h), h - 1))
+    right  = max(left + 1, min(round((cx + cw) * w), w))
+    bottom = max(top + 1, min(round((cy + ch) * h), h))
+    return img.crop((left, top, right, bottom))
+
+
 def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int) -> Image.Image:
     """
     Apply a user-defined pan/zoom/flip/rotate transform and crop to canvas_w × canvas_h.
@@ -272,6 +291,9 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
                   'telea' | 'navier-stokes'
     """
     import numpy as np
+
+    # ── PRE-CROP: apply crop region to source image FIRST ──────────────────────
+    img = _apply_crop_region(img, transform)
 
     ox     = float(transform.get("ox",     0.0))
     oy     = float(transform.get("oy",     0.0))
