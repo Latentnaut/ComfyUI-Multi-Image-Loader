@@ -1272,6 +1272,30 @@ function createWidget(node) {
           ctx.rotate(rot);
           ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
           ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
+          // Lasso mask overlay for thumbnail
+          const tOps = t.lassoOps;
+          if (tOps && tOps.length > 0) {
+            const mw = Math.ceil(dw), mh = Math.ceil(dh);
+            const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh;
+            const mx = mc.getContext('2d');
+            for (const op of tOps) {
+              if (op.points.length < 3) continue;
+              mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+              mx.fillStyle = "white"; mx.beginPath();
+              mx.moveTo(op.points[0][0]*mw, op.points[0][1]*mh);
+              for (let k=1;k<op.points.length;k++) mx.lineTo(op.points[k][0]*mw, op.points[k][1]*mh);
+              mx.closePath(); mx.fill();
+            }
+            if (t.lassoInverted) { mx.globalCompositeOperation="xor"; mx.fillStyle="white"; mx.fillRect(0,0,mw,mh); }
+            mx.globalCompositeOperation="source-over";
+            const oc = document.createElement('canvas'); oc.width=mw; oc.height=mh;
+            const ox2 = oc.getContext('2d');
+            ox2.fillStyle = bgC; ox2.fillRect(0,0,mw,mh);
+            ox2.globalCompositeOperation = 'destination-out';
+            ox2.drawImage(mc, 0, 0);
+            ox2.globalCompositeOperation = 'source-over';
+            ctx.drawImage(oc, -dw/2, -dh/2);
+          }
           ctx.restore();
           item.previewSrc = cvs.toDataURL("image/jpeg", 0.92);
         }
@@ -1427,7 +1451,7 @@ function createWidget(node) {
   };
 
   // ── openCropEditor ───────────────────────────────────────────────────
-  function openCropEditor(startIdx) {
+  function openCropEditor(startIdx, skipAnim) {
     // session crops: edits made during this dialog, committed only on Apply
     const ses = {};
     for (const fn in cropMap) ses[fn] = { ...cropMap[fn] };
@@ -1511,7 +1535,7 @@ function createWidget(node) {
     const ov = document.createElement("div");
     ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif;";
     const dlg = document.createElement("div");
-    dlg.className = "mil-crop-enter";
+    if (!skipAnim) dlg.className = "mil-crop-enter";
     // Use clamp() so modal grows with the viewport but caps generously.
     // On 5K: 90vw ≈ 4608px wide, 88vh ≈ 2534px tall — plenty of real estate.
     dlg.style.cssText = `position:relative;width:clamp(700px,90vw,1920px);height:clamp(480px,88vh,1200px);background:#181818;border-radius:${_r12};border:1px solid #333;box-shadow:0 24px 80px rgba(0,0,0,0.8);display:flex;flex-direction:column;overflow:hidden;`;
@@ -1541,7 +1565,7 @@ function createWidget(node) {
     tabMask.addEventListener("click", () => {
       // Auto-apply current edits so Mask Editor sees the processed image
       doApply();
-      openMaskEditor(curIdx);
+      openMaskEditor(curIdx, true);
     });
     hdr.appendChild(tabEdit);
     hdr.appendChild(tabMask);
@@ -3085,7 +3109,7 @@ function createWidget(node) {
 
 
   // ── openMaskEditor ────────────────────────────────────────────────────────
-  function openMaskEditor(startIdx) {
+  function openMaskEditor(startIdx, skipAnim) {
     let curIdx = startIdx;
     // ── Unified sizing (mirrors openCropEditor for consistency) ──
     const _vpW2 = window.innerWidth || 1920;
@@ -3113,7 +3137,7 @@ function createWidget(node) {
       width:clamp(700px,90vw,1920px);height:clamp(480px,88vh,1200px);
       background:#1a1a1a;border-radius:${_r(10)}px;display:flex;flex-direction:column;
       box-shadow:0 8px 48px rgba(0,0,0,0.7);overflow:hidden;font-family:sans-serif;
-      animation:mil-fadein 0.18s ease-out;
+      ${skipAnim ? '' : 'animation:mil-fadein 0.18s ease-out;'}
     `;
 
     // Header
@@ -3157,7 +3181,7 @@ function createWidget(node) {
         persistCropData();
       }
       close();
-      openCropEditor(curIdx);
+      openCropEditor(curIdx, true);
     });
     hdr.appendChild(tabEdit);
     hdr.appendChild(tabMask);
