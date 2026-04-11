@@ -371,6 +371,43 @@ function createWidget(node) {
   });
   syncViewToggleBtn();
   btnGroup.appendChild(viewToggleBtn);
+
+  // ── mask-view toggle button (◐) ──
+  let maskViewMode = false; // when true: draw mask overlay on thumbnails
+  const maskViewBtn = document.createElement("button");
+  maskViewBtn.title = "Toggle mask view";
+  maskViewBtn.className = "mil-btn";
+  maskViewBtn.textContent = "\u25D0";
+  maskViewBtn.style.cssText = `
+    background: #252525;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 3px 7px;
+    font-size: 11px;
+    cursor: pointer;
+    display: none;
+    line-height: 1;
+  `;
+  function syncMaskViewBtn() {
+    maskViewBtn.style.color       = maskViewMode ? "#7fff7f" : "#aaa";
+    maskViewBtn.style.borderColor = maskViewMode ? "#3a6a3a" : "#444";
+    maskViewBtn.style.background  = maskViewMode ? "#1e2e1e" : "#252525";
+    maskViewBtn.title              = maskViewMode ? "Hide mask overlay" : "Show mask overlay";
+  }
+  maskViewBtn.addEventListener("mouseenter", () => {
+    if (!maskViewMode) maskViewBtn.style.background = "#333";
+  });
+  maskViewBtn.addEventListener("mouseleave", () => {
+    maskViewBtn.style.background = maskViewMode ? "#1e2e1e" : "#252525";
+  });
+  maskViewBtn.addEventListener("click", () => {
+    maskViewMode = !maskViewMode;
+    syncMaskViewBtn();
+    render();
+  });
+  syncMaskViewBtn();
+  btnGroup.appendChild(maskViewBtn);
   btnGroup.appendChild(clearBtn);
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -419,6 +456,10 @@ function createWidget(node) {
               (t.rotate||0)!==0 || (t.bg && t.bg !== getEffectiveBgColor()) ||
               (t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1)) ||
               (t.lassoOps && t.lassoOps.length > 0) || t.lassoInverted));
+  }
+  function hasMask(filename) {
+    const t = cropMap[filename];
+    return !!(t && t.maskOps && t.maskOps.length > 0);
   }
   function persistCropData() {
     const w = getCropDataWidget();
@@ -677,6 +718,46 @@ function createWidget(node) {
       img.style.cssText = `width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
       img.title = item.filename;
 
+      // ── mask overlay canvas (maskViewMode) ──
+      // When active: ALL thumbnails show pure B&W mask regardless of whether ops exist.
+      // No maskOps = all black (default: unmasked). With maskOps = white where painted.
+      let maskOvEl = null;
+      const maskData = cropMap[item.filename]?.maskOps;
+      if (maskViewMode) {
+        // Hide the source image — replace with B&W mask
+        img.style.visibility = "hidden";
+        maskOvEl = document.createElement("canvas");
+        maskOvEl.style.cssText = `position:absolute;inset:0;width:100%;height:${imgH};pointer-events:none;z-index:2;`;
+        const drawOnCanvas = () => {
+          const cw = maskOvEl.offsetWidth  || 72;
+          const ch = maskOvEl.offsetHeight || 72;
+          maskOvEl.width = cw; maskOvEl.height = ch;
+          const octx = maskOvEl.getContext("2d");
+          const inverted = !!(cropMap[item.filename]?.maskInverted);
+          // Default: all black (fully unmasked)
+          octx.fillStyle = "#000"; octx.fillRect(0, 0, cw, ch);
+          if (maskData && maskData.length > 0) {
+            for (const op of maskData) {
+              if (!op.pts || op.pts.length < 1) continue;
+              // add = white (masked region), sub = black (unmasked)
+              octx.fillStyle = op.mode === "sub" ? "#000" : "#fff";
+              if (op.type === "brush") {
+                const r = Math.max(1, (op.r || 0.01) * cw);
+                for (const p of op.pts) { octx.beginPath(); octx.arc(p.x*cw, p.y*ch, r, 0, Math.PI*2); octx.fill(); }
+              } else {
+                if (op.pts.length < 3) continue;
+                octx.beginPath(); octx.moveTo(op.pts[0].x*cw, op.pts[0].y*ch);
+                for (let i=1;i<op.pts.length;i++) octx.lineTo(op.pts[i].x*cw, op.pts[i].y*ch);
+                octx.closePath(); octx.fill();
+              }
+            }
+          }
+          if (inverted) { const id=octx.getImageData(0,0,cw,ch); for(let i=0;i<id.data.length;i+=4){id.data[i]=255-id.data[i];id.data[i+1]=255-id.data[i+1];id.data[i+2]=255-id.data[i+2];} octx.putImageData(id,0,0); }
+        };
+        // Draw immediately (no need to wait for img if all-black default)
+        requestAnimationFrame(drawOnCanvas);
+      }
+
       // ── numeric badge (bottom-left, clear of ✕ button) ───────────────────
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
@@ -763,7 +844,7 @@ function createWidget(node) {
       // ── crop button (top-right, next to remove btn) ──────────────────────
       const cropBtn = document.createElement("button");
       cropBtn.textContent = "✂";
-      cropBtn.title = "Edit crop";
+      cropBtn.title = "Edit image";
       const cropActive = hasCrop(item.filename);
       cropBtn.style.cssText = `
         position:absolute;top:2px;right:18px;
@@ -780,12 +861,32 @@ function createWidget(node) {
         openCropEditor(idx);
       });
 
-      // ── copy button (top-right, next to crop btn) ──────────────────────
+      // ── mask button (◧, next to crop btn) ────────────────────────────────────
+      const maskBtnEl = document.createElement("button");
+      maskBtnEl.textContent = "\u25D0";
+      maskBtnEl.title = "Edit mask";
+      const maskActive = hasMask(item.filename);
+      maskBtnEl.style.cssText = `
+        position:absolute;top:2px;right:34px;
+        background:${maskActive ? "rgba(30,80,30,0.92)" : "rgba(40,40,40,0.82)"};
+        color:${maskActive ? "#7fff7f" : "#eee"};
+        border:none;border-radius:3px;
+        width:14px;height:14px;font-size:8px;
+        cursor:pointer;padding:0;line-height:14px;text-align:center;
+        opacity:0;transition:opacity 0.15s;
+        z-index:2;
+      `;
+      maskBtnEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openMaskEditor(idx);
+      });
+
+      // ── copy button (top-right, next to mask btn) ──────────────────────
       const copyBtn = document.createElement("button");
       copyBtn.textContent = "⎘";
       copyBtn.title = "Copy image";
       copyBtn.style.cssText = `
-        position:absolute;top:2px;right:34px;
+        position:absolute;top:2px;right:50px;
         background:rgba(40,40,40,0.82);
         color:#eee;
         border:none;border-radius:3px;
@@ -798,11 +899,17 @@ function createWidget(node) {
         removeBtn.style.opacity = "1";
         cropBtn.style.opacity   = "1";
         copyBtn.style.opacity   = "1";
+        maskBtnEl.style.opacity = "1";
       });
       wrapper.addEventListener("mouseleave", () => {
         removeBtn.style.opacity = "0";
         cropBtn.style.opacity   = "0";
         copyBtn.style.opacity   = "0";
+        maskBtnEl.style.opacity = "0";
+      });
+      wrapper.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        openCropEditor(idx);
       });
       copyBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -838,15 +945,25 @@ function createWidget(node) {
         wrapper.appendChild(cropBadge);
       }
 
-      // ── double-click → open crop editor ──────────────────────────────────
-      wrapper.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        openCropEditor(idx);
-      });
+      // ── mask-active badge ──
+      if (maskActive) {
+        const maskBadge = document.createElement("span");
+        maskBadge.textContent = "\u25D0";
+        maskBadge.title = "Mask active";
+        maskBadge.style.cssText = `
+          position:absolute;bottom:2px;right:${cropActive ? 14 : 2}px;
+          background:rgba(30,90,30,0.85);color:#7fff7f;
+          font-size:8px;padding:0 2px;border-radius:2px;
+          pointer-events:none;z-index:1;
+        `;
+        wrapper.appendChild(maskBadge);
+      }
 
       wrapper.appendChild(img);
+      if (maskOvEl) wrapper.appendChild(maskOvEl);
       wrapper.appendChild(badge);
       wrapper.appendChild(copyBtn);
+      wrapper.appendChild(maskBtnEl);
       wrapper.appendChild(cropBtn);
       wrapper.appendChild(removeBtn);
       grid.appendChild(wrapper);
@@ -887,6 +1004,7 @@ function createWidget(node) {
     }
     clearBtn.style.display      = count > 0 ? "inline-block" : "none";
     viewToggleBtn.style.display = count > 0 ? "inline-block" : "none";
+    maskViewBtn.style.display   = count > 0 ? "inline-block" : "none";
 
     resizeNode();
     requestAnimationFrame(updateScrollFade);
@@ -1301,6 +1419,8 @@ function createWidget(node) {
     const edPreviewCache = new Map();
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
     let rafId = null, panSt = null;
+    // Snap guide state — which guides are active (drawn during pan)
+    let _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
     let edCropMode = false, edCropBox = null;
     let edCropDrag = null;
     let edAppliedCrop = null; // committed crop {cx,cy,cw,ch} — applied BEFORE transforms
@@ -1383,13 +1503,30 @@ function createWidget(node) {
       b.addEventListener("mouseleave", () => { b.style.background="#222"; b.style.borderColor="#3a3a3a"; });
       return b;
     }
-    const titleEl = document.createElement("span");
-    titleEl.style.cssText = `color:#ccc;font-size:${_fs13};font-weight:600;flex:1;`;
-    titleEl.textContent = "\u2702  Crop Editor";
+    // ── Mode switcher tabs (left of title) ──
+    function mkTab(label, active) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText = `background:${active?"#2a2a2a":"transparent"};color:${active?"#ccc":"#555"};border:1px solid ${active?"#444":"transparent"};border-bottom:${active?"2px solid #7ab0ff":"2px solid transparent"};border-radius:${Math.round(4*uiScale)}px ${Math.round(4*uiScale)}px 0 0;padding:${Math.round(4*uiScale)}px ${Math.round(9*uiScale)}px;font-size:${_fs11};cursor:pointer;transition:color .15s,border-color .15s;margin-bottom:-1px;`;
+      b.addEventListener("mouseenter", () => { if (!active) b.style.color = "#999"; });
+      b.addEventListener("mouseleave", () => { if (!active) b.style.color = "#555"; });
+      return b;
+    }
+    const tabEdit = mkTab("\u270F Edit Image", true);
+    const tabMask = mkTab("\u25D0 Mask", false);
+    tabMask.addEventListener("click", () => {
+      // Auto-apply current edits so Mask Editor sees the processed image
+      doApply();
+      openMaskEditor(curIdx);
+    });
+    hdr.appendChild(tabEdit);
+    hdr.appendChild(tabMask);
+
+    const hdrSpacer = document.createElement("span"); hdrSpacer.style.flex = "1";
     const prevB = mkB("\u2190 Prev"); const cntEl = document.createElement("span");
     cntEl.style.cssText = `color:#555;font-size:${_fs11};min-width:${Math.round(52*uiScale)}px;text-align:center;`;
     const nextB = mkB("Next \u2192"); const closeB = mkB("\u2715 Close");
-    hdr.appendChild(titleEl); hdr.appendChild(prevB); hdr.appendChild(cntEl);
+    hdr.appendChild(hdrSpacer); hdr.appendChild(prevB); hdr.appendChild(cntEl);
     hdr.appendChild(nextB); hdr.appendChild(closeB);
 
     // ── body ────────────────────────────────────────────────
@@ -1434,7 +1571,7 @@ function createWidget(node) {
     }
     const spacer = document.createElement("div"); spacer.style.flex = "1";
     const applyB = document.createElement("button");
-    applyB.textContent = "\u2713 Apply";
+    applyB.textContent = "\u2713 Apply Edit";
     applyB.style.cssText = `background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};font-weight:600;cursor:pointer;width:100%;`;
     applyB.addEventListener("mouseenter", () => { applyB.style.background="#225540"; applyB.style.borderColor="#44cc88"; });
     applyB.addEventListener("mouseleave", () => { applyB.style.background="#1a3a28"; applyB.style.borderColor="#336644"; });
@@ -1774,49 +1911,65 @@ function createWidget(node) {
     function buildLassoMaskCanvas(w, h) { return getLassoMaskCanvas(w, h); }
 
     // ── Lasso overlay rendering ──
+    // Drawn inside the SAME ctx transform as the image (translate → rotate → flip)
+    // so marching ants and the in-progress path automatically follow flip/rotation.
     function drawLassoOverlay(ctx) {
-      if (!edLassoMode) return; // hide ants when lasso tool is off
-      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
-      // Marching ants along composite mask boundary (cached)
+      if (!edLassoMode) return;
+      const { dw, dh } = _imgRenderDims();
+
+      // ── Marching ants (committed ops) ──
       if (edLassoOps.length > 0) {
-        const mw = Math.ceil(frameW), mh = Math.ceil(frameH);
+        const mw = Math.ceil(dw), mh = Math.ceil(dh);
         if (mw > 0 && mh > 0) {
-          getLassoMaskCanvas(mw, mh); // ensure edge cache is for frame dims
+          getLassoMaskCanvas(mw, mh);
           if (_cachedEdgePixels && _cachedEdgePixels.length > 0) {
             ctx.save();
+            // Match image transform: translate → rotate → flip
+            ctx.translate(frameCX + dOX, frameCY + dOY);
+            ctx.rotate(edRotate * Math.PI / 180);
+            ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
             ctx.strokeStyle = '#ff9f43'; ctx.lineWidth = 1.5;
             ctx.setLineDash([6, 5]); ctx.lineDashOffset = -edLassoAntsOffset;
             ctx.beginPath();
             for (let i = 0; i < _cachedEdgePixels.length; i += 2) {
-              ctx.rect(fx + _cachedEdgePixels[i], fy + _cachedEdgePixels[i+1], 1, 1);
+              // Edge pixels are in mask space (0..mw, 0..mh); image is centred at 0
+              ctx.rect(_cachedEdgePixels[i] - dw / 2, _cachedEdgePixels[i + 1] - dh / 2, 1, 1);
             }
             ctx.stroke();
             ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineDashOffset = -edLassoAntsOffset + 3;
             ctx.stroke();
-            ctx.setLineDash([]); ctx.restore();
+            ctx.setLineDash([]);
+            ctx.restore();
           }
         }
       }
-      // Current in-progress path
+
+      // ── In-progress path ──
       if (edLassoCurrentPts.length >= 1) {
-        const pts = edLassoCurrentPts.map(p => ({ px: fx + p.x * frameW, py: fy + p.y * frameH }));
-        ctx.save(); ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 1.5;
-        if (edLassoTool === "freehand") {
+        ctx.save();
+        ctx.translate(frameCX + dOX, frameCY + dOY);
+        ctx.rotate(edRotate * Math.PI / 180);
+        ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
+        // Points stored as normalized 0..1; map to image-local space (-dw/2..dw/2)
+        const pts = edLassoCurrentPts.map(p => ({ lx: (p.x - 0.5) * dw, ly: (p.y - 0.5) * dh }));
+        ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 1.5;
+        if (edLassoTool === 'freehand') {
           if (pts.length >= 2) {
-            ctx.beginPath(); ctx.moveTo(pts[0].px, pts[0].py);
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].px, pts[i].py);
+            ctx.beginPath(); ctx.moveTo(pts[0].lx, pts[0].ly);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].lx, pts[i].ly);
             ctx.stroke();
           }
         } else {
-          ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(pts[0].px, pts[0].py);
-          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].px, pts[i].py);
-          if (_lassoCursorNorm) ctx.lineTo(fx + _lassoCursorNorm.x * frameW, fy + _lassoCursorNorm.y * frameH);
+          ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(pts[0].lx, pts[0].ly);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].lx, pts[i].ly);
+          const curL = _lassoCursorNorm ? { lx: (_lassoCursorNorm.x - 0.5) * dw, ly: (_lassoCursorNorm.y - 0.5) * dh } : null;
+          if (curL) ctx.lineTo(curL.lx, curL.ly);
           ctx.stroke(); ctx.setLineDash([]);
           ctx.fillStyle = '#ffcc00';
-          for (const p of pts) { ctx.beginPath(); ctx.arc(p.px, p.py, 3, 0, Math.PI * 2); ctx.fill(); }
-          if (_lassoCursorNorm && pts.length >= 3) {
-            const dist = Math.hypot((_lassoCursorNorm.x - edLassoCurrentPts[0].x) * frameW, (_lassoCursorNorm.y - edLassoCurrentPts[0].y) * frameH);
-            if (dist < 10) { ctx.strokeStyle = '#44ff44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pts[0].px, pts[0].py, 6, 0, Math.PI * 2); ctx.stroke(); }
+          for (const p of pts) { ctx.beginPath(); ctx.arc(p.lx, p.ly, 3, 0, Math.PI * 2); ctx.fill(); }
+          if (curL && pts.length >= 3) {
+            const dist = Math.hypot(curL.lx - pts[0].lx, curL.ly - pts[0].ly);
+            if (dist < 10) { ctx.strokeStyle = '#44ff44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pts[0].lx, pts[0].ly, 6, 0, Math.PI * 2); ctx.stroke(); }
           }
         }
         ctx.restore();
@@ -2103,9 +2256,54 @@ function createWidget(node) {
     pnlBody.appendChild(resetAllB);
 
     // ── Crop Region helpers ──────────────────────────────────────
+    /** Current drawn image half-dims in canvas px (scale=1 at bFit, user zoom applied). */
+    function _imgRenderDims() {
+      const eW = effNatW(), eH = effNatH();
+      const eff = bFit * edScale;
+      return { dw: eW * eff, dh: eH * eff };
+    }
+    /**
+     * Convert canvas-pixel → image-normalized (0..1).
+     * Applies the INVERSE of the image's ctx transform: undo translate → undo rotate → undo flip.
+     * Points are stored in pre-flip, pre-rotation image space so the backend can replay
+     * the same transforms correctly.
+     */
     function cropPxToNorm(px, py) {
-      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
-      return { nx: (px - fx) / frameW, ny: (py - fy) / frameH };
+      const { dw, dh } = _imgRenderDims();
+      const icx = frameCX + dOX, icy = frameCY + dOY;
+      // 1. Offset from image centre in canvas space
+      let lx = px - icx, ly = py - icy;
+      // 2. Inverse rotation (undo ctx.rotate)
+      if (edRotate !== 0) {
+        const a = -edRotate * Math.PI / 180;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        const rx = lx * cos - ly * sin, ry = lx * sin + ly * cos;
+        lx = rx; ly = ry;
+      }
+      // 3. Inverse flip (undo ctx.scale(flipH?-1:1, flipV?-1:1))
+      if (edFlipH) lx = -lx;
+      if (edFlipV) ly = -ly;
+      // 4. Normalize: image drawn at -dw/2..dw/2 in local space
+      return { nx: lx / dw + 0.5, ny: ly / dh + 0.5 };
+    }
+    /**
+     * Convert image-normalized (0..1) → canvas-pixel.
+     * Mirrors the ctx transform order: flip → rotate → translate to image centre.
+     */
+    function _normToCanvas(nx, ny, dw, dh) {
+      let lx = (nx - 0.5) * dw, ly = (ny - 0.5) * dh;
+      // 1. Apply flip (same as ctx.scale)
+      if (edFlipH) lx = -lx;
+      if (edFlipV) ly = -ly;
+      // 2. Apply rotation (same as ctx.rotate)
+      if (edRotate !== 0) {
+        const a = edRotate * Math.PI / 180;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        const rx = lx * cos - ly * sin, ry = lx * sin + ly * cos;
+        lx = rx; ly = ry;
+      }
+      // 3. Translate to canvas coords
+      return { cx: frameCX + dOX + lx, cy: frameCY + dOY + ly };
     }
     function cropHitTest(cx, cy) {
       if (!edCropBox) return null;
@@ -2386,6 +2584,41 @@ function createWidget(node) {
         // frame border
         ctx.strokeStyle="rgba(255,255,255,0.35)"; ctx.lineWidth=1.5;
         ctx.strokeRect(fx+0.75,fy+0.75,frameW-1.5,frameH-1.5);
+        // ── Snap guide lines ──
+        const _anySnap = _snapGuides.cx || _snapGuides.cy || _snapGuides.L || _snapGuides.R || _snapGuides.T || _snapGuides.B;
+        if (_anySnap) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(64,160,255,0.70)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([5, 3]);
+          // Vertical center line (image centre X aligned to frame centre X)
+          if (_snapGuides.cx) {
+            ctx.beginPath(); ctx.moveTo(frameCX, fy); ctx.lineTo(frameCX, fy + frameH); ctx.stroke();
+          }
+          // Horizontal center line
+          if (_snapGuides.cy) {
+            ctx.beginPath(); ctx.moveTo(fx, frameCY); ctx.lineTo(fx + frameW, frameCY); ctx.stroke();
+          }
+          ctx.setLineDash([]);
+          ctx.lineWidth = 1.5;
+          // Left-edge guide
+          if (_snapGuides.L) {
+            ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx, fy + frameH); ctx.stroke();
+          }
+          // Right-edge guide
+          if (_snapGuides.R) {
+            ctx.beginPath(); ctx.moveTo(fx + frameW, fy); ctx.lineTo(fx + frameW, fy + frameH); ctx.stroke();
+          }
+          // Top-edge guide
+          if (_snapGuides.T) {
+            ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx + frameW, fy); ctx.stroke();
+          }
+          // Bottom-edge guide
+          if (_snapGuides.B) {
+            ctx.beginPath(); ctx.moveTo(fx, fy + frameH); ctx.lineTo(fx + frameW, fy + frameH); ctx.stroke();
+          }
+          ctx.restore();
+        }
         // rule-of-thirds (hide when crop overlay active — it draws its own)
         if (!edCropMode || !edCropBox) {
           ctx.strokeStyle="rgba(255,255,255,0.1)"; ctx.lineWidth=0.5;
@@ -2567,6 +2800,9 @@ function createWidget(node) {
       const imgT = dOY - hH,  frmT = -hFH;
       const imgB = dOY + hH,  frmB =  hFH;
 
+      // Reset guides before recalculating
+      _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
+
       // Snap to center lines first (highest priority when near center)
       const snapX_center = Math.abs(dOX) < SNAP;
       const snapY_center = Math.abs(dOY) < SNAP;
@@ -2574,24 +2810,30 @@ function createWidget(node) {
       // Snap X: center → left edge → right edge
       if (snapX_center) {
         dOX = 0;                  // snap to horizontal center
+        _snapGuides.cx = true;
       } else {
         const dL = imgL - frmL, dR = imgR - frmR;
         if (Math.abs(dL) < SNAP && (Math.abs(dL) <= Math.abs(dR))) {
           dOX = frmL + hW;       // snap left edge flush
+          _snapGuides.L = true;
         } else if (Math.abs(dR) < SNAP) {
           dOX = frmR - hW;       // snap right edge flush
+          _snapGuides.R = true;
         }
       }
 
       // Snap Y: center → top edge → bottom edge
       if (snapY_center) {
         dOY = 0;                  // snap to vertical center
+        _snapGuides.cy = true;
       } else {
         const dT = imgT - frmT, dB = imgB - frmB;
         if (Math.abs(dT) < SNAP && (Math.abs(dT) <= Math.abs(dB))) {
           dOY = frmT + hH;       // snap top edge flush
+          _snapGuides.T = true;
         } else if (Math.abs(dB) < SNAP) {
           dOY = frmB - hH;       // snap bottom edge flush
+          _snapGuides.B = true;
         }
       }
 
@@ -2612,7 +2854,13 @@ function createWidget(node) {
         ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
         updateCropInfoLbl(); return;
       }
-      if (panSt) { panSt=null; ca.style.cursor = edLassoMode ? _lassoCursors.normal : edCropMode ? "crosshair" : "grab"; requestInpaintPreview(); }
+      if (panSt) {
+        panSt = null;
+        // Clear snap guides when releasing pan
+        _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
+        ca.style.cursor = edLassoMode ? _lassoCursors.normal : edCropMode ? "crosshair" : "grab";
+        requestInpaintPreview();
+      }
     }
     cvs.addEventListener("mousedown", e=>{
       if (e.button!==0) return;
@@ -2626,7 +2874,9 @@ function createWidget(node) {
           edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; ca.style.cursor = 'crosshair';
         } else {
           if (edLassoCurrentPts.length >= 3) {
-            const d = Math.hypot((cNx - edLassoCurrentPts[0].x) * frameW, (cNy - edLassoCurrentPts[0].y) * frameH);
+            const { dw: _cdw, dh: _cdh } = _imgRenderDims();
+            const p0c = _normToCanvas(edLassoCurrentPts[0].x, edLassoCurrentPts[0].y, _cdw, _cdh);
+            const d = Math.hypot(cx - p0c.cx, cy - p0c.cy); // distance in canvas pixels
             if (d < 10) { commitLassoShape(edLassoCurrentPts, e); return; }
           }
           edLassoCurrentPts.push({ x: cNx, y: cNy }); redraw();
@@ -2735,12 +2985,26 @@ function createWidget(node) {
       saveToSes();
       const valid=new Set(items.map(i=>i.filename));
       const _nodeBg = getEffectiveBgColor();
-      // commit session to cropMap
+      // commit session to cropMap — preserve mask data that lives alongside edit transforms
       for (const fn of valid) {
         const t=ses[fn];
+        // Carry forward existing mask data
+        const prevMask = cropMap[fn]?.maskOps;
+        const prevMaskInv = cropMap[fn]?.maskInverted;
+        const prevMaskXf = cropMap[fn]?.maskXform;
         if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!==_nodeBg)||
-            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted)) cropMap[fn]=t;
-        else delete cropMap[fn];
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted)) {
+          cropMap[fn]=t;
+        } else {
+          // No edit transforms — keep entry only if mask data exists
+          if (prevMask) { cropMap[fn] = {}; } else { delete cropMap[fn]; }
+        }
+        // Restore mask data on whatever entry remains
+        if (cropMap[fn]) {
+          if (prevMask) cropMap[fn].maskOps = prevMask;
+          if (prevMaskInv) cropMap[fn].maskInverted = prevMaskInv;
+          if (prevMaskXf) cropMap[fn].maskXform = prevMaskXf;
+        }
       }
       persistCropData(); persist(); doClose();
       renderCropPreviews();  // async: update thumbnails with crop applied
@@ -2795,6 +3059,606 @@ function createWidget(node) {
     }
     if (files.length) await addFiles(files);
   };
+
+
+  // ── openMaskEditor ────────────────────────────────────────────────────────
+  function openMaskEditor(startIdx) {
+    let curIdx = startIdx;
+    // ── Unified sizing (mirrors openCropEditor for consistency) ──
+    const _vpW2 = window.innerWidth || 1920;
+    const uiScale = Math.min(1.3, Math.max(1.0, Math.sqrt(_vpW2 / 1920)));
+    function _r(v) { return Math.round(v * uiScale); }
+    const _pnlW  = Math.round(168 * uiScale);   // same sidebar width as Edit Image
+    const _fs11  = `${(11 * uiScale).toFixed(1)}px`;
+    const _fs12  = `${(12 * uiScale).toFixed(1)}px`;
+    const _fs13  = `${(13 * uiScale).toFixed(1)}px`;
+    const _pad6  = `${_r(6)}px`;
+    const _pad8  = `${_r(8)}px`;
+    const _pad10 = `${_r(10)}px`;
+    const _gap5  = `${_r(5)}px`;
+    const _r4    = `${_r(4)}px`;
+    const _r5    = `${_r(5)}px`;
+    const _r6    = `${_r(6)}px`;
+    const _btnPadW = `${_r(7)}px`;
+
+    // Modal overlay
+    const ov = document.createElement("div");
+    ov.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;`;
+
+    const dlg = document.createElement("div");
+    dlg.style.cssText = `
+      width:clamp(700px,90vw,1920px);height:clamp(480px,88vh,1200px);
+      background:#1a1a1a;border-radius:${_r(10)}px;display:flex;flex-direction:column;
+      box-shadow:0 8px 48px rgba(0,0,0,0.7);overflow:hidden;font-family:sans-serif;
+      animation:mil-fadein 0.18s ease-out;
+    `;
+
+    // Header
+    const hdr = document.createElement("div");
+    hdr.style.cssText = `display:flex;align-items:center;gap:${_r(8)}px;padding:${_r(10)}px ${_r(14)}px;background:#111;border-bottom:1px solid #2a2a2a;flex-shrink:0;`;
+    // matches Edit panel's mkB exactly
+    const _btnPad = `${_r(5)}px ${_r(12)}px`;
+    function mkHBtn(t, col) {
+      const b = document.createElement("button");
+      b.textContent = t;
+      b.style.cssText = `background:#222;color:${col||"#bbb"};border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;`;
+      b.addEventListener("mouseenter", () => { b.style.background="#2e2e2e"; b.style.borderColor="#555"; });
+      b.addEventListener("mouseleave", () => { b.style.background="#222"; b.style.borderColor="#3a3a3a"; });
+      return b;
+    }
+    // ── Mode switcher tabs (left of title) ──
+    function mkTab(label, active, accentColor) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      const ac = accentColor || "#7fff7f";
+      b.style.cssText = `background:${active?"#2a2a2a":"transparent"};color:${active?"#ccc":"#555"};border:1px solid ${active?"#444":"transparent"};border-bottom:${active?`2px solid ${ac}`:"2px solid transparent"};border-radius:${_r(4)}px ${_r(4)}px 0 0;padding:${_r(4)}px ${_r(9)}px;font-size:${_fs11};cursor:pointer;transition:color .15s,border-color .15s;margin-bottom:-1px;`;
+      b.addEventListener("mouseenter", () => { if (!active) b.style.color = "#999"; });
+      b.addEventListener("mouseleave", () => { if (!active) b.style.color = "#555"; });
+      return b;
+    }
+    const tabEdit = mkTab("\u270F Edit Image", false, "#7fff7f");
+    const tabMask = mkTab("\u25D0 Mask", true, "#7fff7f");
+    tabEdit.addEventListener("click", () => {
+      // Save mask data + current transform snapshot before switching to Edit Image
+      const fn = items[curIdx]?.filename;
+      if (fn) {
+        if (!cropMap[fn]) cropMap[fn] = {};
+        cropMap[fn].maskOps = mMaskOps.length > 0 ? [...mMaskOps] : undefined;
+        cropMap[fn].maskInverted = mMaskInverted || undefined;
+        // Snapshot the transform state so we can remap coords if transforms change
+        const ct = cropMap[fn];
+        cropMap[fn].maskXform = { ox: ct.ox||0, oy: ct.oy||0, scale: ct.scale||1, flipH: !!ct.flipH, flipV: !!ct.flipV, rotate: ct.rotate||0, cx: ct.cx, cy: ct.cy, cw: ct.cw, ch: ct.ch };
+        if (!cropMap[fn].maskOps) delete cropMap[fn].maskOps;
+        if (!cropMap[fn].maskInverted) delete cropMap[fn].maskInverted;
+        if (!cropMap[fn].maskOps) delete cropMap[fn].maskXform; // no ops = no snapshot needed
+        persistCropData();
+      }
+      close();
+      openCropEditor(curIdx);
+    });
+    hdr.appendChild(tabEdit);
+    hdr.appendChild(tabMask);
+
+    const spacer = document.createElement("span"); spacer.style.flex = "1";
+    const prevB = mkHBtn("\u2190 Prev"), cntEl = document.createElement("span"), nextB = mkHBtn("Next \u2192");
+    cntEl.style.cssText = `color:#555;font-size:${_fs11};min-width:${Math.round(52*uiScale)}px;text-align:center;`;
+    hdr.appendChild(spacer); hdr.appendChild(prevB); hdr.appendChild(cntEl); hdr.appendChild(nextB);
+
+    // Body
+    const body = document.createElement("div");
+    body.style.cssText = "flex:1;display:flex;min-height:0;";
+
+    // Left panel
+    const pnl = document.createElement("div");
+    pnl.style.cssText = `width:${_pnlW}px;flex-shrink:0;background:#111;border-right:1px solid #222;display:flex;flex-direction:column;`;
+    const pnlBody = document.createElement("div");
+    pnlBody.style.cssText = `flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:${_pad10} ${_pad10};display:flex;flex-direction:column;gap:${_gap5};`;
+    const pnlFoot = document.createElement("div");
+    pnlFoot.style.cssText = `flex-shrink:0;padding:${_pad6} ${_pad10} ${_r(10)}px;border-top:1px solid #222;display:flex;flex-direction:column;gap:${_gap5};`;
+
+    function mkSec(t) {
+      const s = document.createElement("div");
+      s.style.cssText = `color:#555;font-size:${_r(9)}px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-top:${_r(6)}px;`;
+      s.textContent = t; return s;
+    }
+    function mkBtn2(t, active) {
+      const b = document.createElement("button");
+      b.textContent = t; b.style.cssText = `background:${active?"#1e3a1e":"#1e1e1e"};color:${active?"#7fff7f":"#aaa"};border:1px solid ${active?"#3a6a3a":"#333"};border-radius:${_r5};padding:${_r(5)}px ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;transition:background .12s,border-color .12s;`;
+      return b;
+    }
+
+    // ── Tool section ──
+    pnlBody.appendChild(mkSec("TOOLS"));
+    const toolRow = document.createElement("div");
+    toolRow.style.cssText = `display:flex;gap:${_r(4)}px;flex-wrap:wrap;`;
+
+    let mTool = "brush"; // "brush" | "lasso" | "polygon"
+    const toolBtns = {};
+    [["brush","⬤ Brush"],["lasso","⌾ Lasso"],["polygon","⬡ Polygon"]].forEach(([k,lbl]) => {
+      const b = mkBtn2(lbl, k === mTool);
+      b.style.flex = "1 0 auto";
+      b.addEventListener("click", () => {
+        mTool = k;
+        Object.entries(toolBtns).forEach(([kk, bb]) => {
+          const on = kk === k;
+          bb.style.background = on ? "#1e3a1e" : "#1e1e1e";
+          bb.style.color = on ? "#7fff7f" : "#aaa";
+          bb.style.borderColor = on ? "#3a6a3a" : "#333";
+        });
+        mLassoCurrentPts = [];
+        mRedraw();
+        updateCursor();
+      });
+      toolBtns[k] = b;
+      toolRow.appendChild(b);
+    });
+    pnlBody.appendChild(toolRow);
+
+    // ── Brush size ──
+    pnlBody.appendChild(mkSec("BRUSH SIZE"));
+    const brushRow = document.createElement("div");
+    brushRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
+    const brushSlider = document.createElement("input");
+    brushSlider.type = "range"; brushSlider.min = "4"; brushSlider.max = "150"; brushSlider.value = "30";
+    brushSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const brushSizeEl = document.createElement("span");
+    brushSizeEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
+    brushSizeEl.textContent = "30px";
+    brushSlider.addEventListener("input", () => { brushSizeEl.textContent = brushSlider.value+"px"; mRedraw(); });
+    brushRow.appendChild(brushSlider); brushRow.appendChild(brushSizeEl);
+    pnlBody.appendChild(brushRow);
+
+    // ── Mode hint ──
+    pnlBody.appendChild(mkSec("SELECTION MODE"));
+    const modeHint = document.createElement("div");
+    modeHint.style.cssText = `color:#555;font-size:${_r(9.5)}px;line-height:1.5;`;
+    modeHint.innerHTML = `<span style="color:#7fb0ff">Default</span> — add black<br><span style="color:#7fb0ff">Shift</span> — add to selection<br><span style="color:#ff8080">Alt</span> — remove from selection`;
+    pnlBody.appendChild(modeHint);
+
+    // ── Mask ops ──
+    pnlBody.appendChild(mkSec("MASK"));
+    const invertBtn = mkBtn2("\u21C6 Invert Mask", false);
+    const clearMaskBtn = mkBtn2("\u2715 Clear Mask", false);
+    clearMaskBtn.style.color = "#ff8888"; clearMaskBtn.style.borderColor = "#884444";
+    pnlBody.appendChild(invertBtn); pnlBody.appendChild(clearMaskBtn);
+
+    // Footer Apply/Cancel — same style as Edit panel
+    const applyBtn = document.createElement("button");
+    applyBtn.textContent = "\u2713 Apply Mask";
+    applyBtn.style.cssText = `background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};font-weight:600;cursor:pointer;width:100%;`;
+    applyBtn.addEventListener("mouseenter", () => { applyBtn.style.background="#225540"; applyBtn.style.borderColor="#44cc88"; });
+    applyBtn.addEventListener("mouseleave", () => { applyBtn.style.background="#1a3a28"; applyBtn.style.borderColor="#336644"; });
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "\u2715 Cancel";
+    cancelBtn.style.cssText = `background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};cursor:pointer;width:100%;`;
+    cancelBtn.addEventListener("mouseenter", () => { cancelBtn.style.background="#3a2020"; cancelBtn.style.color="#ff8888"; cancelBtn.style.borderColor="#553333"; });
+    cancelBtn.addEventListener("mouseleave", () => { cancelBtn.style.background="#2a2a2a"; cancelBtn.style.color="#aaa"; cancelBtn.style.borderColor="#444"; });
+    pnlFoot.appendChild(applyBtn); pnlFoot.appendChild(cancelBtn);
+
+    pnl.appendChild(pnlBody); pnl.appendChild(pnlFoot);
+
+    // Right canvas area
+    const ca = document.createElement("div");
+    ca.style.cssText = "flex:1;position:relative;background:#141414;overflow:hidden;";
+    const cvs = document.createElement("canvas");
+    cvs.style.cssText = "position:absolute;inset:0;width:100%;height:100%;";
+    ca.appendChild(cvs);
+    body.appendChild(pnl); body.appendChild(ca);
+    dlg.appendChild(hdr); dlg.appendChild(body);
+    ov.appendChild(dlg);
+    document.body.appendChild(ov);
+
+    // ── State ──
+    let mImg = null;
+    let mMaskOps = []; // {type:"lasso"|"polygon"|"brush", mode:"add"|"sub", pts:[{x,y}], r?:number}
+    let mMaskInverted = false;
+    let mLassoCurrentPts = [];
+    let mLassoDrawing = false;
+    let mAntsOff = 0, mAntsTimer = null;
+    let mBrushDrawing = false, mBrushPts = [];
+    let mFrameW = 300, mFrameH = 300, mFrameCX = 0, mFrameCY = 0;
+    let mNatW = 1, mNatH = 1;
+    let mRafId = null;
+    let mBrushPos = null; // {cx, cy} canvas px for brush preview
+
+    function close() {
+      if (mAntsTimer) clearInterval(mAntsTimer);
+      cancelAnimationFrame(mRafId);
+      window.removeEventListener("mouseup",  _onMouseUp);
+      window.removeEventListener("keydown",  _keyHandler);
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+    }
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    cancelBtn.addEventListener("click", close);
+
+    // ── Mask canvas helpers ──
+    function _syncFrame() {
+      const r = ca.getBoundingClientRect();
+      if (cvs.width !== Math.round(r.width) || cvs.height !== Math.round(r.height)) {
+        cvs.width = Math.round(r.width); cvs.height = Math.round(r.height);
+      }
+      const cw = cvs.width, ch = cvs.height, pad = 40;
+      const asp = mNatW / mNatH;
+      const maxW = cw - pad * 2, maxH = ch - pad * 2;
+      if (asp >= maxW / maxH) { mFrameW = maxW; mFrameH = Math.round(maxW / asp); }
+      else                    { mFrameH = maxH; mFrameW = Math.round(maxH * asp); }
+      mFrameCX = cw / 2; mFrameCY = ch / 2;
+    }
+
+    // Convert canvas px → normalized (0..1) image coords
+    function _pxToNorm(cx, cy) {
+      return { nx: (cx - (mFrameCX - mFrameW / 2)) / mFrameW,
+               ny: (cy - (mFrameCY - mFrameH / 2)) / mFrameH };
+    }
+    // Convert normalized → canvas px
+    function _normToPx(nx, ny) {
+      return { cx: mFrameCX - mFrameW / 2 + nx * mFrameW,
+               cy: mFrameCY - mFrameH / 2 + ny * mFrameH };
+    }
+
+    // Build a flat mask canvas (w×h, black=masked, white=unmasked) from mMaskOps
+    function _buildMaskCanvas(w, h) {
+      const mc = document.createElement("canvas"); mc.width = w; mc.height = h;
+      const mx = mc.getContext("2d");
+      // Start white (unmasked)
+      mx.fillStyle = "#fff"; mx.fillRect(0, 0, w, h);
+      mx.globalCompositeOperation = "source-over";
+      for (const op of mMaskOps) {
+        if (!op.pts || op.pts.length < 1) continue;
+        // add = paint black (mask), sub = erase back to white (unmask)
+        mx.fillStyle = op.mode === "sub" ? "#fff" : "#000";
+        if (op.type === "brush") {
+          // r is stored as normalised radius (r / mNatW at commit time); convert back to px
+          const r = Math.max(1, (op.r || 0.01) * mNatW * (w / mNatW));
+          for (const p of op.pts) {
+            mx.beginPath(); mx.arc(p.x * w, p.y * h, r, 0, Math.PI * 2); mx.fill();
+          }
+        } else {
+          // Lasso / polygon → fill poly
+          if (op.pts.length < 3) continue;
+          mx.beginPath();
+          mx.moveTo(op.pts[0].x * w, op.pts[0].y * h);
+          for (let i = 1; i < op.pts.length; i++) mx.lineTo(op.pts[i].x * w, op.pts[i].y * h);
+          mx.closePath(); mx.fill();
+        }
+      }
+      if (mMaskInverted) {
+        // XOR with white to invert: use a second canvas
+        const inv = document.createElement("canvas"); inv.width = w; inv.height = h;
+        const ix = inv.getContext("2d");
+        ix.fillStyle = "#fff"; ix.fillRect(0, 0, w, h);
+        ix.globalCompositeOperation = "difference";
+        ix.drawImage(mc, 0, 0);
+        return inv;
+      }
+      return mc;
+    }
+
+
+    // ── Redraw ──
+    function mRedraw() {
+      cancelAnimationFrame(mRafId);
+      mRafId = requestAnimationFrame(() => {
+        _syncFrame();
+        const ctx = cvs.getContext("2d");
+        const cw = cvs.width, ch = cvs.height;
+        const fx = mFrameCX - mFrameW / 2, fy = mFrameCY - mFrameH / 2;
+
+        // Checkerboard bg
+        const T = 14;
+        for (let rr = 0; rr < Math.ceil(ch / T); rr++) for (let cc = 0; cc < Math.ceil(cw / T); cc++) {
+          ctx.fillStyle = (rr + cc) % 2 === 0 ? "#1a1a1a" : "#141414";
+          ctx.fillRect(cc * T, rr * T, T, T);
+        }
+
+        // Draw image at full opacity so it shows clearly
+        if (mImg) {
+          ctx.drawImage(mImg, fx, fy, mFrameW, mFrameH);
+        }
+
+        // ── Draw committed mask as blue overlay ──────────────────────────
+        // Uses an off-screen canvas so add/sub ops compose correctly,
+        // then draws result at 55% opacity — works for ALL tool types.
+        if (mMaskOps.length > 0 || mMaskInverted) {
+          const mc = document.createElement("canvas");
+          mc.width = mFrameW; mc.height = mFrameH;
+          const mx = mc.getContext("2d");
+          for (const op of mMaskOps) {
+            if (!op.pts || op.pts.length < 1) continue;
+            mx.globalCompositeOperation = op.mode === "sub" ? "destination-out" : "source-over";
+            mx.fillStyle = "rgba(30,90,220,1)";
+            if (op.type === "brush") {
+              const r = Math.max(1, (op.r || 0.005) * mFrameW);
+              for (const p of op.pts) {
+                mx.beginPath(); mx.arc(p.x * mFrameW, p.y * mFrameH, r, 0, Math.PI * 2); mx.fill();
+              }
+            } else {
+              if (op.pts.length < 3) continue;
+              mx.beginPath();
+              mx.moveTo(op.pts[0].x * mFrameW, op.pts[0].y * mFrameH);
+              for (let i = 1; i < op.pts.length; i++) mx.lineTo(op.pts[i].x * mFrameW, op.pts[i].y * mFrameH);
+              mx.closePath(); mx.fill();
+            }
+          }
+          // Invert: fill everything, then cut out existing mask
+          if (mMaskInverted) {
+            const ic = document.createElement("canvas");
+            ic.width = mFrameW; ic.height = mFrameH;
+            const ix = ic.getContext("2d");
+            ix.fillStyle = "rgba(30,90,220,1)";
+            ix.fillRect(0, 0, mFrameW, mFrameH);
+            ix.globalCompositeOperation = "destination-out";
+            ix.drawImage(mc, 0, 0);
+            ctx.save(); ctx.globalAlpha = 0.55;
+            ctx.drawImage(ic, fx, fy);
+            ctx.restore();
+          } else {
+            ctx.save(); ctx.globalAlpha = 0.55;
+            ctx.drawImage(mc, fx, fy);
+            ctx.restore();
+          }
+        }
+
+        // Real-time brush stroke preview (while mouse held down)
+        if (mTool === "brush" && mBrushDrawing && mBrushPts.length > 0) {
+          const r = Math.max(1, parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1)));
+          ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = "rgba(30,90,220,1)";
+          for (const p of mBrushPts) {
+            ctx.beginPath(); ctx.arc(fx + p.x * mFrameW, fy + p.y * mFrameH, r, 0, Math.PI * 2); ctx.fill();
+          }
+          ctx.restore();
+        }
+
+        // Dim outside frame
+        ctx.fillStyle = "rgba(0,0,0,0.58)";
+        ctx.fillRect(0, 0, cw, fy); ctx.fillRect(0, fy + mFrameH, cw, ch - fy - mFrameH);
+        ctx.fillRect(0, fy, fx, mFrameH); ctx.fillRect(fx + mFrameW, fy, cw - fx - mFrameW, mFrameH);
+        // Frame border
+        ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+        ctx.strokeRect(fx + 0.75, fy + 0.75, mFrameW - 1.5, mFrameH - 1.5);
+
+        // In-progress lasso/polygon: filled preview + marching ants outline
+        if (mLassoCurrentPts.length > 1) {
+          const p0 = _normToPx(mLassoCurrentPts[0].x, mLassoCurrentPts[0].y);
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(p0.cx, p0.cy);
+          for (let i = 1; i < mLassoCurrentPts.length; i++) {
+            const p = _normToPx(mLassoCurrentPts[i].x, mLassoCurrentPts[i].y);
+            ctx.lineTo(p.cx, p.cy);
+          }
+          ctx.closePath();
+          ctx.fillStyle = "rgba(30,90,220,0.35)"; ctx.fill();
+          ctx.strokeStyle = "rgba(64,200,255,0.9)"; ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 3]); ctx.lineDashOffset = -mAntsOff;
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // Brush cursor circle preview
+        if (mTool === "brush" && mBrushPos) {
+          const r = parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1));
+          ctx.save(); ctx.strokeStyle = "rgba(64,200,255,0.8)"; ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 2]);
+          ctx.beginPath(); ctx.arc(mBrushPos.cx, mBrushPos.cy, r, 0, Math.PI * 2); ctx.stroke();
+          ctx.restore();
+        }
+      });
+    }
+
+    // Marching ants
+    mAntsTimer = setInterval(() => { mAntsOff = (mAntsOff + 1) % 8; if (mLassoCurrentPts.length > 1) mRedraw(); }, 80);
+
+    function updateCursor() {
+      if (mTool === "brush") ca.style.cursor = "none";
+      else ca.style.cursor = "crosshair";
+    }
+    updateCursor();
+
+    function getModeFromEvent(e) { return e.altKey ? "sub" : "add"; }
+
+    function commitShape(pts, mode, type) {
+      if (pts.length < (type === "brush" ? 1 : 3)) return;
+      mMaskOps.push({ type, mode, pts: pts.map(p => ({ x: p.x, y: p.y })), r: parseFloat(brushSlider.value) / (mNatW || 1) * (mNatW || 1) });
+      mLassoCurrentPts = []; mBrushPts = [];
+      mRedraw();
+    }
+
+    // ── Mouse events ──
+    ca.addEventListener("mousemove", (e) => {
+      const r = ca.getBoundingClientRect();
+      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      const { nx, ny } = _pxToNorm(cx, cy);
+      const cnx = Math.max(0, Math.min(1, nx)), cny = Math.max(0, Math.min(1, ny));
+      mBrushPos = { cx, cy };
+
+      if (mTool === "brush" && mBrushDrawing) {
+        mBrushPts.push({ x: cnx, y: cny });
+        mRedraw(); return;
+      }
+      if (mTool === "lasso" && mLassoDrawing) {
+        mLassoCurrentPts.push({ x: cnx, y: cny });
+        mRedraw(); return;
+      }
+      if (mTool === "polygon") {
+        mRedraw(); // update preview line
+      }
+      if (mTool === "brush") mRedraw(); // brush cursor preview
+    });
+
+    ca.addEventListener("mouseleave", () => { mBrushPos = null; mRedraw(); });
+
+    ca.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      const r = ca.getBoundingClientRect();
+      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      const { nx, ny } = _pxToNorm(cx, cy);
+      const cnx = Math.max(0, Math.min(1, nx)), cny = Math.max(0, Math.min(1, ny));
+      const mode = getModeFromEvent(e);
+
+      if (mTool === "brush") {
+        mBrushDrawing = true; mBrushPts = [{ x: cnx, y: cny }];
+        // Real-time preview: temporarily add
+        mRedraw(); return;
+      }
+      if (mTool === "lasso") {
+        mLassoDrawing = true; mLassoCurrentPts = [{ x: cnx, y: cny }];
+        ca.style.cursor = "crosshair"; return;
+      }
+      if (mTool === "polygon") {
+        if (mLassoCurrentPts.length >= 3) {
+          const p0s = _normToPx(mLassoCurrentPts[0].x, mLassoCurrentPts[0].y);
+          if (Math.hypot(cx - p0s.cx, cy - p0s.cy) < 10) {
+            commitShape(mLassoCurrentPts, mode, "polygon"); return;
+          }
+        }
+        mLassoCurrentPts.push({ x: cnx, y: cny }); mRedraw();
+      }
+    });
+
+    // ── Mouse events ──
+    function _onMouseUp(e) {
+      if (e.button !== 0) return;
+      const mode = getModeFromEvent(e);
+      if (mTool === "brush" && mBrushDrawing) {
+        mBrushDrawing = false;
+        if (mBrushPts.length >= 1) {
+          mMaskOps.push({ type: "brush", mode, pts: mBrushPts, r: parseFloat(brushSlider.value) / mNatW });
+          mBrushPts = [];
+        }
+        mRedraw(); return;
+      }
+      if (mTool === "lasso" && mLassoDrawing) {
+        mLassoDrawing = false;
+        if (mLassoCurrentPts.length >= 5) commitShape(mLassoCurrentPts, mode, "lasso");
+        else mLassoCurrentPts = [];
+        mRedraw(); updateCursor(); return;
+      }
+    }
+    window.addEventListener("mouseup", _onMouseUp);
+
+    // ── Keyboard: Escape cancels in-progress shape ──
+    function _keyHandler(e) {
+      if (e.key === "Escape") { mLassoCurrentPts = []; mBrushPts = []; mLassoDrawing = false; mBrushDrawing = false; mRedraw(); }
+    }
+    window.addEventListener("keydown", _keyHandler);
+
+    // ── Buttons ──
+    invertBtn.addEventListener("click", () => { mMaskInverted = !mMaskInverted; mRedraw(); });
+    clearMaskBtn.addEventListener("click", () => { mMaskOps = []; mLassoCurrentPts = []; mRedraw(); });
+
+    applyBtn.addEventListener("click", () => {
+      const fn = items[curIdx]?.filename;
+      if (!fn) { close(); return; }
+      if (!cropMap[fn]) cropMap[fn] = {};
+      cropMap[fn].maskOps = mMaskOps.length > 0 ? [...mMaskOps] : undefined;
+      cropMap[fn].maskInverted = mMaskInverted || undefined;
+      // Snapshot current transform so we can remap if transforms change later
+      const ct = cropMap[fn];
+      cropMap[fn].maskXform = { ox: ct.ox||0, oy: ct.oy||0, scale: ct.scale||1, flipH: !!ct.flipH, flipV: !!ct.flipV, rotate: ct.rotate||0, cx: ct.cx, cy: ct.cy, cw: ct.cw, ch: ct.ch };
+      // Clean up undefined keys
+      if (!cropMap[fn].maskOps) { delete cropMap[fn].maskOps; delete cropMap[fn].maskXform; }
+      if (!cropMap[fn].maskInverted) delete cropMap[fn].maskInverted;
+      persistCropData();
+      render();
+      close();
+    });
+
+    // ── Navigation ──
+    function updateNav() {
+      cntEl.textContent = `${curIdx + 1} / ${items.length}`;
+      prevB.style.opacity = curIdx > 0 ? "1" : "0.3";
+      nextB.style.opacity = curIdx < items.length - 1 ? "1" : "0.3";
+    }
+    prevB.addEventListener("click", () => { if (curIdx > 0) { curIdx--; loadIdx(curIdx); } });
+    nextB.addEventListener("click", () => { if (curIdx < items.length - 1) { curIdx++; loadIdx(curIdx); } });
+
+    // ── Remap mask ops when edit transforms change ──
+    // Maps each mask point from old-processed-image space to new-processed-image space
+    // so the mask "follows" the image content through zoom, pan, flip, rotate, crop changes.
+    function _remapMaskOps(ops, oldXf, newXf) {
+      // oldXf / newXf: { ox, oy, scale, flipH, flipV, rotate, cx, cy, cw, ch }
+      // Transform: frame_norm(0-1) → image_norm(0-1)
+      //   In renderItemToDataUrl, the image center maps to (0.5 + ox, 0.5 + oy),
+      //   and a unit of image width maps to eff = bf * scale in canvas units.
+      //   For simplicity we model: img_x = (frame_x - 0.5 - ox) / scale + 0.5
+      //   (ignoring rotation/flip for the inverse, then applying new forward)
+      const oOx = oldXf.ox || 0, oOy = oldXf.oy || 0, oSc = oldXf.scale || 1;
+      const oFH = oldXf.flipH, oFV = oldXf.flipV, oR = (oldXf.rotate || 0) * Math.PI / 180;
+      const nOx = newXf.ox || 0, nOy = newXf.oy || 0, nSc = newXf.scale || 1;
+      const nFH = newXf.flipH, nFV = newXf.flipV, nR = (newXf.rotate || 0) * Math.PI / 180;
+      function invXf(fx, fy, ox, oy, sc, fH, fV, rot) {
+        // Frame-normalized → image-normalized (undo transform)
+        let x = fx - 0.5 - ox, y = fy - 0.5 - oy;
+        // Undo rotation
+        if (rot) { const c = Math.cos(-rot), s = Math.sin(-rot); const rx = x*c - y*s, ry = x*s + y*c; x = rx; y = ry; }
+        // Undo flip
+        if (fH) x = -x; if (fV) y = -y;
+        // Undo scale
+        x /= sc; y /= sc;
+        return { x: x + 0.5, y: y + 0.5 };
+      }
+      function fwdXf(ix, iy, ox, oy, sc, fH, fV, rot) {
+        // Image-normalized → frame-normalized (apply transform)
+        let x = (ix - 0.5) * sc, y = (iy - 0.5) * sc;
+        if (fH) x = -x; if (fV) y = -y;
+        if (rot) { const c = Math.cos(rot), s = Math.sin(rot); const rx = x*c - y*s, ry = x*s + y*c; x = rx; y = ry; }
+        return { x: x + 0.5 + ox, y: y + 0.5 + oy };
+      }
+      function remapPt(p) {
+        const img = invXf(p.x, p.y, oOx, oOy, oSc, oFH, oFV, oR);
+        return fwdXf(img.x, img.y, nOx, nOy, nSc, nFH, nFV, nR);
+      }
+      return ops.map(op => {
+        if (!op.pts || op.pts.length < 1) return op;
+        const newPts = op.pts.map(remapPt);
+        return { ...op, pts: newPts };
+      });
+    }
+
+    async function loadIdx(idx) {
+      curIdx = idx; updateNav();
+      mImg = null; mLassoCurrentPts = []; mBrushPts = [];
+      const fn = items[idx]?.filename;
+      const saved = fn ? (cropMap[fn] || {}) : {};
+      mMaskOps = saved.maskOps ? [...saved.maskOps] : [];
+      mMaskInverted = saved.maskInverted || false;
+      // Remap mask coordinates if edit transform changed since mask was last saved
+      if (mMaskOps.length > 0 && saved.maskXform) {
+        const curXf = { ox: saved.ox||0, oy: saved.oy||0, scale: saved.scale||1, flipH: !!saved.flipH, flipV: !!saved.flipV, rotate: saved.rotate||0, cx: saved.cx, cy: saved.cy, cw: saved.cw, ch: saved.ch };
+        const oldXf = saved.maskXform;
+        // Check if transform actually changed
+        if (oldXf.ox !== curXf.ox || oldXf.oy !== curXf.oy || oldXf.scale !== curXf.scale ||
+            oldXf.flipH !== curXf.flipH || oldXf.flipV !== curXf.flipV || oldXf.rotate !== curXf.rotate) {
+          mMaskOps = _remapMaskOps(mMaskOps, oldXf, curXf);
+          // Update the stored snapshot to current so next load won't remap again
+          cropMap[fn].maskOps = [...mMaskOps];
+          cropMap[fn].maskXform = { ...curXf };
+          persistCropData();
+        }
+      }
+      // Use the edit-processed version so mask aligns with what the user sees
+      try {
+        const processedUrl = await renderItemToDataUrl(items[idx], idx);
+        if (processedUrl) {
+          const img = new Image(); img.crossOrigin = "anonymous";
+          await new Promise(res => { img.onload = res; img.onerror = res; img.src = processedUrl; });
+          mImg = img; mNatW = img.naturalWidth || 1; mNatH = img.naturalHeight || 1;
+        }
+      } catch (err) {
+        console.warn("[MIL] Mask: fallback to raw src", err);
+        const src = items[idx]?.src;
+        if (src) {
+          const img = new Image();
+          await new Promise(res => { img.onload = res; img.onerror = res; img.src = src; });
+          mImg = img; mNatW = img.naturalWidth || 1; mNatH = img.naturalHeight || 1;
+        }
+      }
+      mRedraw();
+    }
+
+    loadIdx(startIdx);
+  }
 
   return root;
 }
