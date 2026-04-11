@@ -1106,6 +1106,30 @@ function createWidget(node) {
       ctx.rotate(rot);
       ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
       ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
+      // Lasso mask overlay — same logic as renderCropPreviews
+      const tOps = t.lassoOps;
+      if (tOps && tOps.length > 0) {
+        const mw = Math.ceil(dw), mh = Math.ceil(dh);
+        const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh;
+        const mx = mc.getContext('2d');
+        for (const op of tOps) {
+          if (op.points.length < 3) continue;
+          mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+          mx.fillStyle = "white"; mx.beginPath();
+          mx.moveTo(op.points[0][0]*mw, op.points[0][1]*mh);
+          for (let k=1;k<op.points.length;k++) mx.lineTo(op.points[k][0]*mw, op.points[k][1]*mh);
+          mx.closePath(); mx.fill();
+        }
+        if (t.lassoInverted) { mx.globalCompositeOperation="xor"; mx.fillStyle="white"; mx.fillRect(0,0,mw,mh); }
+        mx.globalCompositeOperation="source-over";
+        const oc = document.createElement('canvas'); oc.width=mw; oc.height=mh;
+        const ox2 = oc.getContext('2d');
+        ox2.fillStyle = bgC; ox2.fillRect(0,0,mw,mh);
+        ox2.globalCompositeOperation = 'destination-out';
+        ox2.drawImage(mc, 0, 0);
+        ox2.globalCompositeOperation = 'source-over';
+        ctx.drawImage(oc, -dw/2, -dh/2);
+      }
       ctx.restore();
       return cvs.toDataURL("image/png");
     }
@@ -1525,9 +1549,9 @@ function createWidget(node) {
     const hdrSpacer = document.createElement("span"); hdrSpacer.style.flex = "1";
     const prevB = mkB("\u2190 Prev"); const cntEl = document.createElement("span");
     cntEl.style.cssText = `color:#555;font-size:${_fs11};min-width:${Math.round(52*uiScale)}px;text-align:center;`;
-    const nextB = mkB("Next \u2192"); const closeB = mkB("\u2715 Close");
+    const nextB = mkB("Next \u2192");
     hdr.appendChild(hdrSpacer); hdr.appendChild(prevB); hdr.appendChild(cntEl);
-    hdr.appendChild(nextB); hdr.appendChild(closeB);
+    hdr.appendChild(nextB);
 
     // ── body ────────────────────────────────────────────────
     const body = document.createElement("div");
@@ -3011,7 +3035,6 @@ function createWidget(node) {
     }
     applyB.addEventListener("click",  doApply);
     cancelB.addEventListener("click", doClose);
-    closeB.addEventListener("click",  doApply);
     ov.addEventListener("click", e=>{ if(e.target===ov) doClose(); });
 
     // ── init ───────────────────────────────────────────────
@@ -3513,6 +3536,15 @@ function createWidget(node) {
           }
         }
         mLassoCurrentPts.push({ x: cnx, y: cny }); mRedraw();
+      }
+    });
+
+    // Double-click to close polygon in mask editor
+    ca.addEventListener("dblclick", (e) => {
+      if (mTool === "polygon" && mLassoCurrentPts.length >= 3) {
+        e.preventDefault();
+        const mode = getModeFromEvent(e);
+        commitShape(mLassoCurrentPts, mode, "polygon");
       }
     });
 
