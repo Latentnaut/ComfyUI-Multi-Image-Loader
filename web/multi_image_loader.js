@@ -3340,7 +3340,7 @@ function createWidget(node) {
     let mLassoCurrentPts = [];
     let mLassoDrawing = false;
     let mAntsOff = 0, mAntsTimer = null;
-    let mBrushDrawing = false, mBrushPts = [];
+    let mBrushDrawing = false, mBrushPts = [], mBrushMode = "add";
     let mFrameW = 300, mFrameH = 300, mFrameCX = 0, mFrameCY = 0;
     let mNatW = 1, mNatH = 1;
     let mRafId = null;
@@ -3595,8 +3595,18 @@ function createWidget(node) {
     ca.addEventListener("mouseleave", () => { mBrushPos = null; mRedraw(); });
 
     ca.addEventListener("mousedown", (e) => {
-      // Middle-click / right-click / Ctrl+LMB / Space+LMB → panning
-      const isPanIntent = e.button === 1 || e.button === 2
+      // Right-click with brush = erase; otherwise right-click pans
+      if (e.button === 2 && mTool === "brush") {
+        e.preventDefault();
+        const r = ca.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const { nx, ny } = _pxToNorm(cx, cy);
+        const cnx = Math.max(0, Math.min(1, nx)), cny = Math.max(0, Math.min(1, ny));
+        mBrushDrawing = true; mBrushMode = "sub"; mBrushPts = [{ x: cnx, y: cny }];
+        mRedraw(); return;
+      }
+      // Middle-click / right-click (non-brush) / Ctrl+LMB / Space+LMB → panning
+      const isPanIntent = e.button === 1 || (e.button === 2 && mTool !== "brush")
                         || (e.button === 0 && e.ctrlKey)
                         || (e.button === 0 && mSpaceDown);
       if (isPanIntent) {
@@ -3616,7 +3626,7 @@ function createWidget(node) {
       const mode = getModeFromEvent(e);
 
       if (mTool === "brush") {
-        mBrushDrawing = true; mBrushPts = [{ x: cnx, y: cny }];
+        mBrushDrawing = true; mBrushMode = "add"; mBrushPts = [{ x: cnx, y: cny }];
         mRedraw(); return;
       }
       if (mTool === "lasso") {
@@ -3687,19 +3697,20 @@ function createWidget(node) {
 
     // ── Mouse events ──
     function _onMouseUp(e) {
-      if (e.button !== 0) return;
-      const mode = getModeFromEvent(e);
+      if (e.button !== 0 && !(e.button === 2 && mTool === "brush")) return;
+      const mode = e.button === 2 ? "sub" : getModeFromEvent(e);
       if (mTool === "brush" && mBrushDrawing) {
         mBrushDrawing = false;
         if (mBrushPts.length >= 1) {
-          mMaskOps.push({ type: "brush", mode, pts: mBrushPts, r: parseFloat(brushSlider.value) / mNatW });
-          mBrushPts = [];
+          mMaskOps.push({ type: "brush", mode: mBrushMode, pts: mBrushPts, r: parseFloat(brushSlider.value) / mNatW });
+          mBrushPts = []; mBrushMode = "add";
         }
         mRedraw(); return;
       }
+      if (e.button !== 0) return; // lasso/polygon only respond to LMB release
       if (mTool === "lasso" && mLassoDrawing) {
         mLassoDrawing = false;
-        if (mLassoCurrentPts.length >= 5) commitShape(mLassoCurrentPts, mode, "lasso");
+        if (mLassoCurrentPts.length >= 5) commitShape(mLassoCurrentPts, getModeFromEvent(e), "lasso");
         else mLassoCurrentPts = [];
         mRedraw(); updateCursor(); return;
       }
