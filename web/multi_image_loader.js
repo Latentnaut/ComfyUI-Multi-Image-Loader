@@ -3508,8 +3508,13 @@ function createWidget(node) {
         // Real-time brush stroke preview (while mouse held down)
         if (mTool === "brush" && mBrushDrawing && mBrushPts.length > 0) {
           const _cr2 = parseInt(mMaskColor.slice(1,3),16), _cg2 = parseInt(mMaskColor.slice(3,5),16), _cb2 = parseInt(mMaskColor.slice(5,7),16);
+          // Erase mode: use complementary color for contrast
+          const _isErase = mBrushMode === "sub";
+          const _pr = _isErase ? 255-_cr2 : _cr2;
+          const _pg = _isErase ? 255-_cg2 : _cg2;
+          const _pb = _isErase ? 255-_cb2 : _cb2;
           const r = Math.max(1, parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1)));
-          ctx.save(); ctx.globalAlpha = mMaskAlpha * 0.82; ctx.fillStyle = `rgba(${_cr2},${_cg2},${_cb2},1)`;
+          ctx.save(); ctx.globalAlpha = mMaskAlpha * 0.82; ctx.fillStyle = `rgba(${_pr},${_pg},${_pb},1)`;
           for (const p of mBrushPts) {
             ctx.beginPath(); ctx.arc(fx + p.x * mFrameW, fy + p.y * mFrameH, r, 0, Math.PI * 2); ctx.fill();
           }
@@ -3546,7 +3551,12 @@ function createWidget(node) {
         // Brush cursor circle preview
         if (mTool === "brush" && mBrushPos) {
           const r = parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1));
-          ctx.save(); ctx.strokeStyle = "rgba(64,200,255,0.8)"; ctx.lineWidth = 1.5;
+          const _isErase2 = mBrushMode === "sub";
+          const _curR = parseInt(mMaskColor.slice(1,3),16), _curG = parseInt(mMaskColor.slice(3,5),16), _curB = parseInt(mMaskColor.slice(5,7),16);
+          const _cursorColor = _isErase2
+            ? `rgba(${255-_curR},${255-_curG},${255-_curB},0.9)`
+            : "rgba(64,200,255,0.8)";
+          ctx.save(); ctx.strokeStyle = _cursorColor; ctx.lineWidth = 1.5;
           ctx.setLineDash([4, 2]);
           ctx.beginPath(); ctx.arc(mBrushPos.cx, mBrushPos.cy, r, 0, Math.PI * 2); ctx.stroke();
           ctx.restore();
