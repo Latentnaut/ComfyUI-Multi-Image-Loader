@@ -575,25 +575,46 @@ def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int,
 def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Image.Image:
     """Generate a mask from Mask Editor maskOps.
     Returns an 'L' mode image (ref_w × ref_h) — 0=masked(black), 255=unmasked(white).
-    maskOps format: [{type: 'lasso'|'polygon'|'brush', mode: 'add'|'sub',
-                      pts: [{x,y}], r?: float (normalised brush radius)}]
+    maskOps format: [{type: 'lasso'|'polygon'|'brush'|'fill', mode: 'add'|'sub',
+                      pts: [{x,y}], r?: float, dataUrl?: str}]
     Returns None if no maskOps."""
+    import base64, io as _io
     ops = transform.get("maskOps", [])
     inverted = bool(transform.get("maskInverted", False))
     if not ops:
         return None
 
     # Start black (nothing selected). Ops paint white (add) or black (sub).
-    # This matches the JS Mask Editor convention: painted area = white = selected.
     mask = Image.new("L", (ref_w, ref_h), 0)
     draw = ImageDraw.Draw(mask)
 
     for op in ops:
+        mode   = op.get("mode", "add")
+        otype  = op.get("type", "polygon")
+
+        # ── Fill op: decode pre-baked mask from dataUrl ──
+        if otype == "fill" and op.get("dataUrl"):
+            try:
+                data_url = op["dataUrl"]
+                # Strip "data:image/png;base64," prefix
+                header, b64data = data_url.split(",", 1)
+                img_bytes = base64.b64decode(b64data)
+                fill_img = Image.open(_io.BytesIO(img_bytes)).convert("L")
+                # The fill canvas stores: black=masked, white=unmasked
+                # But our mask convention is: white=selected/masked, black=unselected
+                # So we need to INVERT: fill canvas black(0) → mask white(255)
+                fill_img = ImageOps.invert(fill_img)
+                fill_img = fill_img.resize((ref_w, ref_h), Image.LANCZOS)
+                # Fill op is a complete mask snapshot — replace current mask
+                mask = fill_img
+                draw = ImageDraw.Draw(mask)
+            except Exception as e:
+                print(f"[MIL] Warning: failed to decode fill op dataUrl: {e}")
+            continue
+
         pts = op.get("pts", [])
         if not pts:
             continue
-        mode   = op.get("mode", "add")
-        otype  = op.get("type", "polygon")
         fill   = 255 if mode == "add" else 0   # add = paint white (selected), sub = erase to black
 
         if otype == "brush":
