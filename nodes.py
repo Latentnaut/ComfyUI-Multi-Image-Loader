@@ -572,6 +572,51 @@ def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int,
     return canvas
 
 
+def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Image.Image:
+    """Generate a mask from Mask Editor maskOps.
+    Returns an 'L' mode image (ref_w × ref_h) — 0=masked(black), 255=unmasked(white).
+    maskOps format: [{type: 'lasso'|'polygon'|'brush', mode: 'add'|'sub',
+                      pts: [{x,y}], r?: float (normalised brush radius)}]
+    Returns None if no maskOps."""
+    ops = transform.get("maskOps", [])
+    inverted = bool(transform.get("maskInverted", False))
+    if not ops:
+        return None
+
+    # Start black (nothing selected). Ops paint white (add) or black (sub).
+    # This matches the JS Mask Editor convention: painted area = white = selected.
+    mask = Image.new("L", (ref_w, ref_h), 0)
+    draw = ImageDraw.Draw(mask)
+
+    for op in ops:
+        pts = op.get("pts", [])
+        if not pts:
+            continue
+        mode   = op.get("mode", "add")
+        otype  = op.get("type", "polygon")
+        fill   = 255 if mode == "add" else 0   # add = paint white (selected), sub = erase to black
+
+        if otype == "brush":
+            r_norm = float(op.get("r", 0.01))  # normalised radius relative to image width
+            r_px   = max(1, round(r_norm * ref_w))
+            for p in pts:
+                px, py = round(p["x"] * ref_w), round(p["y"] * ref_h)
+                bbox = [px - r_px, py - r_px, px + r_px, py + r_px]
+                draw.ellipse(bbox, fill=fill)
+        else:
+            # lasso / polygon — need at least 3 points
+            if len(pts) < 3:
+                continue
+            poly_px = [(round(p["x"] * ref_w), round(p["y"] * ref_h)) for p in pts]
+            draw.polygon(poly_px, fill=fill)
+
+    if inverted:
+        mask = ImageOps.invert(mask)
+
+    return mask
+
+
+
 class MultiImageLoader:
     """
     Loads multiple images uploaded directly in the UI (no folder needed).
@@ -673,9 +718,12 @@ class MultiImageLoader:
                 arr = np.array(img).astype(np.float32) / 255.0
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))
 
-                # ── Lasso mask ──
-                if t and t.get("lassoPoly"):
-                    mask_img = _generate_lasso_mask(t, source_size, ref_w, ref_h)
+                # ── Mask batch priority ──
+                # 1st priority: dedicated Mask Editor (maskOps) → mask_batch output
+                # 2nd priority: blank white mask (no mask)
+                # (lassoOps remain for the alpha-cutout effect in Edit Image only)
+                if t and t.get("maskOps"):
+                    mask_img = _generate_mask_from_maskops(t, ref_w, ref_h)
                     if mask_img is not None:
                         mask_arr = np.array(mask_img).astype(np.float32) / 255.0
                         mask_tensors.append(torch.from_numpy(mask_arr).unsqueeze(0))
