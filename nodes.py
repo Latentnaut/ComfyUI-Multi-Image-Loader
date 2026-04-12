@@ -49,6 +49,57 @@ async def upload_images_handler(request):
         return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
+# ─── Inpaint route (Content-Aware Fill) ───────────────────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/inpaint")
+async def inpaint_handler(request):
+    """Accept base64 image + mask, run cv2.inpaint (Telea), return base64 result."""
+    import asyncio, base64, io as _io
+    try:
+        import cv2
+    except ImportError:
+        return web.json_response({"error": "opencv-python not installed"}, status=500)
+
+    try:
+        data = await request.json()
+        img_b64 = data.get("image", "")
+        mask_b64 = data.get("mask", "")
+        if not img_b64 or not mask_b64:
+            return web.Response(status=400, text="Missing image or mask")
+
+        # Strip data URL prefix if present
+        for prefix in ("data:image/png;base64,", "data:image/webp;base64,",
+                        "data:image/jpeg;base64,"):
+            if img_b64.startswith(prefix):
+                img_b64 = img_b64[len(prefix):]
+            if mask_b64.startswith(prefix):
+                mask_b64 = mask_b64[len(prefix):]
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            img_pil = Image.open(_io.BytesIO(base64.b64decode(img_b64))).convert("RGB")
+            mask_pil = Image.open(_io.BytesIO(base64.b64decode(mask_b64))).convert("L")
+            # Resize mask to match image if needed
+            if mask_pil.size != img_pil.size:
+                mask_pil = mask_pil.resize(img_pil.size, Image.NEAREST)
+            img_cv = np.array(img_pil)[:, :, ::-1]  # RGB→BGR
+            # In our mask convention: black=masked, white=unmasked
+            # cv2.inpaint wants white=inpaint region, so invert
+            mask_cv = 255 - np.array(mask_pil)
+            result = cv2.inpaint(img_cv, mask_cv, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+            result_rgb = result[:, :, ::-1]  # BGR→RGB
+            result_pil = Image.fromarray(result_rgb)
+            buf = _io.BytesIO()
+            result_pil.save(buf, format="PNG")
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+        result_b64 = await loop.run_in_executor(None, _run)
+        return web.json_response({"image": result_b64})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # ─── Live-preview route ────────────────────────────────────────────────────────
 
 @PromptServer.instance.routes.post("/multi_image_loader/preview")
@@ -364,6 +415,26 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
 
     # ── PRE-CROP: apply crop region to source image FIRST ──────────────────────
     img = _apply_crop_region(img, transform)
+
+    # ── PIXEL EDITS: composite imageEditsDataUrl over source ──────────────────
+    edits_data_url = transform.get("imageEditsDataUrl")
+    if edits_data_url and isinstance(edits_data_url, str):
+        import base64, io as _io
+        try:
+            # Strip data URL prefix
+            for pfx in ("data:image/png;base64,", "data:image/webp;base64,",
+                         "data:image/jpeg;base64,"):
+                if edits_data_url.startswith(pfx):
+                    edits_data_url = edits_data_url[len(pfx):]
+                    break
+            edits_pil = Image.open(_io.BytesIO(base64.b64decode(edits_data_url))).convert("RGBA")
+            # Resize edits to match current source size
+            if edits_pil.size != img.size:
+                edits_pil = edits_pil.resize(img.size, Image.LANCZOS)
+            img = img.convert("RGBA")
+            img = Image.alpha_composite(img, edits_pil).convert("RGB")
+        except Exception as e:
+            print(f"[MIL] Warning: failed to apply pixel edits: {e}")
 
     ox     = float(transform.get("ox",     0.0))
     oy     = float(transform.get("oy",     0.0))

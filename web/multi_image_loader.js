@@ -3143,31 +3143,52 @@ function createWidget(node) {
     }
 
     // ── Tool section ──
-    pnlBody.appendChild(mkSec("TOOLS"));
+    pnlBody.appendChild(mkSec("MASK TOOLS"));
     const toolRow = document.createElement("div");
     toolRow.style.cssText = `display:flex;gap:${_r(4)}px;flex-wrap:wrap;`;
 
-    let mTool = "brush"; // "brush" | "lasso" | "polygon"
+    let mTool = "brush"; // "brush" | "lasso" | "polygon" | "fill" | "blur" | "smudge"
     const toolBtns = {};
     [["brush","⬤ Brush"],["lasso","⌾ Lasso"],["polygon","⬡ Polygon"],["fill","⬛ Fill"]].forEach(([k,lbl]) => {
       const b = mkBtn2(lbl, k === mTool);
       b.style.flex = "1 0 auto";
-      b.addEventListener("click", () => {
-        mTool = k;
-        Object.entries(toolBtns).forEach(([kk, bb]) => {
-          const on = kk === k;
-          bb.style.background = on ? "#1e3a1e" : "#1e1e1e";
-          bb.style.color = on ? "#7fff7f" : "#aaa";
-          bb.style.borderColor = on ? "#3a6a3a" : "#333";
-        });
-        mLassoCurrentPts = [];
-        mRedraw();
-        updateCursor();
-      });
-      toolBtns[k] = b;
-      toolRow.appendChild(b);
+      b.addEventListener("click", () => _selectTool(k));
+      toolBtns[k] = b; toolRow.appendChild(b);
     });
     pnlBody.appendChild(toolRow);
+
+    // ── Image tools section ──
+    pnlBody.appendChild(mkSec("IMAGE TOOLS"));
+    const imgToolRow = document.createElement("div");
+    imgToolRow.style.cssText = `display:flex;gap:${_r(4)}px;flex-wrap:wrap;`;
+    [["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
+      const b = mkBtn2(lbl, false);
+      b.style.flex = "1 0 auto";
+      b.addEventListener("click", () => _selectTool(k));
+      toolBtns[k] = b; imgToolRow.appendChild(b);
+    });
+    const btnCA = mkBtn2("✨ CA Fill", false);
+    btnCA.style.flex = "1 0 auto";
+    btnCA.addEventListener("click", () => _runCAFill());
+    imgToolRow.appendChild(btnCA);
+    pnlBody.appendChild(imgToolRow);
+
+    // ── Smudge strength slider (hidden until smudge tool selected) ──
+    const smudgeRow = document.createElement("div");
+    smudgeRow.style.cssText = `display:none;gap:${_r(6)}px;align-items:center;margin-top:${_r(2)}px;`;
+    const smudgeLbl = document.createElement("span");
+    smudgeLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
+    smudgeLbl.textContent = "Strength";
+    const smudgeSlider = document.createElement("input");
+    smudgeSlider.type = "range"; smudgeSlider.min = "5"; smudgeSlider.max = "100"; smudgeSlider.value = "50";
+    smudgeSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const smudgeValEl = document.createElement("span");
+    smudgeValEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
+    smudgeValEl.textContent = "50%";
+    let mSmudgeStr = 0.5;
+    smudgeSlider.addEventListener("input", () => { mSmudgeStr = parseInt(smudgeSlider.value) / 100; smudgeValEl.textContent = smudgeSlider.value + "%"; });
+    smudgeRow.appendChild(smudgeLbl); smudgeRow.appendChild(smudgeSlider); smudgeRow.appendChild(smudgeValEl);
+    pnlBody.appendChild(smudgeRow);
 
     // ── Brush size ──
     pnlBody.appendChild(mkSec("BRUSH SIZE"));
@@ -3282,10 +3303,11 @@ function createWidget(node) {
     // Right canvas area
     const ca = document.createElement("div");
     ca.style.cssText = "flex:1;position:relative;background:#141414;overflow:hidden;";
-    // ── 3-layer canvas stack ──────────────────────────────────────────
-    // Layer 0 (base): checkerboard + image + dim outside + frame border
-    // Layer 1 (mask): committed mask overlay at user-set opacity
-    // Layer 2 (tool): active stroke preview + brush cursor + lasso preview
+    // ── 4-layer canvas stack ──────────────────────────────────────────
+    // Layer 0 (cvsBase):  checkerboard + image + dim outside + frame border
+    // Layer 1 (cvsEdits): pixel edits overlay (blur/smudge/cafill)
+    // Layer 2 (cvsMask):  committed mask overlay at user-set opacity
+    // Layer 3 (cvsTool):  active stroke preview + brush cursor + lasso preview
     // Only the tool layer redraws on mousemove → ~80% fewer draw calls.
     const _mkCvs = (pe) => {
       const c = document.createElement("canvas");
@@ -3294,6 +3316,7 @@ function createWidget(node) {
       return c;
     };
     const cvsBase = _mkCvs(false);
+    const cvsEdits = _mkCvs(false);
     const cvsMask = _mkCvs(false);
     const cvsTool = _mkCvs(true);  // receives pointer events
     body.appendChild(pnl); body.appendChild(ca);
@@ -3319,13 +3342,17 @@ function createWidget(node) {
     let mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
     let mSpaceDown = false;
     // ── Layer dirty flags ──────────────────────────────────────────────
-    let _dirtyBase = true, _dirtyMask = true;
+    let _dirtyBase = true, _dirtyEdits = true, _dirtyMask = true;
     // ── Undo / Redo stacks ─────────────────────────────────────────────
     let mUndoStack = [];  // popped ops for redo
     // ── Default brush mode for shortcuts ────────────────────────────────
     let mDefaultBrushMode = "add"; // "add" for brush (B), "sub" for eraser (E)
     // ── Cached brush tip ───────────────────────────────────────────────
     let _tipCache = null; // { radius, color, canvas }
+    // ── Pixel edits state ──────────────────────────────────────────────
+    let _cvsEditsPx = null;      // offscreen canvas with pixel edits (max 2048px)
+    let _editsUndoStack = [];    // base64 snapshots for undo (max 10)
+    let _cafillLoading = false;  // debounce flag
 
     function close() {
       if (mAntsTimer) clearInterval(mAntsTimer);
@@ -3345,9 +3372,9 @@ function createWidget(node) {
     function _syncFrame() {
       const r = ca.getBoundingClientRect();
       const rw = Math.round(r.width), rh = Math.round(r.height);
-      // Sync all 3 canvases to container size
-      for (const c of [cvsBase, cvsMask, cvsTool]) {
-        if (c.width !== rw || c.height !== rh) { c.width = rw; c.height = rh; _dirtyBase = true; _dirtyMask = true; }
+      // Sync all 4 canvases to container size
+      for (const c of [cvsBase, cvsEdits, cvsMask, cvsTool]) {
+        if (c.width !== rw || c.height !== rh) { c.width = rw; c.height = rh; _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; }
       }
       const cw = rw, ch = rh, pad = 40;
       const asp = mNatW / mNatH;
@@ -3637,6 +3664,176 @@ function createWidget(node) {
     }
 
 
+    // ── Pixel Tool Engines ────────────────────────────────────────────────────
+    // All pixel tools operate on _cvsEditsPx, a downscaled offscreen canvas
+    // (max 2048px) that gets composited into the display via drawEdits().
+
+    function _ensureEditsPx() {
+      if (_cvsEditsPx) return;
+      const wpX = Math.min(mNatW, 2048);
+      const wpY = Math.round(mNatH * (wpX / mNatW));
+      _cvsEditsPx = document.createElement("canvas");
+      _cvsEditsPx.width = wpX; _cvsEditsPx.height = wpY;
+      if (mImg) {
+        const ctx = _cvsEditsPx.getContext("2d");
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(mImg, 0, 0, wpX, wpY);
+      }
+    }
+
+    function _saveEditsUndo() {
+      if (!_cvsEditsPx) return;
+      _editsUndoStack.push(_cvsEditsPx.toDataURL("image/webp", 0.92));
+      if (_editsUndoStack.length > 10) _editsUndoStack.shift();
+    }
+
+    function _undoEdits() {
+      if (_editsUndoStack.length === 0) return;
+      const src = _editsUndoStack.pop();
+      const img = new Image();
+      img.onload = () => {
+        const ctx = _cvsEditsPx.getContext("2d");
+        ctx.clearRect(0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
+        ctx.drawImage(img, 0, 0);
+        _dirtyEdits = true; mRedraw();
+      };
+      img.src = src;
+    }
+
+    // ── Blur: separable box blur O(N·R) with soft circular falloff ─────────
+    function _applyBlur(cx, cy, r) {
+      if (!_cvsEditsPx) return;
+      const w = _cvsEditsPx.width, h = _cvsEditsPx.height;
+      const ctx = _cvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const bx = Math.max(0, Math.floor(cx - r)), by = Math.max(0, Math.floor(cy - r));
+      const bw = Math.min(w - bx, Math.ceil(r * 2)), bh = Math.min(h - by, Math.ceil(r * 2));
+      if (bw <= 0 || bh <= 0) return;
+      // Read original region for blending
+      const origData = ctx.getImageData(bx, by, bw, bh);
+      const origD = new Uint8ClampedArray(origData.data);
+      const imgData = ctx.getImageData(bx, by, bw, bh);
+      const d = imgData.data;
+      const tmp = new Uint8ClampedArray(d.length);
+      const rad = Math.max(1, Math.floor(r * 0.25));
+      // Horizontal pass
+      for (let row = 0; row < bh; row++) {
+        let rs = 0, gs = 0, bs = 0, cnt = 0;
+        for (let i = -rad; i <= rad; i++) {
+          const xi = Math.max(0, Math.min(bw - 1, i));
+          const pi = (row * bw + xi) * 4;
+          rs += d[pi]; gs += d[pi+1]; bs += d[pi+2]; cnt++;
+        }
+        for (let col = 0; col < bw; col++) {
+          const po = (row * bw + col) * 4;
+          tmp[po] = rs / cnt; tmp[po+1] = gs / cnt; tmp[po+2] = bs / cnt; tmp[po+3] = 255;
+          const removeIdx = Math.max(0, col - rad);
+          const addIdx = Math.min(bw - 1, col + rad + 1);
+          const pr = (row * bw + removeIdx) * 4, pa = (row * bw + addIdx) * 4;
+          rs += d[pa] - d[pr]; gs += d[pa+1] - d[pr+1]; bs += d[pa+2] - d[pr+2];
+        }
+      }
+      // Vertical pass
+      for (let col = 0; col < bw; col++) {
+        let rs = 0, gs = 0, bs = 0, cnt = 0;
+        for (let i = -rad; i <= rad; i++) {
+          const yi = Math.max(0, Math.min(bh - 1, i));
+          const pi = (yi * bw + col) * 4;
+          rs += tmp[pi]; gs += tmp[pi+1]; bs += tmp[pi+2]; cnt++;
+        }
+        for (let row = 0; row < bh; row++) {
+          const po = (row * bw + col) * 4;
+          d[po] = rs / cnt; d[po+1] = gs / cnt; d[po+2] = bs / cnt; d[po+3] = 255;
+          const removeIdx = Math.max(0, row - rad);
+          const addIdx = Math.min(bh - 1, row + rad + 1);
+          const pr = (removeIdx * bw + col) * 4, pa = (addIdx * bw + col) * 4;
+          rs += tmp[pa] - tmp[pr]; gs += tmp[pa+1] - tmp[pr+1]; bs += tmp[pa+2] - tmp[pr+2];
+        }
+      }
+      // Soft circular blend with original
+      for (let row = 0; row < bh; row++) {
+        for (let col = 0; col < bw; col++) {
+          const dist = Math.hypot(col - (cx - bx), row - (cy - by));
+          const f = dist <= r ? Math.pow(1 - dist / r, 1.2) : 0;
+          const i = (row * bw + col) * 4;
+          d[i]   = origD[i]   * (1 - f) + d[i]   * f;
+          d[i+1] = origD[i+1] * (1 - f) + d[i+1] * f;
+          d[i+2] = origD[i+2] * (1 - f) + d[i+2] * f;
+        }
+      }
+      ctx.putImageData(imgData, bx, by);
+      _dirtyEdits = true;
+    }
+
+    // ── Smudge: ping-pong buffer pixel drag ────────────────────────────────
+    let _smudgeBuf = null;
+    function _applySmudge(lastPos, currPos, r) {
+      if (!_cvsEditsPx || !lastPos) return;
+      const ctx = _cvsEditsPx.getContext("2d");
+      const w = _cvsEditsPx.width, h = _cvsEditsPx.height;
+      // Lazy-init buffer
+      if (!_smudgeBuf || _smudgeBuf.width !== w || _smudgeBuf.height !== h) {
+        _smudgeBuf = document.createElement("canvas");
+        _smudgeBuf.width = w; _smudgeBuf.height = h;
+      }
+      const bCtx = _smudgeBuf.getContext("2d");
+      bCtx.clearRect(0, 0, w, h);
+      // Copy source, shifted by delta, clipped to circle at currPos
+      bCtx.save();
+      bCtx.beginPath(); bCtx.arc(currPos.x, currPos.y, r, 0, Math.PI * 2); bCtx.clip();
+      const dx = currPos.x - lastPos.x, dy = currPos.y - lastPos.y;
+      bCtx.drawImage(_cvsEditsPx, dx, dy);
+      bCtx.restore();
+      // Blend into main canvas with radial gradient mask
+      const stampSize = Math.ceil(r) * 2;
+      const stampCvs = document.createElement("canvas");
+      stampCvs.width = stampSize; stampCvs.height = stampSize;
+      const sCtx = stampCvs.getContext("2d");
+      const sx = currPos.x - r, sy = currPos.y - r;
+      sCtx.globalAlpha = mSmudgeStr * 0.92;
+      sCtx.drawImage(_smudgeBuf, sx, sy, stampSize, stampSize, 0, 0, stampSize, stampSize);
+      sCtx.globalCompositeOperation = "destination-in";
+      const grad = sCtx.createRadialGradient(r, r, 0, r, r, r);
+      grad.addColorStop(0, "rgba(0,0,0,1)");
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      sCtx.fillStyle = grad; sCtx.fillRect(0, 0, stampSize, stampSize);
+      ctx.drawImage(stampCvs, sx, sy);
+      _dirtyEdits = true;
+    }
+
+    // ── CA Fill: send image+mask to backend, replace _cvsEditsPx ───────────
+    async function _runCAFill() {
+      if (_cafillLoading || mMaskOps.length === 0) return;
+      _cafillLoading = true; btnCA.textContent = "⏳ Working…";
+      try {
+        _ensureEditsPx(); _saveEditsUndo();
+        const maskCvs = _buildMaskCanvas(_cvsEditsPx.width, _cvsEditsPx.height);
+        const payload = {
+          image: _cvsEditsPx.toDataURL("image/png"),
+          mask: maskCvs.toDataURL("image/png")
+        };
+        const res = await fetch("/multi_image_loader/inpaint", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error("Inpaint request failed: " + res.status);
+        const j = await res.json();
+        if (j.error) throw new Error(j.error);
+        const img = new Image();
+        await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; img.src = j.image; });
+        const ctx = _cvsEditsPx.getContext("2d");
+        ctx.clearRect(0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
+        ctx.drawImage(img, 0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
+        _dirtyEdits = true; mRedraw();
+      } catch (e) {
+        console.error("[MIL] CA Fill error:", e);
+        alert("Content-Aware Fill failed: " + e.message);
+      } finally {
+        _cafillLoading = false; btnCA.textContent = "✨ CA Fill";
+      }
+    }
+
+
     // ── Split-Layer Rendering ──────────────────────────────────────────────────
     // Layer 0 (cvsBase): checkerboard + image + dim outside + frame border
     function drawBase() {
@@ -3655,7 +3852,18 @@ function createWidget(node) {
       ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([]);
       ctx.strokeRect(fx + 0.75, fy + 0.75, mFrameW - 1.5, mFrameH - 1.5);
     }
-    // Layer 1 (cvsMask): committed mask overlay
+    // Layer 1 (cvsEdits): pixel edits overlay
+    function drawEdits() {
+      const ctx = cvsEdits.getContext("2d");
+      ctx.clearRect(0, 0, cvsEdits.width, cvsEdits.height);
+      if (!_cvsEditsPx) return;
+      const fx = mFrameCX - mFrameW / 2, fy = mFrameCY - mFrameH / 2;
+      ctx.save();
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(_cvsEditsPx, fx, fy, mFrameW, mFrameH);
+      ctx.restore();
+    }
+    // Layer 2 (cvsMask): committed mask overlay
     function drawMask() {
       const ctx = cvsMask.getContext("2d");
       ctx.clearRect(0, 0, cvsMask.width, cvsMask.height);
@@ -3711,7 +3919,7 @@ function createWidget(node) {
         }
       }
     }
-    // Layer 2 (cvsTool): active stroke + brush cursor + lasso preview
+    // Layer 3 (cvsTool): active stroke + brush cursor + lasso preview
     function drawTool() {
       const ctx = cvsTool.getContext("2d");
       ctx.clearRect(0, 0, cvsTool.width, cvsTool.height);
@@ -3754,13 +3962,13 @@ function createWidget(node) {
         ctx.setLineDash([5, 3]); ctx.lineDashOffset = -mAntsOff; ctx.stroke();
         ctx.restore();
       }
-      // Brush cursor circle
-      if (mTool === "brush" && mBrushPos) {
+      // Brush cursor circle (shown for brush, blur, smudge tools)
+      if ((mTool === "brush" || mTool === "blur" || mTool === "smudge") && mBrushPos) {
         const r = parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1));
-        const _isE2 = mBrushMode === "sub";
-        const [_cR,_cG,_cB] = [parseInt(mMaskColor.slice(1,3),16), parseInt(mMaskColor.slice(3,5),16), parseInt(mMaskColor.slice(5,7),16)];
-        const _cc = _isE2 ? `rgba(${255-_cR},${255-_cG},${255-_cB},0.9)` : "rgba(64,200,255,0.8)";
-        ctx.save(); ctx.strokeStyle = _cc; ctx.lineWidth = 1.5; ctx.setLineDash([4, 2]);
+        const cursorColor = mTool === "blur" ? "rgba(100,180,255,0.8)"
+                          : mTool === "smudge" ? "rgba(255,180,100,0.8)"
+                          : (mBrushMode === "sub" ? `rgba(${255-parseInt(mMaskColor.slice(1,3),16)},${255-parseInt(mMaskColor.slice(3,5),16)},${255-parseInt(mMaskColor.slice(5,7),16)},0.9)` : "rgba(64,200,255,0.8)");
+        ctx.save(); ctx.strokeStyle = cursorColor; ctx.lineWidth = 1.5; ctx.setLineDash([4, 2]);
         ctx.beginPath(); ctx.arc(mBrushPos.cx, mBrushPos.cy, r, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
@@ -3771,6 +3979,7 @@ function createWidget(node) {
       mRafId = requestAnimationFrame(() => {
         _syncFrame();
         if (_dirtyBase) { drawBase(); _dirtyBase = false; }
+        if (_dirtyEdits) { drawEdits(); _dirtyEdits = false; }
         if (_dirtyMask) { drawMask(); _dirtyMask = false; }
         drawTool(); // always redraw — cheapest layer
       });
@@ -3780,7 +3989,7 @@ function createWidget(node) {
     mAntsTimer = setInterval(() => { mAntsOff = (mAntsOff + 1) % 8; if (mLassoCurrentPts.length > 1) mRedraw(); }, 80);
 
     function updateCursor() {
-      if (mTool === "brush") ca.style.cursor = "none";
+      if (mTool === "brush" || mTool === "blur" || mTool === "smudge") ca.style.cursor = "none";
       else if (mTool === "fill") ca.style.cursor = "cell";
       else ca.style.cursor = "crosshair";
     }
@@ -3815,6 +4024,10 @@ function createWidget(node) {
         bb.style.color = on ? "#7fff7f" : "#aaa";
         bb.style.borderColor = on ? "#3a6a3a" : "#333";
       });
+      // Show/hide smudge strength slider
+      smudgeRow.style.display = t === "smudge" ? "flex" : "none";
+      // Init pixel canvas for pixel tools
+      if (t === "blur" || t === "smudge") _ensureEditsPx();
       mLassoCurrentPts = [];
       updateCursor();
       mRedraw();
@@ -3833,16 +4046,30 @@ function createWidget(node) {
 
       if (mTool === "brush" && mBrushDrawing) {
         mBrushPts.push({ x: cnx, y: cny });
-        mRedraw(); return; // tool-only: dirty flags stay false
+        mRedraw(); return;
+      }
+      if ((mTool === "blur" || mTool === "smudge") && mBrushDrawing) {
+        const fx = mFrameCX - mFrameW / 2, fy = mFrameCY - mFrameH / 2;
+        const pxScale = _cvsEditsPx ? _cvsEditsPx.width / mFrameW : 1;
+        const epx = (cx - fx) * pxScale, epy = (cy - fy) * pxScale;
+        const rPx = parseFloat(brushSlider.value) * pxScale;
+        if (mTool === "blur") {
+          _applyBlur(epx, epy, rPx);
+        } else {
+          const prevPt = mBrushPts.length > 0 ? mBrushPts[mBrushPts.length - 1] : null;
+          if (prevPt) _applySmudge(prevPt, { x: epx, y: epy }, rPx);
+        }
+        mBrushPts.push({ x: epx, y: epy });
+        mRedraw(); return;
       }
       if (mTool === "lasso" && mLassoDrawing) {
         mLassoCurrentPts.push({ x: cnx, y: cny });
-        mRedraw(); return; // tool-only
+        mRedraw(); return;
       }
       if (mTool === "polygon") {
-        mRedraw(); // update preview line — tool-only
+        mRedraw();
       }
-      if (mTool === "brush") mRedraw(); // brush cursor preview — tool-only
+      if (mTool === "brush" || mTool === "blur" || mTool === "smudge") mRedraw();
     });
 
     ca.addEventListener("mouseleave", () => { mBrushPos = null; mRedraw(); });
@@ -3881,7 +4108,15 @@ function createWidget(node) {
 
       if (mTool === "brush") {
         mBrushDrawing = true; mBrushMode = e.altKey ? "sub" : mDefaultBrushMode; mBrushPts = [{ x: cnx, y: cny }];
-        mRedraw(); return; // tool-only
+        mRedraw(); return;
+      }
+      if (mTool === "blur" || mTool === "smudge") {
+        _ensureEditsPx(); _saveEditsUndo();
+        mBrushDrawing = true;
+        const fx2 = mFrameCX - mFrameW / 2, fy2 = mFrameCY - mFrameH / 2;
+        const pxScale = _cvsEditsPx.width / mFrameW;
+        mBrushPts = [{ x: (cx - fx2) * pxScale, y: (cy - fy2) * pxScale }];
+        return;
       }
       if (mTool === "lasso") {
         mLassoDrawing = true; mLassoCurrentPts = [{ x: cnx, y: cny }];
@@ -3947,7 +4182,7 @@ function createWidget(node) {
         // Middle-click with no drag → reset zoom
         if (wasMid && !mPanMoved) {
           mZoom = 1; mPanX = 0; mPanY = 0;
-          _dirtyBase = true; _dirtyMask = true; mRedraw();
+          _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; mRedraw();
         }
         mIsPanning = false; mPanIsLMB = false; mPanMoved = false;
         updateCursor();
@@ -3964,10 +4199,14 @@ function createWidget(node) {
         mBrushDrawing = false;
         if (mBrushPts.length >= 1) {
           mMaskOps.push({ type: "brush", mode: mBrushMode, pts: mBrushPts, r: parseFloat(brushSlider.value) / mNatW });
-          mUndoStack = []; // new op clears redo
+          mUndoStack = [];
           mBrushPts = []; mBrushMode = mDefaultBrushMode;
         }
         _dirtyMask = true; mRedraw(); return;
+      }
+      if ((mTool === "blur" || mTool === "smudge") && mBrushDrawing) {
+        mBrushDrawing = false; mBrushPts = [];
+        _dirtyEdits = true; mRedraw(); return;
       }
       if (e.button !== 0) return; // lasso/polygon only respond to LMB release
       if (mTool === "lasso" && mLassoDrawing) {
@@ -4003,7 +4242,12 @@ function createWidget(node) {
 
       // ── Ctrl/Cmd combos ──
       if (e.ctrlKey || e.metaKey) {
-        if (k === "z" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); _undo(); return; }
+        if (k === "z" && !e.shiftKey) {
+          e.preventDefault(); e.stopPropagation();
+          if ((mTool === "blur" || mTool === "smudge") && _editsUndoStack.length > 0) { _undoEdits(); }
+          else { _undo(); }
+          return;
+        }
         if (k === "z" && e.shiftKey)  { e.preventDefault(); e.stopPropagation(); _redo(); return; }
         if (k === "y")                { e.preventDefault(); e.stopPropagation(); _redo(); return; }
         if (k === "i") {
@@ -4084,6 +4328,13 @@ function createWidget(node) {
       // Clean up undefined keys
       if (!cropMap[fn].maskOps) { delete cropMap[fn].maskOps; delete cropMap[fn].maskXform; }
       if (!cropMap[fn].maskInverted) delete cropMap[fn].maskInverted;
+      // ── Pixel edits persistence ──
+      if (_cvsEditsPx && _editsUndoStack.length > 0) {
+        // Only save if edits were actually made (undo stack has entries)
+        cropMap[fn].imageEditsDataUrl = _cvsEditsPx.toDataURL("image/webp", 0.92);
+      } else {
+        delete cropMap[fn].imageEditsDataUrl;
+      }
       persistCropData();
       render();
       close();
@@ -4145,6 +4396,7 @@ function createWidget(node) {
       curIdx = idx; updateNav();
       mImg = null; mLassoCurrentPts = []; mBrushPts = [];
       mZoom = 1; mPanX = 0; mPanY = 0; // reset zoom/pan on image change
+      _cvsEditsPx = null; _editsUndoStack = []; _smudgeBuf = null; // reset pixel edits
       const fn = items[idx]?.filename;
       const saved = fn ? (cropMap[fn] || {}) : {};
       // Deserialize fill ops: convert dataUrl back to _canvas DOM elements
@@ -4195,7 +4447,20 @@ function createWidget(node) {
           mImg = img; mNatW = img.naturalWidth || 1; mNatH = img.naturalHeight || 1;
         }
       }
-      _dirtyBase = true; _dirtyMask = true; mRedraw();
+      // ── Deserialize pixel edits ──
+      if (saved.imageEditsDataUrl) {
+        try {
+          const editImg = new Image();
+          await new Promise((ok, fail) => { editImg.onload = ok; editImg.onerror = fail; editImg.src = saved.imageEditsDataUrl; });
+          _cvsEditsPx = document.createElement("canvas");
+          _cvsEditsPx.width = editImg.naturalWidth; _cvsEditsPx.height = editImg.naturalHeight;
+          _cvsEditsPx.getContext("2d").drawImage(editImg, 0, 0);
+        } catch (e) {
+          console.warn("[MIL] Failed to restore pixel edits:", e);
+          _cvsEditsPx = null;
+        }
+      }
+      _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; mRedraw();
     }
 
     loadIdx(startIdx);
