@@ -3347,7 +3347,9 @@ function createWidget(node) {
     let mBrushPos = null; // {cx, cy} canvas px for brush preview
     // Zoom & pan state
     let mZoom = 1, mPanX = 0, mPanY = 0;
-    let mIsPanning = false, mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
+    let mIsPanning = false, mPanIsLMB = false;
+    let mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
+    let mSpaceDown = false;
 
     function close() {
       if (mAntsTimer) clearInterval(mAntsTimer);
@@ -3356,6 +3358,7 @@ function createWidget(node) {
       window.removeEventListener("mousemove", _onPanMove);
       window.removeEventListener("mouseup",   _onPanUp);
       window.removeEventListener("keydown",  _keyHandler);
+      window.removeEventListener("keyup",    _keyUpHandler);
       if (ov.parentNode) ov.parentNode.removeChild(ov);
     }
     ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
@@ -3592,10 +3595,15 @@ function createWidget(node) {
     ca.addEventListener("mouseleave", () => { mBrushPos = null; mRedraw(); });
 
     ca.addEventListener("mousedown", (e) => {
-      // Middle-click (button 1) or right-click (button 2) → panning
-      if (e.button === 1 || e.button === 2) {
+      // Middle-click / right-click / Ctrl+LMB / Space+LMB → panning
+      const isPanIntent = e.button === 1 || e.button === 2
+                        || (e.button === 0 && e.ctrlKey)
+                        || (e.button === 0 && mSpaceDown);
+      if (isPanIntent) {
         e.preventDefault();
-        mIsPanning = true; mPanStartX = e.clientX; mPanStartY = e.clientY;
+        mIsPanning = true;
+        mPanIsLMB = e.button === 0;
+        mPanStartX = e.clientX; mPanStartY = e.clientY;
         mPanOrigX = mPanX; mPanOrigY = mPanY;
         ca.style.cursor = "grabbing";
         return;
@@ -3667,8 +3675,10 @@ function createWidget(node) {
     }
     function _onPanUp(e) {
       if (!mIsPanning) return;
-      if (e.button === 1 || e.button === 2) {
-        mIsPanning = false;
+      const wasLMB = mPanIsLMB && e.button === 0;
+      const wasMidRight = !mPanIsLMB && (e.button === 1 || e.button === 2);
+      if (wasLMB || wasMidRight) {
+        mIsPanning = false; mPanIsLMB = false;
         updateCursor();
       }
     }
@@ -3696,11 +3706,23 @@ function createWidget(node) {
     }
     window.addEventListener("mouseup", _onMouseUp);
 
-    // ── Keyboard: Escape cancels in-progress shape ──
+    // ── Keyboard ──
     function _keyHandler(e) {
       if (e.key === "Escape") { mLassoCurrentPts = []; mBrushPts = []; mLassoDrawing = false; mBrushDrawing = false; mRedraw(); }
+      if (e.key === " " && !mSpaceDown) {
+        e.preventDefault(); // stop page scroll
+        mSpaceDown = true;
+        if (!mIsPanning) ca.style.cursor = "grab";
+      }
+    }
+    function _keyUpHandler(e) {
+      if (e.key === " ") {
+        mSpaceDown = false;
+        if (!mIsPanning) updateCursor();
+      }
     }
     window.addEventListener("keydown", _keyHandler);
+    window.addEventListener("keyup",   _keyUpHandler);
 
     // ── Buttons ──
     invertBtn.addEventListener("click", () => { mMaskInverted = !mMaskInverted; mRedraw(); });
