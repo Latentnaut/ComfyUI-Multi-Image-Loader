@@ -794,7 +794,13 @@ class MultiImageLoader:
                 # ── Original-resolution branch (no megapixel budget) ──
                 img_orig = img.copy()
                 if orig_ref_w is None:
-                    orig_ref_w, orig_ref_h = img_orig.size
+                    if fixed_canvas:
+                        # Respect aspect ratio at native resolution:
+                        # compute canvas at same ratio as fixed_canvas but scaled to native MP
+                        native_mp = (img_orig.size[0] * img_orig.size[1]) / 1_000_000
+                        orig_ref_w, orig_ref_h = _compute_canvas_dims(aspect_ratio, native_mp)
+                    else:
+                        orig_ref_w, orig_ref_h = img_orig.size
                 t_orig = transforms.get(fname)
                 if t_orig:
                     img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color))
