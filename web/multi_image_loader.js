@@ -1067,12 +1067,20 @@ function createWidget(node) {
       // Solid-fill crop path — crop region is a PRE-step on the source
       const el = await loadImage(item.src);
       const mode = getFitModeWidget()?.value ?? "letterbox";
-      // Effective source dimensions after pre-crop
-      const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
-      const srcX = hasCR ? t.cx * el.naturalWidth  : 0;
-      const srcY = hasCR ? t.cy * el.naturalHeight : 0;
-      const srcW = hasCR ? t.cw * el.naturalWidth  : el.naturalWidth;
-      const srcH = hasCR ? t.ch * el.naturalHeight : el.naturalHeight;
+      // If pixel edits exist, load the edited image (crop already baked in)
+      let drawSrc = el, srcX, srcY, srcW, srcH;
+      if (t.imageEditsDataUrl) {
+        const pxImg = await loadImage(t.imageEditsDataUrl);
+        drawSrc = pxImg;
+        srcX = 0; srcY = 0; srcW = pxImg.naturalWidth; srcH = pxImg.naturalHeight;
+      } else {
+        // Effective source dimensions after pre-crop
+        const hasCR = t.cx != null && (t.cx > 0 || t.cy > 0 || t.cw < 1 || t.ch < 1);
+        srcX = hasCR ? t.cx * el.naturalWidth  : 0;
+        srcY = hasCR ? t.cy * el.naturalHeight : 0;
+        srcW = hasCR ? t.cw * el.naturalWidth  : el.naturalWidth;
+        srcH = hasCR ? t.ch * el.naturalHeight : el.naturalHeight;
+      }
       const cvs = document.createElement("canvas");
       cvs.width = refW; cvs.height = refH;
       const ctx = cvs.getContext("2d");
@@ -1093,7 +1101,7 @@ function createWidget(node) {
       ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
       ctx.rotate(rot);
       ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
-      ctx.drawImage(el, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
+      ctx.drawImage(drawSrc, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
       // Lasso mask overlay — same logic as renderCropPreviews
       const tOps = t.lassoOps;
       if (tOps && tOps.length > 0) {
@@ -1221,9 +1229,14 @@ function createWidget(node) {
       } else {
         // Solid-fill path — off-thread via Worker
         const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
+        // If pixel edits exist, use the edited image (crop already baked in)
+        const imgSrc = t.imageEditsDataUrl || item.src;
+        const xform = t.imageEditsDataUrl
+          ? { ...t, cx: undefined, cy: undefined, cw: undefined, ch: undefined }
+          : t;
         jobs.push(
-          workerRender("cropTransform", item.src, {
-            refW, refH, bgColor: bgC, fitMode: mode, transform: t
+          workerRender("cropTransform", imgSrc, {
+            refW, refH, bgColor: bgC, fitMode: mode, transform: xform
           }).then(dataUrl => { item.previewSrc = dataUrl; })
             .catch(e => console.warn(`[MIL] crop preview error: ${item.filename}`, e))
         );
@@ -1379,7 +1392,8 @@ function createWidget(node) {
   };
 
   // ── openCropEditor ───────────────────────────────────────────────────
-  function openCropEditor(startIdx, skipAnim) {
+  function openCropEditor(startIdx, skipAnim, initialMode) {
+    let edPanelMode = initialMode || "edit";  // "edit" | "pixels"
     // session crops: edits made during this dialog, committed only on Apply
     const ses = {};
     for (const fn in cropMap) ses[fn] = { ...cropMap[fn] };
@@ -1480,22 +1494,37 @@ function createWidget(node) {
       return b;
     }
     // ── Mode switcher tabs (left of title) ──
-    function mkTab(label, active) {
+    function mkTab(label, active, accent) {
+      const ac = accent || "#7ab0ff";
       const b = document.createElement("button");
       b.textContent = label;
-      b.style.cssText = `background:${active?"#2a2a2a":"transparent"};color:${active?"#ccc":"#555"};border:1px solid ${active?"#444":"transparent"};border-bottom:${active?"2px solid #7ab0ff":"2px solid transparent"};border-radius:${Math.round(4*uiScale)}px ${Math.round(4*uiScale)}px 0 0;padding:${Math.round(4*uiScale)}px ${Math.round(9*uiScale)}px;font-size:${_fs11};cursor:pointer;transition:color .15s,border-color .15s;margin-bottom:-1px;`;
-      b.addEventListener("mouseenter", () => { if (!active) b.style.color = "#999"; });
-      b.addEventListener("mouseleave", () => { if (!active) b.style.color = "#555"; });
+      b.style.cssText = `background:${active?"#2a2a2a":"transparent"};color:${active?"#ccc":"#555"};border:1px solid ${active?"#444":"transparent"};border-bottom:${active?`2px solid ${ac}`:"2px solid transparent"};border-radius:${Math.round(4*uiScale)}px ${Math.round(4*uiScale)}px 0 0;padding:${Math.round(4*uiScale)}px ${Math.round(9*uiScale)}px;font-size:${_fs11};cursor:pointer;transition:color .15s,border-color .15s;margin-bottom:-1px;`;
+      b.addEventListener("mouseenter", () => { if (!b._tabActive) b.style.color = "#999"; });
+      b.addEventListener("mouseleave", () => { if (!b._tabActive) b.style.color = "#555"; });
+      b._tabActive = active;
+      b._tabAccent = ac;
       return b;
     }
-    const tabEdit = mkTab("\u270F Edit Image", true);
-    const tabMask = mkTab("\u25D0 Mask", false);
+    function setTabActive(tab, active) {
+      tab._tabActive = active;
+      const ac = tab._tabAccent || "#7ab0ff";
+      tab.style.background = active ? "#2a2a2a" : "transparent";
+      tab.style.color = active ? "#ccc" : "#555";
+      tab.style.border = `1px solid ${active ? "#444" : "transparent"}`;
+      tab.style.borderBottom = active ? `2px solid ${ac}` : "2px solid transparent";
+    }
+    const tabEdit = mkTab("\u270F Edit Image", edPanelMode === "edit", "#7ab0ff");
+    const tabPixels = mkTab("\uD83C\uDFA8 Edit Pixels", edPanelMode === "pixels", "#ffaa44");
+    const tabMask = mkTab("\u25D0 Mask", false, "#7fff7f");
+    tabEdit.addEventListener("click", () => switchPanelMode("edit"));
+    tabPixels.addEventListener("click", () => switchPanelMode("pixels"));
     tabMask.addEventListener("click", () => {
       // Auto-apply current edits so Mask Editor sees the processed image
       doApply();
       openMaskEditor(curIdx, true);
     });
     hdr.appendChild(tabEdit);
+    hdr.appendChild(tabPixels);
     hdr.appendChild(tabMask);
 
     const hdrSpacer = document.createElement("span"); hdrSpacer.style.flex = "1";
@@ -1556,8 +1585,38 @@ function createWidget(node) {
     cancelB.style.cssText = `background:#2a2a2a;color:#aaa;border:1px solid #444;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};cursor:pointer;width:100%;`;
     cancelB.addEventListener("mouseenter", () => { cancelB.style.background="#3a2020"; cancelB.style.color="#ff8888"; cancelB.style.borderColor="#553333"; });
     cancelB.addEventListener("mouseleave", () => { cancelB.style.background="#2a2a2a"; cancelB.style.color="#aaa"; cancelB.style.borderColor="#444"; });
+    // ── Panel containers for mode switching ──────────────────────
+    const secEdit = document.createElement("div");
+    secEdit.style.cssText = `display:flex;flex-direction:column;gap:${_gap5};`;
+    const secPixels = document.createElement("div");
+    secPixels.style.cssText = `display:${edPanelMode==="pixels"?"flex":"none"};flex-direction:column;gap:${_gap5};`;
+    if (edPanelMode === "pixels") secEdit.style.display = "none";
+    pnlBody.appendChild(secEdit);
+    pnlBody.appendChild(secPixels);
+
+    function switchPanelMode(mode) {
+      if (edPanelMode === mode) return;
+      edPanelMode = mode;
+      setTabActive(tabEdit, mode === "edit");
+      setTabActive(tabPixels, mode === "pixels");
+      secEdit.style.display = mode === "edit" ? "flex" : "none";
+      secPixels.style.display = mode === "pixels" ? "flex" : "none";
+      // Deactivate pixel tools when switching out
+      if (mode !== "pixels" && edPixelTool) {
+        edPixelTool = null; _syncPixelToolUI();
+        ca.style.cursor = "grab"; hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+      }
+      // Deactivate crop/lasso when switching to pixels
+      if (mode === "pixels") {
+        if (edCropMode) { edCropMode = false; syncCropToggle(); }
+        if (edLassoMode) { edLassoMode = false; edLassoDrawing = false; edLassoCurrentPts = []; stopLassoAnts(); syncLassoToggle(); }
+        _updatePxDimLbl();
+      }
+      redraw();
+    }
+
     // ── Image Dimensions ─────────────────────────────────────────
-    pnlBody.appendChild(mkSec("Image"));
+    secEdit.appendChild(mkSec("Image"));
     const dimOrigLbl = document.createElement("div");
     dimOrigLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;`;
     const dimEffLbl = document.createElement("div");
@@ -1573,11 +1632,11 @@ function createWidget(node) {
         dimEffLbl.style.color = '#888';
       }
     }
-    pnlBody.appendChild(dimOrigLbl);
-    pnlBody.appendChild(dimEffLbl);
+    secEdit.appendChild(dimOrigLbl);
+    secEdit.appendChild(dimEffLbl);
 
     // ── Crop Region (first step) ─────────────────────────────────
-    pnlBody.appendChild(mkSec("Crop Region", () => {
+    secEdit.appendChild(mkSec("Crop Region", () => {
       edCropBox = null; edAppliedCrop = null; edCropMode = false;
       edLassoOps = []; edLassoInverted = false; _lassoMaskDirty = true;
       dOX = 0; dOY = 0; edScale = 1.0;
@@ -1604,24 +1663,28 @@ function createWidget(node) {
         }
       }
     }
+    // Pixel-panel lasso buttons (declared late, referenced here via closure)
+    let pxLassoFreehandB = null, pxLassoPolyB = null;
+
     function syncLassoToggle() {
       // OFF state for both buttons
       const offS = {bg:'#1e1e1e',col:'#aaa',bc:'#333'};
       const onFree = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
       const onPoly = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
+      const applyStyle = (btn, s) => { if (!btn) return; btn.style.background=s.bg; btn.style.color=s.col; btn.style.borderColor=s.bc; };
       if (edLassoMode) {
         const f = edLassoTool==="freehand" ? onFree : offS;
         const p = edLassoTool==="polygonal" ? onPoly : offS;
-        lassoFreehandB.style.background=f.bg; lassoFreehandB.style.color=f.col; lassoFreehandB.style.borderColor=f.bc;
-        lassoPolyB.style.background=p.bg; lassoPolyB.style.color=p.col; lassoPolyB.style.borderColor=p.bc;
+        applyStyle(lassoFreehandB, f); applyStyle(lassoPolyB, p);
+        applyStyle(pxLassoFreehandB, f); applyStyle(pxLassoPolyB, p);
         ca.style.cursor = "crosshair";
         hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: add \u00b7 Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: add \u00b7 Alt: subtract";
       } else {
-        lassoFreehandB.style.background=offS.bg; lassoFreehandB.style.color=offS.col; lassoFreehandB.style.borderColor=offS.bc;
-        lassoPolyB.style.background=offS.bg; lassoPolyB.style.color=offS.col; lassoPolyB.style.borderColor=offS.bc;
+        applyStyle(lassoFreehandB, offS); applyStyle(lassoPolyB, offS);
+        applyStyle(pxLassoFreehandB, offS); applyStyle(pxLassoPolyB, offS);
         if (!edCropMode) {
-          ca.style.cursor = "grab";
-          hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+          ca.style.cursor = edPixelTool ? "none" : "grab";
+          if (!edPixelTool) hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
         }
       }
     }
@@ -1690,7 +1753,7 @@ function createWidget(node) {
       }
       syncCropToggle(); redraw();
     });
-    pnlBody.appendChild(cropToggleB);
+    secEdit.appendChild(cropToggleB);
 
     // AR lock + input row
     const cropArRow = document.createElement("div");
@@ -1718,7 +1781,7 @@ function createWidget(node) {
     syncArLockUI();
     cropArRow.appendChild(cropArLockB);
     cropArRow.appendChild(cropArInput);
-    pnlBody.appendChild(cropArRow);
+    secEdit.appendChild(cropArRow);
 
     const cropApplyB = document.createElement("button");
     cropApplyB.textContent = "\u2713 Apply Crop";
@@ -1745,22 +1808,22 @@ function createWidget(node) {
       syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
       syncCvs(); updLbl(); redraw(); requestInpaintPreview();
     });
-    pnlBody.appendChild(cropApplyB);
+    secEdit.appendChild(cropApplyB);
 
     const cropInfoLbl = document.createElement("div");
     cropInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
-    pnlBody.appendChild(cropInfoLbl);
+    secEdit.appendChild(cropInfoLbl);
 
     // ══════════════════════════════════════════════════════════════════
-    // ── Lasso Selection Section ─────────────────────────────────────
+    // ── Crop Lasso Section ──────────────────────────────────────────
     // ══════════════════════════════════════════════════════════════════
-    pnlBody.appendChild(mkSec("Lasso Selection", () => {
+    secEdit.appendChild(mkSec("Crop Lasso", () => {
       edLassoOps = []; edLassoInverted = false;
       edLassoCurrentPts = []; edLassoDrawing = false;
       _lassoMaskDirty = true; _lassoCursorNorm = null;
       stopLassoAnts();
       syncLassoInvertBtn(); updateLassoInfoLbl();
-    }, "Reset Lasso Selection"));
+    }, "Reset Crop Lasso"));
 
     // Tool buttons: Lasso / Polygonal — act as mode toggles
     const lassoToolRow = document.createElement("div");
@@ -1786,7 +1849,7 @@ function createWidget(node) {
     lassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
     lassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
     lassoToolRow.appendChild(lassoFreehandB); lassoToolRow.appendChild(lassoPolyB);
-    pnlBody.appendChild(lassoToolRow);
+    secEdit.appendChild(lassoToolRow);
 
     // Invert Selection
     const lassoInvertB = mkPB("\u2298 Invert Selection", () => {
@@ -1801,16 +1864,16 @@ function createWidget(node) {
         lassoInvertB.style.background = ""; lassoInvertB.style.color = ""; lassoInvertB.style.borderColor = "";
       }
     }
-    pnlBody.appendChild(lassoInvertB);
+    secEdit.appendChild(lassoInvertB);
 
     // Hint + Info
     const lassoHintLbl = document.createElement("div");
     lassoHintLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;line-height:1.3;`;
     lassoHintLbl.textContent = "Shift: add \u00b7 Alt: subtract";
-    pnlBody.appendChild(lassoHintLbl);
+    secEdit.appendChild(lassoHintLbl);
     const lassoInfoLbl = document.createElement("div");
     lassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
-    pnlBody.appendChild(lassoInfoLbl);
+    secEdit.appendChild(lassoInfoLbl);
 
     function updateLassoInfoLbl() {
       if (edLassoOps.length === 0 && !edLassoInverted) { lassoInfoLbl.textContent = ''; return; }
@@ -1890,17 +1953,14 @@ function createWidget(node) {
     // Drawn inside the SAME ctx transform as the image (translate → rotate → flip)
     // so marching ants and the in-progress path automatically follow flip/rotation.
     function drawLassoOverlay(ctx) {
-      if (!edLassoMode) return;
-      const { dw, dh } = _imgRenderDims();
-
-      // ── Marching ants (committed ops) ──
+      // ── Marching ants (committed ops) — shown whenever there's a selection ──
       if (edLassoOps.length > 0) {
+        const { dw, dh } = _imgRenderDims();
         const mw = Math.ceil(dw), mh = Math.ceil(dh);
         if (mw > 0 && mh > 0) {
           getLassoMaskCanvas(mw, mh);
           if (_cachedEdgePixels && _cachedEdgePixels.length > 0) {
             ctx.save();
-            // Match image transform: translate → rotate → flip
             ctx.translate(frameCX + dOX, frameCY + dOY);
             ctx.rotate(edRotate * Math.PI / 180);
             ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
@@ -1908,7 +1968,6 @@ function createWidget(node) {
             ctx.setLineDash([6, 5]); ctx.lineDashOffset = -edLassoAntsOffset;
             ctx.beginPath();
             for (let i = 0; i < _cachedEdgePixels.length; i += 2) {
-              // Edge pixels are in mask space (0..mw, 0..mh); image is centred at 0
               ctx.rect(_cachedEdgePixels[i] - dw / 2, _cachedEdgePixels[i + 1] - dh / 2, 1, 1);
             }
             ctx.stroke();
@@ -1920,13 +1979,13 @@ function createWidget(node) {
         }
       }
 
-      // ── In-progress path ──
-      if (edLassoCurrentPts.length >= 1) {
+      // ── In-progress path (only while actively drawing) ──
+      if (edLassoMode && edLassoCurrentPts.length >= 1) {
+        const { dw, dh } = _imgRenderDims();
         ctx.save();
         ctx.translate(frameCX + dOX, frameCY + dOY);
         ctx.rotate(edRotate * Math.PI / 180);
         ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
-        // Points stored as normalized 0..1; map to image-local space (-dw/2..dw/2)
         const pts = edLassoCurrentPts.map(p => ({ lx: (p.x - 0.5) * dw, ly: (p.y - 0.5) * dh }));
         ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 1.5;
         if (edLassoTool === 'freehand') {
@@ -1952,14 +2011,14 @@ function createWidget(node) {
       }
     }
 
-    pnlBody.appendChild(mkSec("Quick Fit", () => {
+    secEdit.appendChild(mkSec("Quick Fit", () => {
       dOX=0; dOY=0; edScale=1; updLbl();
     }, "Reset to Letterbox"));
-    pnlBody.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
-    pnlBody.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
-    pnlBody.appendChild(mkPB("\u2194 Fit Width",  doFitW));
-    pnlBody.appendChild(mkPB("\u2195 Fit Height", doFitH));
-    pnlBody.appendChild(mkSec("Flip", () => {
+    secEdit.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
+    secEdit.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
+    secEdit.appendChild(mkPB("\u2194 Fit Width",  doFitW));
+    secEdit.appendChild(mkPB("\u2195 Fit Height", doFitH));
+    secEdit.appendChild(mkSec("Flip", () => {
       edFlipH=false; edFlipV=false; syncFlipUI();
     }, "Reset Flip"));
     const flipRow = document.createElement("div");
@@ -1991,8 +2050,8 @@ function createWidget(node) {
     flipVBtn.addEventListener("click", () => { edFlipV=!edFlipV; syncFlipUI(); redraw(); requestInpaintPreview(); });
     flipRow.appendChild(flipHBtn);
     flipRow.appendChild(flipVBtn);
-    pnlBody.appendChild(flipRow);
-    pnlBody.appendChild(mkSec("Rotate", () => {
+    secEdit.appendChild(flipRow);
+    secEdit.appendChild(mkSec("Rotate", () => {
       edRotate=0; syncRotUI();
     }, "Reset Rotation"));
     // slider + click-to-type angle
@@ -2027,7 +2086,7 @@ function createWidget(node) {
       requestInpaintPreview();
     });
     rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
-    pnlBody.appendChild(rotRow);
+    secEdit.appendChild(rotRow);
 
     // Background fill elements (created here, appended later — after Remove BG)
     const bgSelect = document.createElement("select");
@@ -2073,7 +2132,7 @@ function createWidget(node) {
     }
 
     // ── Remove Background ───────────────────────────────────────
-    pnlBody.appendChild(mkSec("Remove Background", () => {
+    secEdit.appendChild(mkSec("Remove Background", () => {
       doRembgReset();
     }, "Restore Original Image"));
 
@@ -2091,7 +2150,7 @@ function createWidget(node) {
     ].forEach(([v, l]) => {
       const o = document.createElement("option"); o.value = v; o.textContent = l; rbModelSel.appendChild(o);
     });
-    pnlBody.appendChild(rbModelSel);
+    secEdit.appendChild(rbModelSel);
 
     // Status label
     const rbStatus = document.createElement("div");
@@ -2155,8 +2214,8 @@ function createWidget(node) {
     }
 
     rbBtn.addEventListener("click", doRembg);
-    pnlBody.appendChild(rbBtn);
-    pnlBody.appendChild(rbStatus);
+    secEdit.appendChild(rbBtn);
+    secEdit.appendChild(rbStatus);
 
     async function doRembgReset() {
       const fn = items[curIdx]?.filename;
@@ -2194,11 +2253,346 @@ function createWidget(node) {
     }
 
     // ── Background Fill (last visual section) ────────────────────
-    pnlBody.appendChild(mkSec("Background Fill", () => {
+    secEdit.appendChild(mkSec("Background Fill", () => {
       edBg = getEffectiveBgColor(); syncBgUI();
       edInpaintPreview=null; edInpaintDirty=true;
     }, "Reset to Node Default"));
-    pnlBody.appendChild(bgSelect); pnlBody.appendChild(bgCustomRow); pnlBody.appendChild(bgNote);
+    secEdit.appendChild(bgSelect); secEdit.appendChild(bgCustomRow); secEdit.appendChild(bgNote);
+
+    // ══════════════════════════════════════════════════════════════════
+    // ── IMAGE TOOLS section (Blur / Smudge / CA Fill on image pixels) ──
+    // ══════════════════════════════════════════════════════════════════
+    let edPixelTool = null;  // null | "blur" | "smudge"
+    let _edCvsEditsPx = null;
+    let _edEditsUndoStack = [];
+    let _edSmudgeBuf = null;
+    let _edSmudgeStr = 0.5;
+    let _edBrushDrawing = false;
+    let _edBrushPts = [];
+    let _edBrushPos = null;
+    let _edCafillLoading = false;
+
+    // Image dims in pixels panel (mirrors secEdit dims)
+    const pxDimLbl = document.createElement("div");
+    pxDimLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;`;
+    function _updatePxDimLbl() {
+      if (!edImg) { pxDimLbl.textContent = ""; return; }
+      const ew = effNatW(), eh = effNatH();
+      pxDimLbl.textContent = `${ew} × ${eh}${edAppliedCrop ? " (cropped)" : ""}`;
+    }
+    secPixels.appendChild(pxDimLbl);
+
+    // ── Lasso Selection sub-section (needed for CA Fill) ────────
+    secPixels.appendChild(mkSec("Lasso Selection", () => {
+      edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false;
+      edLassoInverted = false; _lassoCursorNorm = null; _lassoMaskDirty = true;
+      stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl(); redraw();
+    }, "Clear lasso selection"));
+
+    const pxLassoToolRow = document.createElement("div");
+    pxLassoToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
+    pxLassoFreehandB = document.createElement("button");
+    pxLassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
+    pxLassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    pxLassoPolyB = document.createElement("button");
+    pxLassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Polygonal`;
+    pxLassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    pxLassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
+    pxLassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
+    pxLassoToolRow.appendChild(pxLassoFreehandB); pxLassoToolRow.appendChild(pxLassoPolyB);
+    secPixels.appendChild(pxLassoToolRow);
+
+    const pxLassoInfoLbl = document.createElement("div");
+    pxLassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;margin-bottom:${_gap5};`;
+    secPixels.appendChild(pxLassoInfoLbl);
+    // Keep pxLassoInfoLbl in sync with the main lassoInfoLbl by patching updateLassoInfoLbl
+    const _origUpdateLassoInfoLbl = updateLassoInfoLbl;
+    updateLassoInfoLbl = function() {
+      _origUpdateLassoInfoLbl();
+      // Mirror text to pixel panel label
+      pxLassoInfoLbl.textContent = lassoInfoLbl.textContent;
+    };
+
+    secPixels.appendChild(mkSec("Image Tools", () => {
+      edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
+      _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = [];
+      _syncPixelToolUI(); redraw();
+    }, "Reset all pixel edits"));
+
+    const ptToolRow = document.createElement("div");
+    ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
+    const ptBtns = {};
+    [["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
+      const b = document.createElement("button");
+      b.textContent = lbl;
+      b.style.cssText = `flex:1 0 auto;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+      b.addEventListener("mouseenter", () => { if (edPixelTool !== k) { b.style.background="#2a2a2a"; b.style.borderColor="#555"; } });
+      b.addEventListener("mouseleave", () => { if (edPixelTool !== k) { b.style.background="#1e1e1e"; b.style.borderColor="#3a3a3a"; } });
+      b.addEventListener("click", () => _selectPixelTool(k));
+      ptBtns[k] = b; ptToolRow.appendChild(b);
+    });
+    const ptCABtn = document.createElement("button");
+    ptCABtn.textContent = "✨ CA Fill";
+    ptCABtn.style.cssText = `flex:1 0 auto;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptCABtn.addEventListener("mouseenter", () => { ptCABtn.style.background="#2a2a2a"; ptCABtn.style.borderColor="#555"; });
+    ptCABtn.addEventListener("mouseleave", () => { ptCABtn.style.background="#1e1e1e"; ptCABtn.style.borderColor="#3a3a3a"; });
+    ptCABtn.addEventListener("click", () => _edRunCAFill());
+    ptToolRow.appendChild(ptCABtn);
+    secPixels.appendChild(ptToolRow);
+
+    // Smudge strength slider
+    const ptSmudgeRow = document.createElement("div");
+    ptSmudgeRow.style.cssText = `display:none;gap:${_gap5};align-items:center;margin-top:2px;`;
+    const ptSmLbl = document.createElement("span");
+    ptSmLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
+    ptSmLbl.textContent = "Strength";
+    const ptSmSlider = document.createElement("input");
+    ptSmSlider.type = "range"; ptSmSlider.min = "5"; ptSmSlider.max = "100"; ptSmSlider.value = "50";
+    ptSmSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const ptSmVal = document.createElement("span");
+    ptSmVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
+    ptSmVal.textContent = "50%";
+    ptSmSlider.addEventListener("input", () => { _edSmudgeStr = parseInt(ptSmSlider.value)/100; ptSmVal.textContent = ptSmSlider.value+"%"; });
+    ptSmudgeRow.appendChild(ptSmLbl); ptSmudgeRow.appendChild(ptSmSlider); ptSmudgeRow.appendChild(ptSmVal);
+    secPixels.appendChild(ptSmudgeRow);
+
+    // Dedicated brush size slider for image tools
+    const ptBrushRow = document.createElement("div");
+    ptBrushRow.style.cssText = `display:none;gap:${_gap5};align-items:center;`;
+    const ptBrLbl = document.createElement("span");
+    ptBrLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
+    ptBrLbl.textContent = "Size";
+    const ptBrSlider = document.createElement("input");
+    ptBrSlider.type = "range"; ptBrSlider.min = "4"; ptBrSlider.max = "150"; ptBrSlider.value = "30";
+    ptBrSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const ptBrVal = document.createElement("span");
+    ptBrVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
+    ptBrVal.textContent = "30px";
+    ptBrSlider.addEventListener("input", () => { ptBrVal.textContent = ptBrSlider.value+"px"; redraw(); });
+    ptBrushRow.appendChild(ptBrLbl); ptBrushRow.appendChild(ptBrSlider); ptBrushRow.appendChild(ptBrVal);
+    secPixels.appendChild(ptBrushRow);
+
+    // Undo button for pixel edits
+    const ptUndoB = document.createElement("button");
+    ptUndoB.textContent = "\u21B6 Undo";
+    ptUndoB.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;width:100%;transition:background .12s;`;
+    ptUndoB.addEventListener("mouseenter", () => { ptUndoB.style.background="#2a2a2a"; ptUndoB.style.borderColor="#555"; });
+    ptUndoB.addEventListener("mouseleave", () => { ptUndoB.style.background="#1e1e1e"; ptUndoB.style.borderColor="#3a3a3a"; });
+    ptUndoB.addEventListener("click", () => _edUndoEdits());
+    secPixels.appendChild(ptUndoB);
+
+    function _syncPixelToolUI() {
+      Object.entries(ptBtns).forEach(([k, b]) => {
+        const on = edPixelTool === k;
+        b.style.background = on ? "#1a2a3a" : "#1e1e1e";
+        b.style.color = on ? "#7ab0ff" : "#aaa";
+        b.style.borderColor = on ? "#445599" : "#3a3a3a";
+      });
+      ptSmudgeRow.style.display = edPixelTool === "smudge" ? "flex" : "none";
+      ptBrushRow.style.display = edPixelTool ? "flex" : "none";
+      // Update cursor
+      if (edPixelTool) {
+        ca.style.cursor = "none";
+        hint.textContent = edPixelTool === "blur" ? "Drag to blur · Scroll to zoom" : "Drag to smudge · Scroll to zoom";
+      }
+    }
+
+    function _selectPixelTool(t) {
+      if (edPixelTool === t) { edPixelTool = null; } // toggle off
+      else {
+        edPixelTool = t;
+        // Mutual exclusion: disable crop only (lasso stays active in pixels mode for CA Fill)
+        if (edCropMode) { edCropMode = false; syncCropToggle(); }
+        _edEnsureEditsPx();
+      }
+      _syncPixelToolUI();
+      if (!edPixelTool && !edCropMode && !edLassoMode) {
+        ca.style.cursor = "grab"; hint.textContent = "Drag to pan · Scroll to zoom";
+      }
+      redraw();
+    }
+
+    function _edEnsureEditsPx() {
+      if (_edCvsEditsPx) return;
+      if (!edImg) return;
+      const wpX = Math.min(edNatW, 2048);
+      const wpY = Math.round(edNatH * (wpX / edNatW));
+      _edCvsEditsPx = document.createElement("canvas");
+      _edCvsEditsPx.width = wpX; _edCvsEditsPx.height = wpY;
+      const ctx = _edCvsEditsPx.getContext("2d");
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      if (edAppliedCrop) {
+        const sx = edAppliedCrop.cx * edNatW, sy = edAppliedCrop.cy * edNatH;
+        const sw = edAppliedCrop.cw * edNatW, sh = edAppliedCrop.ch * edNatH;
+        ctx.drawImage(edImg, sx, sy, sw, sh, 0, 0, wpX, wpY);
+      } else {
+        ctx.drawImage(edImg, 0, 0, wpX, wpY);
+      }
+    }
+
+    function _edSaveUndo() {
+      if (!_edCvsEditsPx) return;
+      _edEditsUndoStack.push(_edCvsEditsPx.toDataURL("image/webp", 0.92));
+      if (_edEditsUndoStack.length > 10) _edEditsUndoStack.shift();
+    }
+
+    function _edUndoEdits() {
+      if (_edEditsUndoStack.length === 0) return;
+      const src = _edEditsUndoStack.pop();
+      const img = new Image();
+      img.onload = () => {
+        const ctx = _edCvsEditsPx.getContext("2d");
+        ctx.clearRect(0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height);
+        ctx.drawImage(img, 0, 0);
+        redraw();
+      };
+      img.src = src;
+    }
+
+    // ── Blur on image: separable box blur O(N·R) ──────────────────
+    function _edApplyBlur(cx, cy, r) {
+      if (!_edCvsEditsPx) return;
+      const w = _edCvsEditsPx.width, h = _edCvsEditsPx.height;
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const bx = Math.max(0, Math.floor(cx - r)), by = Math.max(0, Math.floor(cy - r));
+      const bw = Math.min(w - bx, Math.ceil(r * 2)), bh = Math.min(h - by, Math.ceil(r * 2));
+      if (bw <= 0 || bh <= 0) return;
+      const origData = ctx.getImageData(bx, by, bw, bh);
+      const origD = new Uint8ClampedArray(origData.data);
+      const imgData = ctx.getImageData(bx, by, bw, bh);
+      const d = imgData.data;
+      const tmp = new Uint8ClampedArray(d.length);
+      const rad = Math.max(1, Math.floor(r * 0.25));
+      for (let row = 0; row < bh; row++) {
+        let rs=0,gs=0,bs=0,cnt=0;
+        for (let i=-rad;i<=rad;i++) { const xi=Math.max(0,Math.min(bw-1,i)); const pi=(row*bw+xi)*4; rs+=d[pi];gs+=d[pi+1];bs+=d[pi+2];cnt++; }
+        for (let col=0;col<bw;col++) { const po=(row*bw+col)*4; tmp[po]=rs/cnt;tmp[po+1]=gs/cnt;tmp[po+2]=bs/cnt;tmp[po+3]=255; const ri2=Math.max(0,col-rad),ai2=Math.min(bw-1,col+rad+1); const pr=(row*bw+ri2)*4,pa=(row*bw+ai2)*4; rs+=d[pa]-d[pr];gs+=d[pa+1]-d[pr+1];bs+=d[pa+2]-d[pr+2]; }
+      }
+      for (let col=0;col<bw;col++) {
+        let rs=0,gs=0,bs=0,cnt=0;
+        for (let i=-rad;i<=rad;i++) { const yi=Math.max(0,Math.min(bh-1,i)); const pi=(yi*bw+col)*4; rs+=tmp[pi];gs+=tmp[pi+1];bs+=tmp[pi+2];cnt++; }
+        for (let row=0;row<bh;row++) { const po=(row*bw+col)*4; d[po]=rs/cnt;d[po+1]=gs/cnt;d[po+2]=bs/cnt;d[po+3]=255; const ri2=Math.max(0,row-rad),ai2=Math.min(bh-1,row+rad+1); const pr=(ri2*bw+col)*4,pa=(ai2*bw+col)*4; rs+=tmp[pa]-tmp[pr];gs+=tmp[pa+1]-tmp[pr+1];bs+=tmp[pa+2]-tmp[pr+2]; }
+      }
+      for (let row = 0; row < bh; row++) {
+        for (let col = 0; col < bw; col++) {
+          const dist = Math.hypot(col - (cx - bx), row - (cy - by));
+          const f = dist <= r ? Math.pow(1 - dist / r, 1.2) : 0;
+          const i = (row * bw + col) * 4;
+          d[i]=origD[i]*(1-f)+d[i]*f; d[i+1]=origD[i+1]*(1-f)+d[i+1]*f; d[i+2]=origD[i+2]*(1-f)+d[i+2]*f;
+        }
+      }
+      ctx.putImageData(imgData, bx, by);
+    }
+
+    // ── Smudge on image: true pixel-drag (sample → stamp) ────────
+    // _edSmudgeBuf holds the "paint" being dragged between steps.
+    function _edApplySmudge(lastPos, currPos, r) {
+      if (!_edCvsEditsPx || !lastPos) return;
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const w = _edCvsEditsPx.width, h = _edCvsEditsPx.height;
+      const d = Math.ceil(r) * 2;  // stamp diameter
+
+      // ── 1. Initialize or reuse the smudge color buffer ──
+      if (!_edSmudgeBuf || _edSmudgeBuf.width !== d || _edSmudgeBuf.height !== d) {
+        // First step: sample patch under current brush from the canvas
+        _edSmudgeBuf = document.createElement("canvas");
+        _edSmudgeBuf.width = d; _edSmudgeBuf.height = d;
+        const bCtx = _edSmudgeBuf.getContext("2d");
+        bCtx.drawImage(_edCvsEditsPx,
+          Math.round(currPos.x - r), Math.round(currPos.y - r), d, d,
+          0, 0, d, d);
+      }
+
+      // ── 2. At the CURRENT position, sample what's already there ──
+      const curPatchX = Math.round(currPos.x - r);
+      const curPatchY = Math.round(currPos.y - r);
+      const curPatch = document.createElement("canvas");
+      curPatch.width = d; curPatch.height = d;
+      const cpCtx = curPatch.getContext("2d");
+      cpCtx.drawImage(_edCvsEditsPx, curPatchX, curPatchY, d, d, 0, 0, d, d);
+
+      // ── 3. Blend smudge color buffer toward the current patch ──
+      //    strength=1 → pure drag (max displacement, no blur)
+      //    strength=0 → immediate fade into background (lots of blur)
+      const alpha = _edSmudgeStr;  // higher = crisper drag
+      const bCtx = _edSmudgeBuf.getContext("2d");
+      // Mix: smudgeBuf = smudgeBuf * alpha + curPatch * (1-alpha)
+      bCtx.globalCompositeOperation = "source-over";
+      bCtx.globalAlpha = 1 - alpha;
+      bCtx.drawImage(curPatch, 0, 0);
+      bCtx.globalAlpha = 1;
+      bCtx.globalCompositeOperation = "source-over";
+
+      // ── 4. Stamp the smudge buffer onto the canvas with radial falloff ──
+      const stampCvs = document.createElement("canvas");
+      stampCvs.width = d; stampCvs.height = d;
+      const sCtx = stampCvs.getContext("2d");
+      // Draw the smudge color
+      sCtx.drawImage(_edSmudgeBuf, 0, 0);
+      // Apply radial fade mask (full opacity at center, zero at edge)
+      sCtx.globalCompositeOperation = "destination-in";
+      const grad = sCtx.createRadialGradient(r, r, 0, r, r, r);
+      grad.addColorStop(0,   "rgba(0,0,0,1)");
+      grad.addColorStop(0.7, "rgba(0,0,0,0.85)");
+      grad.addColorStop(1,   "rgba(0,0,0,0)");
+      sCtx.fillStyle = grad;
+      sCtx.fillRect(0, 0, d, d);
+      // Paint stamp back onto pixel canvas
+      ctx.drawImage(stampCvs, curPatchX, curPatchY);
+    }
+
+    // ── CA Fill on image: lasso → inpaint backend ─────────────────
+    async function _edRunCAFill() {
+      if (_edCafillLoading || edLassoOps.length === 0) {
+        if (edLassoOps.length === 0) alert("Draw a lasso selection first, then run CA Fill.");
+        return;
+      }
+      _edCafillLoading = true; ptCABtn.textContent = "⏳ Working…";
+      try {
+        _edEnsureEditsPx(); _edSaveUndo();
+        const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+        // Build lasso mask at pixel canvas resolution
+        const maskCvs = document.createElement("canvas"); maskCvs.width = pw; maskCvs.height = ph;
+        const mx = maskCvs.getContext("2d");
+        mx.fillStyle = "#fff"; mx.fillRect(0, 0, pw, ph); // white = no inpaint
+        for (const op of edLassoOps) {
+          if (op.points.length < 3) continue;
+          mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+          mx.fillStyle = "#000"; mx.beginPath(); // black = inpaint area
+          mx.moveTo(op.points[0][0]*pw, op.points[0][1]*ph);
+          for (let i=1;i<op.points.length;i++) mx.lineTo(op.points[i][0]*pw, op.points[i][1]*ph);
+          mx.closePath(); mx.fill();
+        }
+        if (edLassoInverted) { mx.globalCompositeOperation="xor"; mx.fillStyle="#fff"; mx.fillRect(0,0,pw,ph); }
+        mx.globalCompositeOperation = "source-over";
+        const payload = {
+          image: _edCvsEditsPx.toDataURL("image/png"),
+          mask: maskCvs.toDataURL("image/png")
+        };
+        const res = await fetch("/multi_image_loader/inpaint", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error("Inpaint request failed: " + res.status);
+        const j = await res.json();
+        if (j.error) throw new Error(j.error);
+        const rImg = new Image();
+        await new Promise((ok, fail) => { rImg.onload = ok; rImg.onerror = fail; rImg.src = j.image; });
+        const rCtx = _edCvsEditsPx.getContext("2d");
+        rCtx.clearRect(0, 0, pw, ph);
+        rCtx.drawImage(rImg, 0, 0, pw, ph);
+        redraw();
+      } catch (e) {
+        console.error("[MIL] CA Fill error:", e);
+        alert("Content-Aware Fill failed: " + e.message);
+      } finally {
+        _edCafillLoading = false; ptCABtn.textContent = "✨ CA Fill";
+        // Clear the lasso selection — it's been consumed by CA Fill
+        edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false;
+        edLassoMode = false; _lassoCursorNorm = null; _lassoMaskDirty = true;
+        stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      }
+    }
 
     // ── Reset All button ─────────────────────────────────────────
     const resetAllB = document.createElement("button");
@@ -2220,6 +2614,10 @@ function createWidget(node) {
       // Reset lasso
       edLassoOps=[]; edLassoInverted=false; edLassoCurrentPts=[]; edLassoDrawing=false;
       _lassoMaskDirty=true; _lassoCursorNorm=null; stopLassoAnts();
+      // Reset pixel edits
+      edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
+      _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+      _syncPixelToolUI();
       // Reset bg
       edBg=getEffectiveBgColor();
       // Restore original image (undo rembg)
@@ -2514,8 +2912,13 @@ function createWidget(node) {
             } else {
               ctx.drawImage(edImg,-dw/2,-dh/2,dw,dh);
             }
-            // Lasso mask overlay — show bg color outside selection
-            if (edLassoOps.length > 0) {
+            // ── Pixel edits overlay (blur/smudge/CA Fill) ──
+            if (_edCvsEditsPx) {
+              ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+              ctx.drawImage(_edCvsEditsPx, -dw/2, -dh/2, dw, dh);
+            }
+            // Lasso mask overlay — show bg color outside selection (only in Edit Image mode, not in Edit Pixels)
+            if (edLassoOps.length > 0 && edPanelMode !== "pixels") {
               const mw = Math.ceil(dw), mh = Math.ceil(dh);
               // Build mask canvas (white = inside selection)
               if (!_lassoOverlayCvs) _lassoOverlayCvs = document.createElement('canvas');
@@ -2560,6 +2963,19 @@ function createWidget(node) {
         // frame border
         ctx.strokeStyle="rgba(255,255,255,0.35)"; ctx.lineWidth=1.5;
         ctx.strokeRect(fx+0.75,fy+0.75,frameW-1.5,frameH-1.5);
+        // ── Pixel tool brush cursor ──
+        if (edPixelTool && _edBrushPos) {
+          const rPx = parseFloat(ptBrSlider.value);
+          ctx.save();
+          ctx.strokeStyle = edPixelTool === "blur" ? "rgba(100,180,255,0.7)" : "rgba(255,180,100,0.7)";
+          ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+          ctx.beginPath(); ctx.arc(_edBrushPos.cx, _edBrushPos.cy, rPx, 0, Math.PI*2); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.moveTo(_edBrushPos.cx-6,_edBrushPos.cy); ctx.lineTo(_edBrushPos.cx+6,_edBrushPos.cy); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(_edBrushPos.cx,_edBrushPos.cy-6); ctx.lineTo(_edBrushPos.cx,_edBrushPos.cy+6); ctx.stroke();
+          ctx.restore();
+        }
         // ── Snap guide lines ──
         const _anySnap = _snapGuides.cx || _snapGuides.cy || _snapGuides.L || _snapGuides.R || _snapGuides.T || _snapGuides.B;
         if (_anySnap) {
@@ -2615,11 +3031,13 @@ function createWidget(node) {
       const fn = items[curIdx]?.filename; if (!fn) return;
       const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
       const hasLasso = edLassoOps.length > 0 || edLassoInverted;
+      const hasPixelEdits = !!_edCvsEditsPx;
       const nodeBg = getEffectiveBgColor();
-      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso) {
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
         if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
+        if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
         ses[fn] = t;
       } else delete ses[fn];
     }
@@ -2638,6 +3056,10 @@ function createWidget(node) {
         const el=new Image(); el.crossOrigin="anonymous";
         el.onload=()=>{
           edImg=el; edNatW=el.naturalWidth; edNatH=el.naturalHeight;
+          // Reset pixel tool state on image switch
+          edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
+          _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+          _syncPixelToolUI();
           const t=ses[items[idx].filename];
           // Restore applied crop BEFORE syncCvs so bFit uses effective dims
           if (t && t.cx != null) edAppliedCrop = { cx: t.cx, cy: t.cy, cw: t.cw, ch: t.ch };
@@ -2652,7 +3074,20 @@ function createWidget(node) {
           edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??getEffectiveBgColor();
           updateDimLabels(); updateCropInfoLbl();
           edInpaintPreview=null; edInpaintDirty=true;
-          syncRotUI(); syncBgUI(); syncFlipUI(); updLbl(); redraw(); requestInpaintPreview(); res();
+          // Restore pixel edits from session
+          if (t && t.imageEditsDataUrl) {
+            try {
+              const pxImg = new Image();
+              pxImg.onload = () => {
+                _edCvsEditsPx = document.createElement("canvas");
+                _edCvsEditsPx.width = pxImg.naturalWidth; _edCvsEditsPx.height = pxImg.naturalHeight;
+                _edCvsEditsPx.getContext("2d").drawImage(pxImg, 0, 0);
+                redraw();
+              };
+              pxImg.src = t.imageEditsDataUrl;
+            } catch(e) { console.warn("[MIL] Failed to restore pixel edits:", e); }
+          }
+          syncRotUI(); syncBgUI(); syncFlipUI(); updLbl(); _updatePxDimLbl(); redraw(); requestInpaintPreview(); res();
         };
         el.onerror=res; el.src=items[idx].src;
       });
@@ -2660,6 +3095,32 @@ function createWidget(node) {
 
     // ── events ───────────────────────────────────────────────
     function onGlobalMove(e) {
+      // ── pixel tool drag ──
+      if (edPixelTool && _edBrushDrawing) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        _edBrushPos = { cx, cy };
+        const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
+        const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+        const { dw, dh } = _imgRenderDims();
+        const epx = (cx - (imgCX - dw/2)) * pxScale;
+        const epy = (cy - (imgCY - dh/2)) * pxScale;
+        const rPx = parseFloat(ptBrSlider.value) * pxScale;
+        if (edPixelTool === "blur") {
+          _edApplyBlur(epx, epy, rPx);
+        } else {
+          const prevPt = _edBrushPts.length > 0 ? _edBrushPts[_edBrushPts.length - 1] : null;
+          if (prevPt) _edApplySmudge(prevPt, { x: epx, y: epy }, rPx);
+        }
+        _edBrushPts.push({ x: epx, y: epy });
+        redraw(); return;
+      }
+      // ── pixel tool cursor tracking (not drawing) ──
+      if (edPixelTool && !_edBrushDrawing) {
+        const r = cvs.getBoundingClientRect();
+        _edBrushPos = { cx: e.clientX - r.left, cy: e.clientY - r.top };
+        redraw();
+      }
       // ── lasso draw / track ──
       if (edLassoMode) {
         const r = cvs.getBoundingClientRect();
@@ -2816,6 +3277,11 @@ function createWidget(node) {
       redraw();
     }
     function onGlobalUp(e) {
+      // ── pixel tool stroke end ──
+      if (edPixelTool && _edBrushDrawing) {
+        _edBrushDrawing = false; _edBrushPts = [];
+        redraw(); return;
+      }
       // ── lasso freehand end ──
       if (edLassoMode && edLassoDrawing && edLassoTool === "freehand") {
         edLassoDrawing = false;
@@ -2840,6 +3306,20 @@ function createWidget(node) {
     }
     cvs.addEventListener("mousedown", e=>{
       if (e.button!==0) return;
+      // ── pixel tool start ──
+      if (edPixelTool) {
+        _edEnsureEditsPx(); _edSaveUndo();
+        _edBrushDrawing = true;
+        _edSmudgeBuf = null; // reset smudge buffer so each stroke samples fresh pixels
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        _edBrushPos = { cx, cy };
+        const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
+        const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+        const { dw, dh } = _imgRenderDims();
+        _edBrushPts = [{ x: (cx - (imgCX - dw/2)) * pxScale, y: (cy - (imgCY - dh/2)) * pxScale }];
+        return;
+      }
       // ── lasso start / polygonal click ──
       if (edLassoMode) {
         const r = cvs.getBoundingClientRect();
@@ -2880,6 +3360,13 @@ function createWidget(node) {
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
     });
     cvs.addEventListener("mousemove", e=>{
+      // Pixel tool cursor tracking on canvas
+      if (edPixelTool) {
+        const r = cvs.getBoundingClientRect();
+        _edBrushPos = { cx: e.clientX - r.left, cy: e.clientY - r.top };
+        ca.style.cursor = "none";
+        redraw(); return;
+      }
       if (edLassoMode) {
         ca.style.cursor = e.shiftKey ? _lassoCursors.add : e.altKey ? _lassoCursors.subtract : _lassoCursors.normal;
         return;
@@ -2920,6 +3407,11 @@ function createWidget(node) {
       if (e.key === "ArrowLeft"  && curIdx > 0)              { saveToSes(); loadIdx(curIdx-1); }
       if (e.key === "ArrowRight" && curIdx < items.length-1) { saveToSes(); loadIdx(curIdx+1); }
       if (e.key === "Escape") doClose();
+      // Ctrl+Z: undo pixel edits
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && edPixelTool && _edEditsUndoStack.length > 0) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        _edUndoEdits(); return;
+      }
     }
     window.addEventListener("keydown", onKey, { capture: true });
     prevB.addEventListener("click", ()=>{ if(curIdx>0)             { saveToSes(); loadIdx(curIdx-1); } });
@@ -2969,7 +3461,7 @@ function createWidget(node) {
         const prevMaskInv = cropMap[fn]?.maskInverted;
         const prevMaskXf = cropMap[fn]?.maskXform;
         if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!==_nodeBg)||
-            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted)) {
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted||t.imageEditsDataUrl)) {
           cropMap[fn]=t;
         } else {
           // No edit transforms — keep entry only if mask data exists
@@ -2987,7 +3479,7 @@ function createWidget(node) {
     }
     applyB.addEventListener("click",  doApply);
     cancelB.addEventListener("click", doClose);
-    ov.addEventListener("click", e=>{ if(e.target===ov) doClose(); });
+    // (click outside overlay intentionally disabled — use Cancel or Apply)
 
     // ── init ───────────────────────────────────────────────
     async function init() {
@@ -3091,27 +3583,30 @@ function createWidget(node) {
       b.addEventListener("mouseleave", () => { if (!active) b.style.color = "#555"; });
       return b;
     }
-    const tabEdit = mkTab("\u270F Edit Image", false, "#7fff7f");
+    const tabEdit = mkTab("\u270F Edit Image", false, "#7ab0ff");
+    const tabPixels = mkTab("\uD83C\uDFA8 Edit Pixels", false, "#ffaa44");
     const tabMask = mkTab("\u25D0 Mask", true, "#7fff7f");
-    tabEdit.addEventListener("click", () => {
-      // Save mask data + current transform snapshot before switching to Edit Image
+    function _saveMaskAndSwitch(targetMode) {
+      // Save mask data + current transform snapshot before switching
       const fn = items[curIdx]?.filename;
       if (fn) {
         if (!cropMap[fn]) cropMap[fn] = {};
         cropMap[fn].maskOps = mMaskOps.length > 0 ? [...mMaskOps] : undefined;
         cropMap[fn].maskInverted = mMaskInverted || undefined;
-        // Snapshot the transform state so we can remap coords if transforms change
         const ct = cropMap[fn];
         cropMap[fn].maskXform = { ox: ct.ox||0, oy: ct.oy||0, scale: ct.scale||1, flipH: !!ct.flipH, flipV: !!ct.flipV, rotate: ct.rotate||0, cx: ct.cx, cy: ct.cy, cw: ct.cw, ch: ct.ch };
         if (!cropMap[fn].maskOps) delete cropMap[fn].maskOps;
         if (!cropMap[fn].maskInverted) delete cropMap[fn].maskInverted;
-        if (!cropMap[fn].maskOps) delete cropMap[fn].maskXform; // no ops = no snapshot needed
+        if (!cropMap[fn].maskOps) delete cropMap[fn].maskXform;
         persistCropData();
       }
       close();
-      openCropEditor(curIdx, true);
-    });
+      openCropEditor(curIdx, true, targetMode);
+    }
+    tabEdit.addEventListener("click", () => _saveMaskAndSwitch("edit"));
+    tabPixels.addEventListener("click", () => _saveMaskAndSwitch("pixels"));
     hdr.appendChild(tabEdit);
+    hdr.appendChild(tabPixels);
     hdr.appendChild(tabMask);
 
     const spacer = document.createElement("span"); spacer.style.flex = "1";
@@ -3157,8 +3652,8 @@ function createWidget(node) {
     });
     pnlBody.appendChild(toolRow);
 
-    // ── Image tools section ──
-    pnlBody.appendChild(mkSec("IMAGE TOOLS"));
+    // ── Mask refinement tools (blur/smudge affect mask, not image) ──
+    pnlBody.appendChild(mkSec("MASK REFINE"));
     const imgToolRow = document.createElement("div");
     imgToolRow.style.cssText = `display:flex;gap:${_r(4)}px;flex-wrap:wrap;`;
     [["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
@@ -3167,10 +3662,6 @@ function createWidget(node) {
       b.addEventListener("click", () => _selectTool(k));
       toolBtns[k] = b; imgToolRow.appendChild(b);
     });
-    const btnCA = mkBtn2("✨ CA Fill", false);
-    btnCA.style.flex = "1 0 auto";
-    btnCA.addEventListener("click", () => _runCAFill());
-    imgToolRow.appendChild(btnCA);
     pnlBody.appendChild(imgToolRow);
 
     // ── Smudge strength slider (hidden until smudge tool selected) ──
@@ -3303,11 +3794,10 @@ function createWidget(node) {
     // Right canvas area
     const ca = document.createElement("div");
     ca.style.cssText = "flex:1;position:relative;background:#141414;overflow:hidden;";
-    // ── 4-layer canvas stack ──────────────────────────────────────────
+    // ── 3-layer canvas stack ──────────────────────────────────────────
     // Layer 0 (cvsBase):  checkerboard + image + dim outside + frame border
-    // Layer 1 (cvsEdits): pixel edits overlay (blur/smudge/cafill)
-    // Layer 2 (cvsMask):  committed mask overlay at user-set opacity
-    // Layer 3 (cvsTool):  active stroke preview + brush cursor + lasso preview
+    // Layer 1 (cvsMask):  committed mask overlay at user-set opacity
+    // Layer 2 (cvsTool):  active stroke preview + brush cursor + lasso preview
     // Only the tool layer redraws on mousemove → ~80% fewer draw calls.
     const _mkCvs = (pe) => {
       const c = document.createElement("canvas");
@@ -3316,7 +3806,6 @@ function createWidget(node) {
       return c;
     };
     const cvsBase = _mkCvs(false);
-    const cvsEdits = _mkCvs(false);
     const cvsMask = _mkCvs(false);
     const cvsTool = _mkCvs(true);  // receives pointer events
     body.appendChild(pnl); body.appendChild(ca);
@@ -3342,17 +3831,16 @@ function createWidget(node) {
     let mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
     let mSpaceDown = false;
     // ── Layer dirty flags ──────────────────────────────────────────────
-    let _dirtyBase = true, _dirtyEdits = true, _dirtyMask = true;
+    let _dirtyBase = true, _dirtyMask = true;
     // ── Undo / Redo stacks ─────────────────────────────────────────────
     let mUndoStack = [];  // popped ops for redo
     // ── Default brush mode for shortcuts ────────────────────────────────
     let mDefaultBrushMode = "add"; // "add" for brush (B), "sub" for eraser (E)
     // ── Cached brush tip ───────────────────────────────────────────────
     let _tipCache = null; // { radius, color, canvas }
-    // ── Pixel edits state ──────────────────────────────────────────────
-    let _cvsEditsPx = null;      // offscreen canvas with pixel edits (max 2048px)
-    let _editsUndoStack = [];    // base64 snapshots for undo (max 10)
-    let _cafillLoading = false;  // debounce flag
+    // ── Mask raster state (for blur/smudge on mask) ────────────────────
+    let _maskRaster = null;       // offscreen canvas with rasterized mask
+    let _maskRasterUndo = null;   // single-level undo snapshot (dataUrl)
 
     function close() {
       if (mAntsTimer) clearInterval(mAntsTimer);
@@ -3364,7 +3852,7 @@ function createWidget(node) {
       window.removeEventListener("keyup",    _keyUpHandler);
       if (ov.parentNode) ov.parentNode.removeChild(ov);
     }
-    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    // (click outside overlay intentionally disabled — use the close button)
     cancelBtn.addEventListener("click", close);
 
     // ── Mask canvas helpers ──
@@ -3372,9 +3860,9 @@ function createWidget(node) {
     function _syncFrame() {
       const r = ca.getBoundingClientRect();
       const rw = Math.round(r.width), rh = Math.round(r.height);
-      // Sync all 4 canvases to container size
-      for (const c of [cvsBase, cvsEdits, cvsMask, cvsTool]) {
-        if (c.width !== rw || c.height !== rh) { c.width = rw; c.height = rh; _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; }
+      // Sync all 3 canvases to container size
+      for (const c of [cvsBase, cvsMask, cvsTool]) {
+        if (c.width !== rw || c.height !== rh) { c.width = rw; c.height = rh; _dirtyBase = true; _dirtyMask = true; }
       }
       const cw = rw, ch = rh, pad = 40;
       const asp = mNatW / mNatH;
@@ -3664,89 +4152,92 @@ function createWidget(node) {
     }
 
 
-    // ── Pixel Tool Engines ────────────────────────────────────────────────────
-    // All pixel tools operate on _cvsEditsPx, a downscaled offscreen canvas
-    // (max 2048px) that gets composited into the display via drawEdits().
+    // ── Mask Raster Tool Engines ────────────────────────────────────────────────
+    // Blur/Smudge operate on a rasterized copy of the mask bitmap.
+    // When the stroke completes, the raster replaces all vector mask ops.
 
-    function _ensureEditsPx() {
-      if (_cvsEditsPx) return;
-      const wpX = Math.min(mNatW, 2048);
-      const wpY = Math.round(mNatH * (wpX / mNatW));
-      _cvsEditsPx = document.createElement("canvas");
-      _cvsEditsPx.width = wpX; _cvsEditsPx.height = wpY;
-      if (mImg) {
-        const ctx = _cvsEditsPx.getContext("2d");
-        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(mImg, 0, 0, wpX, wpY);
-      }
+    function _ensureMaskRaster() {
+      if (_maskRaster) return;
+      const sz = Math.min(Math.max(mNatW, mNatH), 2048);
+      const w = Math.round(mNatW * (sz / Math.max(mNatW, mNatH)));
+      const h = Math.round(mNatH * (sz / Math.max(mNatW, mNatH)));
+      _maskRaster = _buildMaskCanvas(w, h);
     }
 
-    function _saveEditsUndo() {
-      if (!_cvsEditsPx) return;
-      _editsUndoStack.push(_cvsEditsPx.toDataURL("image/webp", 0.92));
-      if (_editsUndoStack.length > 10) _editsUndoStack.shift();
+    function _saveMaskRasterUndo() {
+      if (!_maskRaster) return;
+      _maskRasterUndo = _maskRaster.toDataURL("image/png");
     }
 
-    function _undoEdits() {
-      if (_editsUndoStack.length === 0) return;
-      const src = _editsUndoStack.pop();
+    function _undoMaskRaster() {
+      if (!_maskRasterUndo || !_maskRaster) return;
       const img = new Image();
       img.onload = () => {
-        const ctx = _cvsEditsPx.getContext("2d");
-        ctx.clearRect(0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
+        const ctx = _maskRaster.getContext("2d");
+        ctx.clearRect(0, 0, _maskRaster.width, _maskRaster.height);
         ctx.drawImage(img, 0, 0);
-        _dirtyEdits = true; mRedraw();
+        _commitMaskRaster();
+        _dirtyMask = true; mRedraw();
       };
-      img.src = src;
+      img.src = _maskRasterUndo;
+      _maskRasterUndo = null;
     }
 
-    // ── Blur: separable box blur O(N·R) with soft circular falloff ─────────
-    function _applyBlur(cx, cy, r) {
-      if (!_cvsEditsPx) return;
-      const w = _cvsEditsPx.width, h = _cvsEditsPx.height;
-      const ctx = _cvsEditsPx.getContext("2d", { willReadFrequently: true });
+    /** Collapse mask raster back into mMaskOps as a single raster op */
+    function _commitMaskRaster() {
+      if (!_maskRaster) return;
+      const dataUrl = _maskRaster.toDataURL("image/png");
+      // Replace all ops with a single raster-based fill op
+      const cvs = document.createElement("canvas");
+      cvs.width = _maskRaster.width; cvs.height = _maskRaster.height;
+      cvs.getContext("2d").drawImage(_maskRaster, 0, 0);
+      mMaskOps = [{ type: "fill", mode: "add", _canvas: cvs }];
+      mMaskInverted = false; // raster already includes inversion
+      mUndoStack = [];
+    }
+
+    // ── Blur on mask: separable box blur O(N·R) with soft circular falloff ──
+    function _applyMaskBlur(cx, cy, r) {
+      if (!_maskRaster) return;
+      const w = _maskRaster.width, h = _maskRaster.height;
+      const ctx = _maskRaster.getContext("2d", { willReadFrequently: true });
       const bx = Math.max(0, Math.floor(cx - r)), by = Math.max(0, Math.floor(cy - r));
       const bw = Math.min(w - bx, Math.ceil(r * 2)), bh = Math.min(h - by, Math.ceil(r * 2));
       if (bw <= 0 || bh <= 0) return;
-      // Read original region for blending
       const origData = ctx.getImageData(bx, by, bw, bh);
       const origD = new Uint8ClampedArray(origData.data);
       const imgData = ctx.getImageData(bx, by, bw, bh);
       const d = imgData.data;
       const tmp = new Uint8ClampedArray(d.length);
       const rad = Math.max(1, Math.floor(r * 0.25));
-      // Horizontal pass
+      // Horizontal pass (grayscale — only R channel matters in mask)
       for (let row = 0; row < bh; row++) {
-        let rs = 0, gs = 0, bs = 0, cnt = 0;
+        let rs = 0, cnt = 0;
         for (let i = -rad; i <= rad; i++) {
           const xi = Math.max(0, Math.min(bw - 1, i));
-          const pi = (row * bw + xi) * 4;
-          rs += d[pi]; gs += d[pi+1]; bs += d[pi+2]; cnt++;
+          rs += d[(row * bw + xi) * 4]; cnt++;
         }
         for (let col = 0; col < bw; col++) {
           const po = (row * bw + col) * 4;
-          tmp[po] = rs / cnt; tmp[po+1] = gs / cnt; tmp[po+2] = bs / cnt; tmp[po+3] = 255;
-          const removeIdx = Math.max(0, col - rad);
-          const addIdx = Math.min(bw - 1, col + rad + 1);
-          const pr = (row * bw + removeIdx) * 4, pa = (row * bw + addIdx) * 4;
-          rs += d[pa] - d[pr]; gs += d[pa+1] - d[pr+1]; bs += d[pa+2] - d[pr+2];
+          const v = rs / cnt;
+          tmp[po] = v; tmp[po+1] = v; tmp[po+2] = v; tmp[po+3] = 255;
+          const ri2 = Math.max(0, col - rad), ai2 = Math.min(bw - 1, col + rad + 1);
+          rs += d[(row * bw + ai2) * 4] - d[(row * bw + ri2) * 4];
         }
       }
       // Vertical pass
       for (let col = 0; col < bw; col++) {
-        let rs = 0, gs = 0, bs = 0, cnt = 0;
+        let rs = 0, cnt = 0;
         for (let i = -rad; i <= rad; i++) {
           const yi = Math.max(0, Math.min(bh - 1, i));
-          const pi = (yi * bw + col) * 4;
-          rs += tmp[pi]; gs += tmp[pi+1]; bs += tmp[pi+2]; cnt++;
+          rs += tmp[(yi * bw + col) * 4]; cnt++;
         }
         for (let row = 0; row < bh; row++) {
           const po = (row * bw + col) * 4;
-          d[po] = rs / cnt; d[po+1] = gs / cnt; d[po+2] = bs / cnt; d[po+3] = 255;
-          const removeIdx = Math.max(0, row - rad);
-          const addIdx = Math.min(bh - 1, row + rad + 1);
-          const pr = (removeIdx * bw + col) * 4, pa = (addIdx * bw + col) * 4;
-          rs += tmp[pa] - tmp[pr]; gs += tmp[pa+1] - tmp[pr+1]; bs += tmp[pa+2] - tmp[pr+2];
+          const v = rs / cnt;
+          d[po] = v; d[po+1] = v; d[po+2] = v; d[po+3] = 255;
+          const ri2 = Math.max(0, row - rad), ai2 = Math.min(bh - 1, row + rad + 1);
+          rs += tmp[(ai2 * bw + col) * 4] - tmp[(ri2 * bw + col) * 4];
         }
       }
       // Soft circular blend with original
@@ -3755,35 +4246,31 @@ function createWidget(node) {
           const dist = Math.hypot(col - (cx - bx), row - (cy - by));
           const f = dist <= r ? Math.pow(1 - dist / r, 1.2) : 0;
           const i = (row * bw + col) * 4;
-          d[i]   = origD[i]   * (1 - f) + d[i]   * f;
-          d[i+1] = origD[i+1] * (1 - f) + d[i+1] * f;
-          d[i+2] = origD[i+2] * (1 - f) + d[i+2] * f;
+          const v = origD[i] * (1 - f) + d[i] * f;
+          d[i] = v; d[i+1] = v; d[i+2] = v;
         }
       }
       ctx.putImageData(imgData, bx, by);
-      _dirtyEdits = true;
+      _dirtyMask = true;
     }
 
-    // ── Smudge: ping-pong buffer pixel drag ────────────────────────────────
+    // ── Smudge on mask: ping-pong buffer pixel drag ─────────────────────────
     let _smudgeBuf = null;
-    function _applySmudge(lastPos, currPos, r) {
-      if (!_cvsEditsPx || !lastPos) return;
-      const ctx = _cvsEditsPx.getContext("2d");
-      const w = _cvsEditsPx.width, h = _cvsEditsPx.height;
-      // Lazy-init buffer
+    function _applyMaskSmudge(lastPos, currPos, r) {
+      if (!_maskRaster || !lastPos) return;
+      const ctx = _maskRaster.getContext("2d");
+      const w = _maskRaster.width, h = _maskRaster.height;
       if (!_smudgeBuf || _smudgeBuf.width !== w || _smudgeBuf.height !== h) {
         _smudgeBuf = document.createElement("canvas");
         _smudgeBuf.width = w; _smudgeBuf.height = h;
       }
       const bCtx = _smudgeBuf.getContext("2d");
       bCtx.clearRect(0, 0, w, h);
-      // Copy source, shifted by delta, clipped to circle at currPos
       bCtx.save();
       bCtx.beginPath(); bCtx.arc(currPos.x, currPos.y, r, 0, Math.PI * 2); bCtx.clip();
       const dx = currPos.x - lastPos.x, dy = currPos.y - lastPos.y;
-      bCtx.drawImage(_cvsEditsPx, dx, dy);
+      bCtx.drawImage(_maskRaster, dx, dy);
       bCtx.restore();
-      // Blend into main canvas with radial gradient mask
       const stampSize = Math.ceil(r) * 2;
       const stampCvs = document.createElement("canvas");
       stampCvs.width = stampSize; stampCvs.height = stampSize;
@@ -3797,40 +4284,7 @@ function createWidget(node) {
       grad.addColorStop(1, "rgba(0,0,0,0)");
       sCtx.fillStyle = grad; sCtx.fillRect(0, 0, stampSize, stampSize);
       ctx.drawImage(stampCvs, sx, sy);
-      _dirtyEdits = true;
-    }
-
-    // ── CA Fill: send image+mask to backend, replace _cvsEditsPx ───────────
-    async function _runCAFill() {
-      if (_cafillLoading || mMaskOps.length === 0) return;
-      _cafillLoading = true; btnCA.textContent = "⏳ Working…";
-      try {
-        _ensureEditsPx(); _saveEditsUndo();
-        const maskCvs = _buildMaskCanvas(_cvsEditsPx.width, _cvsEditsPx.height);
-        const payload = {
-          image: _cvsEditsPx.toDataURL("image/png"),
-          mask: maskCvs.toDataURL("image/png")
-        };
-        const res = await fetch("/multi_image_loader/inpaint", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error("Inpaint request failed: " + res.status);
-        const j = await res.json();
-        if (j.error) throw new Error(j.error);
-        const img = new Image();
-        await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; img.src = j.image; });
-        const ctx = _cvsEditsPx.getContext("2d");
-        ctx.clearRect(0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
-        ctx.drawImage(img, 0, 0, _cvsEditsPx.width, _cvsEditsPx.height);
-        _dirtyEdits = true; mRedraw();
-      } catch (e) {
-        console.error("[MIL] CA Fill error:", e);
-        alert("Content-Aware Fill failed: " + e.message);
-      } finally {
-        _cafillLoading = false; btnCA.textContent = "✨ CA Fill";
-      }
+      _dirtyMask = true;
     }
 
 
@@ -3852,18 +4306,7 @@ function createWidget(node) {
       ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 1.5; ctx.setLineDash([]);
       ctx.strokeRect(fx + 0.75, fy + 0.75, mFrameW - 1.5, mFrameH - 1.5);
     }
-    // Layer 1 (cvsEdits): pixel edits overlay
-    function drawEdits() {
-      const ctx = cvsEdits.getContext("2d");
-      ctx.clearRect(0, 0, cvsEdits.width, cvsEdits.height);
-      if (!_cvsEditsPx) return;
-      const fx = mFrameCX - mFrameW / 2, fy = mFrameCY - mFrameH / 2;
-      ctx.save();
-      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(_cvsEditsPx, fx, fy, mFrameW, mFrameH);
-      ctx.restore();
-    }
-    // Layer 2 (cvsMask): committed mask overlay
+    // Layer 1 (cvsMask): committed mask overlay
     function drawMask() {
       const ctx = cvsMask.getContext("2d");
       ctx.clearRect(0, 0, cvsMask.width, cvsMask.height);
@@ -3919,7 +4362,7 @@ function createWidget(node) {
         }
       }
     }
-    // Layer 3 (cvsTool): active stroke + brush cursor + lasso preview
+    // Layer 2 (cvsTool): active stroke + brush cursor + lasso preview
     function drawTool() {
       const ctx = cvsTool.getContext("2d");
       ctx.clearRect(0, 0, cvsTool.width, cvsTool.height);
@@ -3979,7 +4422,6 @@ function createWidget(node) {
       mRafId = requestAnimationFrame(() => {
         _syncFrame();
         if (_dirtyBase) { drawBase(); _dirtyBase = false; }
-        if (_dirtyEdits) { drawEdits(); _dirtyEdits = false; }
         if (_dirtyMask) { drawMask(); _dirtyMask = false; }
         drawTool(); // always redraw — cheapest layer
       });
@@ -4026,8 +4468,8 @@ function createWidget(node) {
       });
       // Show/hide smudge strength slider
       smudgeRow.style.display = t === "smudge" ? "flex" : "none";
-      // Init pixel canvas for pixel tools
-      if (t === "blur" || t === "smudge") _ensureEditsPx();
+      // Init mask raster for mask refinement tools
+      if (t === "blur" || t === "smudge") _ensureMaskRaster();
       mLassoCurrentPts = [];
       updateCursor();
       mRedraw();
@@ -4050,16 +4492,17 @@ function createWidget(node) {
       }
       if ((mTool === "blur" || mTool === "smudge") && mBrushDrawing) {
         const fx = mFrameCX - mFrameW / 2, fy = mFrameCY - mFrameH / 2;
-        const pxScale = _cvsEditsPx ? _cvsEditsPx.width / mFrameW : 1;
+        const pxScale = _maskRaster ? _maskRaster.width / mFrameW : 1;
         const epx = (cx - fx) * pxScale, epy = (cy - fy) * pxScale;
         const rPx = parseFloat(brushSlider.value) * pxScale;
         if (mTool === "blur") {
-          _applyBlur(epx, epy, rPx);
+          _applyMaskBlur(epx, epy, rPx);
         } else {
           const prevPt = mBrushPts.length > 0 ? mBrushPts[mBrushPts.length - 1] : null;
-          if (prevPt) _applySmudge(prevPt, { x: epx, y: epy }, rPx);
+          if (prevPt) _applyMaskSmudge(prevPt, { x: epx, y: epy }, rPx);
         }
         mBrushPts.push({ x: epx, y: epy });
+        _commitMaskRaster();
         mRedraw(); return;
       }
       if (mTool === "lasso" && mLassoDrawing) {
@@ -4111,10 +4554,10 @@ function createWidget(node) {
         mRedraw(); return;
       }
       if (mTool === "blur" || mTool === "smudge") {
-        _ensureEditsPx(); _saveEditsUndo();
+        _ensureMaskRaster(); _saveMaskRasterUndo();
         mBrushDrawing = true;
         const fx2 = mFrameCX - mFrameW / 2, fy2 = mFrameCY - mFrameH / 2;
-        const pxScale = _cvsEditsPx.width / mFrameW;
+        const pxScale = _maskRaster.width / mFrameW;
         mBrushPts = [{ x: (cx - fx2) * pxScale, y: (cy - fy2) * pxScale }];
         return;
       }
@@ -4182,7 +4625,7 @@ function createWidget(node) {
         // Middle-click with no drag → reset zoom
         if (wasMid && !mPanMoved) {
           mZoom = 1; mPanX = 0; mPanY = 0;
-          _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; mRedraw();
+          _dirtyBase = true; _dirtyMask = true; mRedraw();
         }
         mIsPanning = false; mPanIsLMB = false; mPanMoved = false;
         updateCursor();
@@ -4206,7 +4649,8 @@ function createWidget(node) {
       }
       if ((mTool === "blur" || mTool === "smudge") && mBrushDrawing) {
         mBrushDrawing = false; mBrushPts = [];
-        _dirtyEdits = true; mRedraw(); return;
+        _commitMaskRaster();
+        _dirtyMask = true; mRedraw(); return;
       }
       if (e.button !== 0) return; // lasso/polygon only respond to LMB release
       if (mTool === "lasso" && mLassoDrawing) {
@@ -4244,7 +4688,7 @@ function createWidget(node) {
       if (e.ctrlKey || e.metaKey) {
         if (k === "z" && !e.shiftKey) {
           e.preventDefault(); e.stopPropagation();
-          if ((mTool === "blur" || mTool === "smudge") && _editsUndoStack.length > 0) { _undoEdits(); }
+          if ((mTool === "blur" || mTool === "smudge") && _maskRasterUndo) { _undoMaskRaster(); }
           else { _undo(); }
           return;
         }
@@ -4328,13 +4772,7 @@ function createWidget(node) {
       // Clean up undefined keys
       if (!cropMap[fn].maskOps) { delete cropMap[fn].maskOps; delete cropMap[fn].maskXform; }
       if (!cropMap[fn].maskInverted) delete cropMap[fn].maskInverted;
-      // ── Pixel edits persistence ──
-      if (_cvsEditsPx && _editsUndoStack.length > 0) {
-        // Only save if edits were actually made (undo stack has entries)
-        cropMap[fn].imageEditsDataUrl = _cvsEditsPx.toDataURL("image/webp", 0.92);
-      } else {
-        delete cropMap[fn].imageEditsDataUrl;
-      }
+      // Pixel edits removed from mask editor — now only in Edit Image modal
       persistCropData();
       render();
       close();
@@ -4396,7 +4834,7 @@ function createWidget(node) {
       curIdx = idx; updateNav();
       mImg = null; mLassoCurrentPts = []; mBrushPts = [];
       mZoom = 1; mPanX = 0; mPanY = 0; // reset zoom/pan on image change
-      _cvsEditsPx = null; _editsUndoStack = []; _smudgeBuf = null; // reset pixel edits
+      _maskRaster = null; _maskRasterUndo = null; _smudgeBuf = null; // reset mask raster
       const fn = items[idx]?.filename;
       const saved = fn ? (cropMap[fn] || {}) : {};
       // Deserialize fill ops: convert dataUrl back to _canvas DOM elements
@@ -4447,20 +4885,7 @@ function createWidget(node) {
           mImg = img; mNatW = img.naturalWidth || 1; mNatH = img.naturalHeight || 1;
         }
       }
-      // ── Deserialize pixel edits ──
-      if (saved.imageEditsDataUrl) {
-        try {
-          const editImg = new Image();
-          await new Promise((ok, fail) => { editImg.onload = ok; editImg.onerror = fail; editImg.src = saved.imageEditsDataUrl; });
-          _cvsEditsPx = document.createElement("canvas");
-          _cvsEditsPx.width = editImg.naturalWidth; _cvsEditsPx.height = editImg.naturalHeight;
-          _cvsEditsPx.getContext("2d").drawImage(editImg, 0, 0);
-        } catch (e) {
-          console.warn("[MIL] Failed to restore pixel edits:", e);
-          _cvsEditsPx = null;
-        }
-      }
-      _dirtyBase = true; _dirtyEdits = true; _dirtyMask = true; mRedraw();
+      _dirtyBase = true; _dirtyMask = true; mRedraw();
     }
 
     loadIdx(startIdx);
