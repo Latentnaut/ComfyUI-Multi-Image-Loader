@@ -3259,8 +3259,46 @@ function createWidget(node) {
     pnlBody.appendChild(mkSec("SELECTION MODE"));
     const modeHint = document.createElement("div");
     modeHint.style.cssText = `color:#555;font-size:${_r(9.5)}px;line-height:1.5;`;
-    modeHint.innerHTML = `<span style="color:#7fb0ff">Default</span> — add black<br><span style="color:#7fb0ff">Shift</span> — add to selection<br><span style="color:#ff8080">Alt</span> — remove from selection`;
+    modeHint.innerHTML = `<span style="color:#7fb0ff">Default</span> — add<br><span style="color:#ff8080">Alt</span> — subtract`;
     pnlBody.appendChild(modeHint);
+
+    // ── Display section ──
+    pnlBody.appendChild(mkSec("DISPLAY"));
+
+    // Mask color picker
+    const colorRow = document.createElement("div");
+    colorRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
+    const colorLbl = document.createElement("span");
+    colorLbl.style.cssText = `color:#888;font-size:${_fs11};`;
+    colorLbl.textContent = "Mask Color";
+    const colorPick = document.createElement("input");
+    colorPick.type = "color"; colorPick.value = "#1e5adc";
+    colorPick.style.cssText = `width:${_r(28)}px;height:${_r(22)}px;border:none;background:none;cursor:pointer;padding:0;`;
+    colorRow.appendChild(colorLbl); colorRow.appendChild(colorPick);
+    let mMaskColor = "#1e5adc";
+    colorPick.addEventListener("input", () => { mMaskColor = colorPick.value; mRedraw(); });
+    pnlBody.appendChild(colorRow);
+
+    // Mask transparency slider
+    const alphaRow = document.createElement("div");
+    alphaRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
+    const alphaLbl = document.createElement("span");
+    alphaLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
+    alphaLbl.textContent = "Opacity";
+    const alphaSlider = document.createElement("input");
+    alphaSlider.type = "range"; alphaSlider.min = "10"; alphaSlider.max = "95"; alphaSlider.value = "55";
+    alphaSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const alphaValEl = document.createElement("span");
+    alphaValEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
+    alphaValEl.textContent = "55%";
+    let mMaskAlpha = 0.55;
+    alphaSlider.addEventListener("input", () => {
+      mMaskAlpha = parseInt(alphaSlider.value) / 100;
+      alphaValEl.textContent = alphaSlider.value + "%";
+      mRedraw();
+    });
+    alphaRow.appendChild(alphaLbl); alphaRow.appendChild(alphaSlider); alphaRow.appendChild(alphaValEl);
+    pnlBody.appendChild(alphaRow);
 
     // ── Mask ops ──
     pnlBody.appendChild(mkSec("MASK"));
@@ -3307,11 +3345,16 @@ function createWidget(node) {
     let mNatW = 1, mNatH = 1;
     let mRafId = null;
     let mBrushPos = null; // {cx, cy} canvas px for brush preview
+    // Zoom & pan state
+    let mZoom = 1, mPanX = 0, mPanY = 0;
+    let mIsPanning = false, mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
 
     function close() {
       if (mAntsTimer) clearInterval(mAntsTimer);
       cancelAnimationFrame(mRafId);
       window.removeEventListener("mouseup",  _onMouseUp);
+      window.removeEventListener("mousemove", _onPanMove);
+      window.removeEventListener("mouseup",   _onPanUp);
       window.removeEventListener("keydown",  _keyHandler);
       if (ov.parentNode) ov.parentNode.removeChild(ov);
     }
@@ -3319,6 +3362,7 @@ function createWidget(node) {
     cancelBtn.addEventListener("click", close);
 
     // ── Mask canvas helpers ──
+    let mBaseFrameW = 300, mBaseFrameH = 300; // before zoom
     function _syncFrame() {
       const r = ca.getBoundingClientRect();
       if (cvs.width !== Math.round(r.width) || cvs.height !== Math.round(r.height)) {
@@ -3327,9 +3371,13 @@ function createWidget(node) {
       const cw = cvs.width, ch = cvs.height, pad = 40;
       const asp = mNatW / mNatH;
       const maxW = cw - pad * 2, maxH = ch - pad * 2;
-      if (asp >= maxW / maxH) { mFrameW = maxW; mFrameH = Math.round(maxW / asp); }
-      else                    { mFrameH = maxH; mFrameW = Math.round(maxH * asp); }
-      mFrameCX = cw / 2; mFrameCY = ch / 2;
+      if (asp >= maxW / maxH) { mBaseFrameW = maxW; mBaseFrameH = Math.round(maxW / asp); }
+      else                    { mBaseFrameH = maxH; mBaseFrameW = Math.round(maxH * asp); }
+      // Apply zoom + pan
+      mFrameW = Math.round(mBaseFrameW * mZoom);
+      mFrameH = Math.round(mBaseFrameH * mZoom);
+      mFrameCX = cw / 2 + mPanX;
+      mFrameCY = ch / 2 + mPanY;
     }
 
     // Convert canvas px → normalized (0..1) image coords
@@ -3403,17 +3451,22 @@ function createWidget(node) {
           ctx.drawImage(mImg, fx, fy, mFrameW, mFrameH);
         }
 
-        // ── Draw committed mask as blue overlay ──────────────────────────
+        // ── Draw committed mask as colored overlay ────────────────────────
         // Uses an off-screen canvas so add/sub ops compose correctly,
-        // then draws result at 55% opacity — works for ALL tool types.
+        // then draws result at user-chosen opacity — works for ALL tool types.
         if (mMaskOps.length > 0 || mMaskInverted) {
           const mc = document.createElement("canvas");
           mc.width = mFrameW; mc.height = mFrameH;
           const mx = mc.getContext("2d");
+          // Parse mask color hex to rgba for fill
+          const _cr = parseInt(mMaskColor.slice(1,3),16);
+          const _cg = parseInt(mMaskColor.slice(3,5),16);
+          const _cb = parseInt(mMaskColor.slice(5,7),16);
+          const _mFill = `rgba(${_cr},${_cg},${_cb},1)`;
           for (const op of mMaskOps) {
             if (!op.pts || op.pts.length < 1) continue;
             mx.globalCompositeOperation = op.mode === "sub" ? "destination-out" : "source-over";
-            mx.fillStyle = "rgba(30,90,220,1)";
+            mx.fillStyle = _mFill;
             if (op.type === "brush") {
               const r = Math.max(1, (op.r || 0.005) * mFrameW);
               for (const p of op.pts) {
@@ -3432,15 +3485,15 @@ function createWidget(node) {
             const ic = document.createElement("canvas");
             ic.width = mFrameW; ic.height = mFrameH;
             const ix = ic.getContext("2d");
-            ix.fillStyle = "rgba(30,90,220,1)";
+            ix.fillStyle = _mFill;
             ix.fillRect(0, 0, mFrameW, mFrameH);
             ix.globalCompositeOperation = "destination-out";
             ix.drawImage(mc, 0, 0);
-            ctx.save(); ctx.globalAlpha = 0.55;
+            ctx.save(); ctx.globalAlpha = mMaskAlpha;
             ctx.drawImage(ic, fx, fy);
             ctx.restore();
           } else {
-            ctx.save(); ctx.globalAlpha = 0.55;
+            ctx.save(); ctx.globalAlpha = mMaskAlpha;
             ctx.drawImage(mc, fx, fy);
             ctx.restore();
           }
@@ -3448,8 +3501,9 @@ function createWidget(node) {
 
         // Real-time brush stroke preview (while mouse held down)
         if (mTool === "brush" && mBrushDrawing && mBrushPts.length > 0) {
+          const _cr2 = parseInt(mMaskColor.slice(1,3),16), _cg2 = parseInt(mMaskColor.slice(3,5),16), _cb2 = parseInt(mMaskColor.slice(5,7),16);
           const r = Math.max(1, parseFloat(brushSlider.value) * (mFrameW / (mNatW || 1)));
-          ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = "rgba(30,90,220,1)";
+          ctx.save(); ctx.globalAlpha = mMaskAlpha * 0.82; ctx.fillStyle = `rgba(${_cr2},${_cg2},${_cb2},1)`;
           for (const p of mBrushPts) {
             ctx.beginPath(); ctx.arc(fx + p.x * mFrameW, fy + p.y * mFrameH, r, 0, Math.PI * 2); ctx.fill();
           }
@@ -3466,6 +3520,7 @@ function createWidget(node) {
 
         // In-progress lasso/polygon: filled preview + marching ants outline
         if (mLassoCurrentPts.length > 1) {
+          const _cr3 = parseInt(mMaskColor.slice(1,3),16), _cg3 = parseInt(mMaskColor.slice(3,5),16), _cb3 = parseInt(mMaskColor.slice(5,7),16);
           const p0 = _normToPx(mLassoCurrentPts[0].x, mLassoCurrentPts[0].y);
           ctx.save();
           ctx.beginPath();
@@ -3475,7 +3530,7 @@ function createWidget(node) {
             ctx.lineTo(p.cx, p.cy);
           }
           ctx.closePath();
-          ctx.fillStyle = "rgba(30,90,220,0.35)"; ctx.fill();
+          ctx.fillStyle = `rgba(${_cr3},${_cg3},${_cb3},0.35)`; ctx.fill();
           ctx.strokeStyle = "rgba(64,200,255,0.9)"; ctx.lineWidth = 1.5;
           ctx.setLineDash([5, 3]); ctx.lineDashOffset = -mAntsOff;
           ctx.stroke();
@@ -3513,6 +3568,7 @@ function createWidget(node) {
 
     // ── Mouse events ──
     ca.addEventListener("mousemove", (e) => {
+      if (mIsPanning) return; // panning handled separately
       const r = ca.getBoundingClientRect();
       const cx = e.clientX - r.left, cy = e.clientY - r.top;
       const { nx, ny } = _pxToNorm(cx, cy);
@@ -3536,6 +3592,14 @@ function createWidget(node) {
     ca.addEventListener("mouseleave", () => { mBrushPos = null; mRedraw(); });
 
     ca.addEventListener("mousedown", (e) => {
+      // Middle-click (button 1) or right-click (button 2) → panning
+      if (e.button === 1 || e.button === 2) {
+        e.preventDefault();
+        mIsPanning = true; mPanStartX = e.clientX; mPanStartY = e.clientY;
+        mPanOrigX = mPanX; mPanOrigY = mPanY;
+        ca.style.cursor = "grabbing";
+        return;
+      }
       if (e.button !== 0) return;
       const r = ca.getBoundingClientRect();
       const cx = e.clientX - r.left, cy = e.clientY - r.top;
@@ -3545,7 +3609,6 @@ function createWidget(node) {
 
       if (mTool === "brush") {
         mBrushDrawing = true; mBrushPts = [{ x: cnx, y: cny }];
-        // Real-time preview: temporarily add
         mRedraw(); return;
       }
       if (mTool === "lasso") {
@@ -3563,14 +3626,54 @@ function createWidget(node) {
       }
     });
 
-    // Double-click to close polygon in mask editor
+    // Prevent right-click context menu on canvas
+    ca.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // Double-click: close polygon OR reset zoom
     ca.addEventListener("dblclick", (e) => {
       if (mTool === "polygon" && mLassoCurrentPts.length >= 3) {
         e.preventDefault();
         const mode = getModeFromEvent(e);
         commitShape(mLassoCurrentPts, mode, "polygon");
+      } else {
+        // Reset zoom & pan
+        mZoom = 1; mPanX = 0; mPanY = 0;
+        mRedraw();
       }
     });
+
+    // ── Mouse wheel zoom ──
+    ca.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const r = ca.getBoundingClientRect();
+      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      const oldZ = mZoom;
+      const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
+      // Zoom centered on cursor position
+      const cw2 = cvs.width / 2, ch2 = cvs.height / 2;
+      const ratio = mZoom / oldZ;
+      mPanX = (cx - cw2) - ratio * ((cx - cw2) - mPanX);
+      mPanY = (cy - ch2) - ratio * ((cy - ch2) - mPanY);
+      mRedraw();
+    }, { passive: false });
+
+    // ── Pan move/up handlers (window-level so drag continues outside canvas) ──
+    function _onPanMove(e) {
+      if (!mIsPanning) return;
+      mPanX = mPanOrigX + (e.clientX - mPanStartX);
+      mPanY = mPanOrigY + (e.clientY - mPanStartY);
+      mRedraw();
+    }
+    function _onPanUp(e) {
+      if (!mIsPanning) return;
+      if (e.button === 1 || e.button === 2) {
+        mIsPanning = false;
+        updateCursor();
+      }
+    }
+    window.addEventListener("mousemove", _onPanMove);
+    window.addEventListener("mouseup", _onPanUp);
 
     // ── Mouse events ──
     function _onMouseUp(e) {
@@ -3675,6 +3778,7 @@ function createWidget(node) {
     async function loadIdx(idx) {
       curIdx = idx; updateNav();
       mImg = null; mLassoCurrentPts = []; mBrushPts = [];
+      mZoom = 1; mPanX = 0; mPanY = 0; // reset zoom/pan on image change
       const fn = items[idx]?.filename;
       const saved = fn ? (cropMap[fn] || {}) : {};
       mMaskOps = saved.maskOps ? [...saved.maskOps] : [];
