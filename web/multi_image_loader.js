@@ -3272,11 +3272,12 @@ function createWidget(node) {
     colorLbl.style.cssText = `color:#888;font-size:${_fs11};`;
     colorLbl.textContent = "Mask Color";
     const colorPick = document.createElement("input");
-    colorPick.type = "color"; colorPick.value = "#1e5adc";
+    const _savedColor = localStorage.getItem("mil_mask_color") || "#1e5adc";
+    colorPick.type = "color"; colorPick.value = _savedColor;
     colorPick.style.cssText = `width:${_r(28)}px;height:${_r(22)}px;border:none;background:none;cursor:pointer;padding:0;`;
     colorRow.appendChild(colorLbl); colorRow.appendChild(colorPick);
-    let mMaskColor = "#1e5adc";
-    colorPick.addEventListener("input", () => { mMaskColor = colorPick.value; mRedraw(); });
+    let mMaskColor = _savedColor;
+    colorPick.addEventListener("input", () => { mMaskColor = colorPick.value; localStorage.setItem("mil_mask_color", mMaskColor); mRedraw(); });
     pnlBody.appendChild(colorRow);
 
     // Mask transparency slider
@@ -3286,15 +3287,17 @@ function createWidget(node) {
     alphaLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
     alphaLbl.textContent = "Opacity";
     const alphaSlider = document.createElement("input");
-    alphaSlider.type = "range"; alphaSlider.min = "10"; alphaSlider.max = "95"; alphaSlider.value = "55";
+    const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "55");
+    alphaSlider.type = "range"; alphaSlider.min = "10"; alphaSlider.max = "95"; alphaSlider.value = String(_savedAlpha);
     alphaSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
     const alphaValEl = document.createElement("span");
     alphaValEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
-    alphaValEl.textContent = "55%";
-    let mMaskAlpha = 0.55;
+    alphaValEl.textContent = _savedAlpha + "%";
+    let mMaskAlpha = _savedAlpha / 100;
     alphaSlider.addEventListener("input", () => {
       mMaskAlpha = parseInt(alphaSlider.value) / 100;
       alphaValEl.textContent = alphaSlider.value + "%";
+      localStorage.setItem("mil_mask_alpha", alphaSlider.value);
       mRedraw();
     });
     alphaRow.appendChild(alphaLbl); alphaRow.appendChild(alphaSlider); alphaRow.appendChild(alphaValEl);
