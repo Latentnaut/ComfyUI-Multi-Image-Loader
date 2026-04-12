@@ -3347,7 +3347,7 @@ function createWidget(node) {
     let mBrushPos = null; // {cx, cy} canvas px for brush preview
     // Zoom & pan state
     let mZoom = 1, mPanX = 0, mPanY = 0;
-    let mIsPanning = false, mPanIsLMB = false;
+    let mIsPanning = false, mPanIsLMB = false, mPanMoved = false;
     let mPanStartX = 0, mPanStartY = 0, mPanOrigX = 0, mPanOrigY = 0;
     let mSpaceDown = false;
 
@@ -3609,9 +3609,10 @@ function createWidget(node) {
       const isPanIntent = e.button === 1 || (e.button === 2 && mTool !== "brush")
                         || (e.button === 0 && e.ctrlKey)
                         || (e.button === 0 && mSpaceDown);
+      // Track movement for middle-click vs middle-drag distinction
       if (isPanIntent) {
         e.preventDefault();
-        mIsPanning = true;
+        mIsPanning = true; mPanMoved = false;
         mPanIsLMB = e.button === 0;
         mPanStartX = e.clientX; mPanStartY = e.clientY;
         mPanOrigX = mPanX; mPanOrigY = mPanY;
@@ -3647,16 +3648,12 @@ function createWidget(node) {
     // Prevent right-click context menu on canvas
     ca.addEventListener("contextmenu", (e) => e.preventDefault());
 
-    // Double-click: close polygon OR reset zoom
+    // Double-click: close polygon only
     ca.addEventListener("dblclick", (e) => {
       if (mTool === "polygon" && mLassoCurrentPts.length >= 3) {
         e.preventDefault();
         const mode = getModeFromEvent(e);
         commitShape(mLassoCurrentPts, mode, "polygon");
-      } else {
-        // Reset zoom & pan
-        mZoom = 1; mPanX = 0; mPanY = 0;
-        mRedraw();
       }
     });
 
@@ -3679,6 +3676,7 @@ function createWidget(node) {
     // ── Pan move/up handlers (window-level so drag continues outside canvas) ──
     function _onPanMove(e) {
       if (!mIsPanning) return;
+      if (Math.hypot(e.clientX - mPanStartX, e.clientY - mPanStartY) > 4) mPanMoved = true;
       mPanX = mPanOrigX + (e.clientX - mPanStartX);
       mPanY = mPanOrigY + (e.clientY - mPanStartY);
       mRedraw();
@@ -3686,9 +3684,15 @@ function createWidget(node) {
     function _onPanUp(e) {
       if (!mIsPanning) return;
       const wasLMB = mPanIsLMB && e.button === 0;
-      const wasMidRight = !mPanIsLMB && (e.button === 1 || e.button === 2);
-      if (wasLMB || wasMidRight) {
-        mIsPanning = false; mPanIsLMB = false;
+      const wasMid = !mPanIsLMB && e.button === 1;
+      const wasRight = !mPanIsLMB && e.button === 2;
+      if (wasLMB || wasMid || wasRight) {
+        // Middle-click with no drag → reset zoom
+        if (wasMid && !mPanMoved) {
+          mZoom = 1; mPanX = 0; mPanY = 0;
+          mRedraw();
+        }
+        mIsPanning = false; mPanIsLMB = false; mPanMoved = false;
         updateCursor();
       }
     }
