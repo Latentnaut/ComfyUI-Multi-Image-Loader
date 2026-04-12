@@ -648,8 +648,8 @@ class MultiImageLoader:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK",)
-    RETURN_NAMES = ("image_batch", "mask_batch",)
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE",)
+    RETURN_NAMES = ("image_batch", "mask_batch", "image_original",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
@@ -672,11 +672,13 @@ class MultiImageLoader:
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
         if not filenames:
-            return (placeholder_img, placeholder_mask)
+            return (placeholder_img, placeholder_mask, placeholder_img)
 
         input_dir = Path(folder_paths.get_input_directory())
         tensors      = []
         mask_tensors = []
+        orig_tensors = []   # native-resolution batch (no megapixel budget)
+        orig_ref_w = orig_ref_h = None  # reference for native-res batch
 
         # When aspect_ratio is set, pre-compute the fixed canvas size.
         # Otherwise the first loaded image defines the reference (legacy behaviour).
@@ -695,16 +697,27 @@ class MultiImageLoader:
             try:
                 img = Image.open(fpath)
                 img = ImageOps.exif_transpose(img)
-                source_size = img.size  # store before conversion for lasso mask
                 img = img.convert("RGB")
 
-                # Scale down to megapixel budget before anything else
+                # ── Original-resolution branch (no megapixel budget) ──
+                img_orig = img.copy()
+                if orig_ref_w is None:
+                    orig_ref_w, orig_ref_h = img_orig.size
+                t_orig = transforms.get(fname)
+                if t_orig:
+                    img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color))
+                elif img_orig.size != (orig_ref_w, orig_ref_h):
+                    img_orig = _fit_image(img_orig, orig_ref_w, orig_ref_h, fit_mode, bg_color=_parse_bg_color_word(bg_color))
+                orig_arr = np.array(img_orig).astype(np.float32) / 255.0
+                orig_tensors.append(torch.from_numpy(orig_arr).unsqueeze(0))
+
+                # ── Scaled branch (megapixel budget) ──
                 img = _scale_to_megapixels(img, megapixels)
-                source_size = img.size  # update after scale
+                source_size = img.size
 
                 if ref_w is None:
                     ref_w, ref_h = img.size
-                    print(f"[MultiImageLoader] ref size: {ref_w}×{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
+                    print(f"[MultiImageLoader] ref size: {ref_w}\u00d7{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
 
                 t = transforms.get(fname)
                 # Resolve node-level bg_color word to RGB tuple
@@ -736,11 +749,12 @@ class MultiImageLoader:
                 continue
 
         if not tensors:
-            return (placeholder_img, placeholder_mask)
+            return (placeholder_img, placeholder_mask, placeholder_img)
 
         batch      = torch.cat(tensors, dim=0)
         mask_batch = torch.cat(mask_tensors, dim=0)
-        return (batch, mask_batch)
+        orig_batch = torch.cat(orig_tensors, dim=0) if orig_tensors else placeholder_img
+        return (batch, mask_batch, orig_batch)
 
 
 # ─── Registrations ────────────────────────────────────────────────────────────
