@@ -41,6 +41,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
@@ -58,8 +59,8 @@ const THUMB_W            = 72;
 const THUMB_GAP          = 5;
 const MAX_GRID_ROWS      = 4;   // rows visible before scroll kicks in
 const COMPACT_DROPZONE_H = 32;  // collapsed height when images are loaded
-const THUMB_SIZES        = { small: 52, medium: 72, large: 100 }; // px widths (grid mode)
-const ROW_VIEW_HEIGHTS   = { small: 80, medium: 120, large: 160 }; // px heights (row mode)
+// Column count per thumb_size preset — images grow freely to fill the node width
+const THUMB_COLS         = { full: 1, large: 2, medium: 3, small: 4 };
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,43 @@ function injectStyles() {
       outline: 2px solid #ffe066;
       background: rgba(255,220,80,0.12);
     }
+    /* ── Swap mode: orange frame around target thumbnail ── */
+    .mil-thumb.mil-swap-target {
+      outline: 3px solid #ff9f3a;
+      box-shadow: inset 0 0 0 2px #ff9f3a, 0 0 10px 2px rgba(255,159,58,0.55);
+      background: rgba(255,140,20,0.14);
+    }
+    /* ── Insert mode: glowing blue line between thumbnails ── */
+    .mil-insert-before::before,
+    .mil-insert-after::after {
+      content: '';
+      position: absolute;
+      background: #3d9fff;
+      border-radius: 3px;
+      box-shadow: 0 0 10px 3px rgba(61,159,255,0.75), 0 0 3px 1px rgba(180,220,255,0.9);
+      pointer-events: none;
+      z-index: 10;
+    }
+    /* Vertical line for grid mode */
+    .mil-grid:not(.mil-row-mode) .mil-insert-before::before,
+    .mil-grid:not(.mil-row-mode) .mil-insert-after::after {
+      top: 0; bottom: 0;
+      width: 5px;
+      left: -5px;
+    }
+    .mil-grid:not(.mil-row-mode) .mil-insert-after::after {
+      left: auto; right: -5px;
+    }
+    /* Horizontal line for row mode */
+    .mil-grid.mil-row-mode .mil-insert-before::before,
+    .mil-grid.mil-row-mode .mil-insert-after::after {
+      left: 0; right: 0;
+      height: 5px;
+      top: -5px;
+    }
+    .mil-grid.mil-row-mode .mil-insert-after::after {
+      top: auto; bottom: -5px;
+    }
     .mil-first-badge {
       position: absolute;
       top: 2px;
@@ -169,30 +207,6 @@ function injectStyles() {
 
 // ─── height calculation ───────────────────────────────────────────────────────
 
-function computeIdealHeight(count, nodeWidth, thumbH, thumbW, rowView = false) {
-  const th       = thumbH || thumbW;
-  const innerW   = nodeWidth - 24;
-  const cols     = rowView ? 1 : Math.max(1, Math.floor((innerW + THUMB_GAP) / (thumbW + THUMB_GAP)));
-  const rows     = count > 0 ? Math.ceil(count / cols) : 0;
-  // Row mode: show 1 visible row minimum so the node stays compact/shrinkable.
-  // Grid mode: show up to MAX_GRID_ROWS before scrolling kicks in.
-  const visRows  = rows > 0 ? (rowView ? 1 : Math.min(rows, MAX_GRID_ROWS)) : 0;
-  const gridH    = visRows > 0 ? visRows * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
-  const dropH    = count > 0 ? COMPACT_DROPZONE_H : DROPZONE_H;
-  const statH    = count > 0 ? STATUS_H : 0;
-  const extraGap = rows > 0 ? GAP * 2 : GAP;
-
-  return (
-    NODE_HEADER_H   +
-    NODE_SLOT_H * 3 +
-    NODE_PADDING_V  +
-    dropH           +
-    extraGap        +
-    gridH           +
-    statH           +
-    8
-  );
-}
 
 // ─── widget factory ───────────────────────────────────────────────────────────
 
@@ -273,9 +287,9 @@ function createWidget(node) {
   const grid = document.createElement("div");
   grid.className = "mil-grid";
   grid.style.cssText = `
-    display: flex;
-    flex-wrap: wrap;
-    align-content: flex-start;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    align-content: start;
     gap: ${THUMB_GAP}px;
     overflow-y: auto;
     overflow-x: hidden;
@@ -342,7 +356,7 @@ function createWidget(node) {
   // Each item: { filename: string, src: string, previewSrc?: string }
   let items  = [];
   let thumbH = THUMB_W;  // updated from first image's aspect ratio
-  let viewMode = "grid"; // "grid" | "row"
+  // viewMode removed — layout is always grid; column count driven by thumb_size
 
   // Drag-reorder state
   let dragSrcIdx = null;
@@ -397,40 +411,34 @@ function createWidget(node) {
     });
   }
 
-  // ── view-mode toggle button ────────────────────────────────────────────────
-  const viewToggleBtn = document.createElement("button");
-  viewToggleBtn.title = "Toggle row / grid view";
-  viewToggleBtn.className = "mil-btn";
-  viewToggleBtn.style.cssText = `
+  // ── refresh button ─────────────────────────────────────────────────────────
+  const refreshBtn = document.createElement("button");
+  refreshBtn.textContent = "↻";
+  refreshBtn.title = "Refresh Images · Pull master_image as first thumbnail";
+  refreshBtn.className = "mil-btn";
+  refreshBtn.style.cssText = `
     background: #252525;
     color: #aaa;
     border: 1px solid #444;
     border-radius: 4px;
     padding: 3px 7px;
-    font-size: 11px;
+    font-size: 13px;
     cursor: pointer;
-    display: none;
+    display: inline-block;
     line-height: 1;
   `;
-  function syncViewToggleBtn() {
-    viewToggleBtn.textContent = viewMode === "row" ? "⊞" : "☰";
-    viewToggleBtn.title = viewMode === "row" ? "Switch to grid view" : "Switch to row view";
-    viewToggleBtn.style.color  = viewMode === "row" ? "#7ab0ff" : "#aaa";
-    viewToggleBtn.style.borderColor = viewMode === "row" ? "#5a7abf" : "#444";
-  }
-  viewToggleBtn.addEventListener("mouseenter", () => {
-    viewToggleBtn.style.background = "#333";
+  refreshBtn.addEventListener("mouseenter", () => {
+    refreshBtn.style.background = "#333";
+    refreshBtn.style.borderColor = "#666";
   });
-  viewToggleBtn.addEventListener("mouseleave", () => {
-    viewToggleBtn.style.background = "#252525";
+  refreshBtn.addEventListener("mouseleave", () => {
+    refreshBtn.style.background = "#252525";
+    refreshBtn.style.borderColor = "#444";
   });
-  viewToggleBtn.addEventListener("click", () => {
-    viewMode = viewMode === "grid" ? "row" : "grid";
-    syncViewToggleBtn();
-    render();
-  });
-  syncViewToggleBtn();
-  btnGroup.appendChild(viewToggleBtn);
+  refreshBtn.addEventListener("click", () => doRefreshImages());
+  btnGroup.appendChild(refreshBtn);
+
+  // (viewToggleBtn removed — thumb_size now controls column layout)
 
   // ── mask-view toggle button (◐) ──
   let maskViewMode = false; // when true: draw mask overlay on thumbnails
@@ -469,6 +477,219 @@ function createWidget(node) {
   syncMaskViewBtn();
   btnGroup.appendChild(maskViewBtn);
   btnGroup.appendChild(clearBtn);
+
+  // ── doRefreshImages ─────────────────────────────────────────────────────────
+  // Reads the first frame from the connected master_image source node.
+  // Injects a temporary PreviewImage node into the subgraph to force execution 
+  // and guarantee we capture the output image directly from the websocket.
+  async function doRefreshImages() {
+    if (!node.inputs) return;
+    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    if (!masterInput || masterInput.link == null) {
+      // No master connected — just re-render existing items
+      render();
+      await renderFitPreviews();
+      await renderCropPreviews();
+      return;
+    }
+    const linkInfo = app.graph.links[masterInput.link];
+    if (!linkInfo) return;
+    const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+    if (!srcNode) {
+      statusLabel.textContent = "Master source node not found";
+      statusLabel.style.color = "#ff9966";
+      return;
+    }
+
+    statusLabel.textContent = "Executing master subgraph…";
+    statusLabel.style.color = "#ffcc66";
+
+    let imgSrc = null;
+    try {
+      imgSrc = await _execSourceSubgraph(srcNode, linkInfo.origin_slot);
+    } catch (e) {
+      console.warn("[MIL Refresh] Subgraph execution failed:", e);
+    }
+
+    if (!imgSrc) {
+      statusLabel.textContent = "No image returned — check node outputs";
+      statusLabel.style.color = "#ff9966";
+      return;
+    }
+
+    statusLabel.textContent = "Pulling master image…";
+    statusLabel.style.color = "#ffcc66";
+
+    try {
+      // Fetch the preview image as a blob
+      const resp = await fetch(imgSrc);
+      if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
+      const blob = await resp.blob();
+
+      // Derive a filename from the URL query params, or generate one
+      let masterFilename = "master_image.png";
+      try {
+        const u = new URL(imgSrc, location.origin);
+        const fn = u.searchParams.get("filename");
+        if (fn) masterFilename = fn.replace(/^.*[\\/]/, "");
+      } catch {}
+      const file = new File([blob], masterFilename, { type: blob.type || "image/png" });
+
+      // Upload to ComfyUI input
+      const dataUrl = await fileToDataURL(file);
+      const [uploadedName] = await uploadFiles([file]);
+
+      // Insert at position 0 or replace existing position 0
+      if (items.length > 0) {
+        const oldFilename = items[0].filename;
+        if (oldFilename !== uploadedName) {
+          delete cropMap[oldFilename];
+        }
+        items[0] = { filename: uploadedName, src: dataUrl };
+      } else {
+        items.push({ filename: uploadedName, src: dataUrl });
+      }
+
+      await updateThumbHFromFirst();
+      statusLabel.style.color = "#8899bb";
+      statusLabel.textContent = "";
+      render();
+      persist();
+      await renderFitPreviews();
+      await renderCropPreviews();
+
+      // Brief cyan flash on position 0
+      requestAnimationFrame(() => {
+        const thumb = grid.querySelectorAll(".mil-thumb")[0];
+        if (thumb) {
+          thumb.classList.add("mil-paste-flash");
+          setTimeout(() => thumb.classList.remove("mil-paste-flash"), 3000);
+        }
+      });
+    } catch (err) {
+      console.error("[MIL Refresh] Error:", err);
+      statusLabel.textContent = `Refresh error: ${err.message}`;
+      statusLabel.style.color = "#ff6666";
+    }
+  }
+
+  // ── _execSourceSubgraph ─────────────────────────────────────────────────────
+  // Injects a temporary PreviewImage node to force the subgraph to execute
+  // and safely extracts its output via websocket.
+  // Returns a Promise<string|null> resolving to the image URL.
+  function _execSourceSubgraph(srcNode, srcSlot) {
+    return new Promise(async (resolve) => {
+      let resolved = false;
+      const targetId = String(srcNode.id);
+      const previewNodeId = "MIL_TEMP_PREV_" + Date.now();
+
+      function cleanup() {
+        api.removeEventListener("executed", onExecuted);
+        api.removeEventListener("status", onStatus);
+        api.removeEventListener("execution_error", onError);
+      }
+
+      let executionStarted = false;
+
+      const onExecuted = (event) => {
+        const eventNodeId = String(event.detail?.node ?? "");
+        executionStarted = true;
+        // We listen for OUR proxy node, which guarantees the image is in the event!
+        if (eventNodeId === previewNodeId && !resolved) {
+          resolved = true;
+          cleanup();
+          console.log("[MIL Refresh] ✅ Preview intercepted via proxy node");
+          let imgSrc = null;
+          const images = event.detail?.output?.images;
+          if (images && images.length > 0) {
+            const img = images[0];
+            imgSrc = `/view?filename=${encodeURIComponent(img.filename)}&type=${img.type || "temp"}&subfolder=${encodeURIComponent(img.subfolder || "")}`;
+          }
+          resolve(imgSrc);
+        }
+      };
+
+      const onStatus = (event) => {
+        const queueRemaining = event.detail?.exec_info?.queue_remaining
+          ?? event.detail?.status?.exec_info?.queue_remaining;
+        if (queueRemaining === 0 && executionStarted && !resolved) {
+          resolved = true;
+          cleanup();
+          console.log("[MIL Refresh] Queue drained without hit on proxy");
+          resolve(null);
+        }
+      };
+
+      const onError = (event) => {
+        if (executionStarted && !resolved) {
+          resolved = true;
+          cleanup();
+          console.error("[MIL Refresh] ❌ Execution error", event.detail);
+          resolve(null);
+        }
+      };
+
+      // Safety timeout (20s)
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          console.warn("[MIL Refresh] ⏱️ Subgraph execution timed out after 20s");
+          resolve(null);
+        }
+      }, 20000);
+
+      api.addEventListener("executed", onExecuted);
+      api.addEventListener("status", onStatus);
+      api.addEventListener("execution_error", onError);
+
+      try {
+        await new Promise(r => setTimeout(r, 100));
+        const prompt = await app.graphToPrompt();
+
+        if (!prompt?.output?.[targetId]) {
+          console.warn("[MIL Refresh] Source node not in prompt output");
+          resolved = true;
+          cleanup();
+          resolve(null);
+          return;
+        }
+
+        // Prune to only the source node and its upstream dependencies
+        const prunedOutput = {};
+        (function addDeps(nodeId) {
+          const id = String(nodeId);
+          if (prunedOutput[id]) return;
+          const n = prompt.output[id];
+          if (!n) return;
+          prunedOutput[id] = n;
+          for (const val of Object.values(n.inputs || {})) {
+            if (Array.isArray(val) && val.length >= 2) addDeps(val[0]);
+          }
+        })(targetId);
+
+        // Inject the proxy PreviewImage node connected to our target
+        prunedOutput[previewNodeId] = {
+          class_type: "PreviewImage",
+          inputs: {
+            images: [targetId, srcSlot]
+          }
+        };
+
+        prompt.output = prunedOutput;
+        console.log(`[MIL Refresh] Queuing subgraph + proxy node (${Object.keys(prunedOutput).length} nodes)`);
+
+        await api.queuePrompt(0, prompt);
+      } catch (e) {
+        console.error("[MIL Refresh] Failed to queue subgraph:", e);
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(null);
+        }
+      }
+    });
+  }
 
   // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -526,11 +747,52 @@ function createWidget(node) {
     if (w) w.value = JSON.stringify(cropMap);
   }
 
+  // ── master_image connection helper ────────────────────────────────────────
+  // Returns { w, h } of the connected master_image source node's last output,
+  // or null if not connected / not yet executed.
+  function getMasterImageDims() {
+    if (!node.inputs) return null;
+    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    if (!masterInput || masterInput.link == null) return null;
+    const linkInfo = app.graph.links[masterInput.link];
+    if (!linkInfo) return null;
+    const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+    if (!srcNode) return null;
+    // Try to get dims from the source node's last executed images
+    if (srcNode.imgs && srcNode.imgs.length > 0) {
+      const img = srcNode.imgs[0];
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        return { w: img.naturalWidth, h: img.naturalHeight };
+      }
+    }
+    // Fallback: try to read from the node's size/properties if available
+    return null;
+  }
+
+  /** Check if master_image input is connected. */
+  function isMasterConnected() {
+    if (!node.inputs) return false;
+    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    return !!(masterInput && masterInput.link != null);
+  }
+
   // Auto-update thumbnails after crop editor Apply.
   // Draws each image through the same canvas transform as the editor.
   async function computeRefDims() {
-    const ar = getAspectRatioWidget()?.value ?? "none";
     const mp = node.widgets?.find(w => w.name === "megapixels")?.value ?? 1.0;
+
+    // Priority 1: master_image connection
+    const masterDims = getMasterImageDims();
+    if (masterDims) {
+      const ratio = masterDims.w / masterDims.h;
+      const totalPx = Math.max(1, mp * 1_000_000);
+      const refW = Math.max(1, Math.round(Math.sqrt(totalPx * ratio)));
+      const refH = Math.max(1, Math.round(Math.sqrt(totalPx / ratio)));
+      return { refW, refH };
+    }
+
+    // Priority 2: aspect_ratio widget
+    const ar = getAspectRatioWidget()?.value ?? "none";
     if (ar !== "none") {
       const [aw, ah] = ar.split(":").map(Number);
       const totalPx = Math.max(1, mp * 1_000_000);
@@ -538,69 +800,71 @@ function createWidget(node) {
       const refH = Math.max(1, Math.round(Math.sqrt(totalPx * ah / aw)));
       return { refW, refH };
     }
-    // "none" → use first image natural dims
+
+    // Priority 3: first image natural dims
     const r0 = await getImageDimensions(items[0].src);
     return { refW: r0.w, refH: r0.h };
   }
 
   // (renderCropPreviews — defined later after renderFitPreviews)
 
+  /** Number of columns for the current thumb_size preset. */
+  function getThumbCols() {
+    const szKey = node.widgets?.find((ww) => ww.name === "thumb_size")?.value ?? "medium";
+    return THUMB_COLS[szKey] ?? 4;
+  }
+
   function getMinThumbW() {
-    const w = node.widgets?.find((ww) => ww.name === "thumb_size");
-    return THUMB_SIZES[w?.value] ?? THUMB_W;
+    // Minimum thumb width derived from column count and current node width
+    const cols   = getThumbCols();
+    const innerW = Math.max(40, node.size[0] - 24);
+    return Math.max(40, Math.floor((innerW - (cols - 1) * THUMB_GAP) / cols));
   }
 
-  /** Compute actual display thumb width, filling available node width. */
+  /** Compute actual display thumb width — fills available node width using fixed column count. */
   function getEffectiveThumbW() {
-    const minW   = getMinThumbW();
-    const innerW = Math.max(minW, node.size[0] - 24);
-    if (viewMode === "row") return innerW;
-    // Grid: fit as many columns of at-least-minW as possible, then spread to fill
-    const cols = Math.max(1, Math.floor((innerW + THUMB_GAP) / (minW + THUMB_GAP)));
-    // Width that exactly fills the row
-    return Math.floor((innerW - (cols - 1) * THUMB_GAP) / cols);
+    const cols   = getThumbCols();
+    const innerW = Math.max(40, node.size[0] - 24);
+    return Math.max(40, Math.floor((innerW - (cols - 1) * THUMB_GAP) / cols));
   }
 
-  /** Compute actual display thumb height, mode-aware.
-   *  Grid: proportional to tw based on image AR.  Row: fixed comfortable height. */
+  /** Compute actual display thumb height — proportional to tw based on image AR. */
   function getEffectiveThumbH(tw) {
-    if (viewMode === "row") {
-      const w = node.widgets?.find((ww) => ww.name === "thumb_size");
-      return ROW_VIEW_HEIGHTS[w?.value] ?? 120;
-    }
     return Math.max(20, Math.round(tw * thumbH / THUMB_W));
   }
 
   function resizeNode() {
-    const curW   = node.size[0];
-    const curH   = node.size[1];
-    const tw     = getEffectiveThumbW();
-    const th     = getEffectiveThumbH(tw);
-    const minW   = getMinThumbW();
-    const idealH = computeIdealHeight(items.length, curW, th, viewMode === 'row' ? tw : minW, viewMode === 'row');
-    // Only grow — never shrink (user may manually set a larger size)
-    if (idealH > curH) node.setSize([curW, idealH]);
+    if (items.length === 0) return;
+    const cols  = getThumbCols();
+    const rows  = Math.ceil(items.length / cols);
+    const vis   = Math.min(rows, MAX_GRID_ROWS);
+    const thumb = grid.querySelector('.mil-thumb');
+    if (!thumb || thumb.offsetHeight === 0) return;
+    
+    let idealGridH = vis > 0 ? vis * (thumb.offsetHeight + THUMB_GAP) - THUMB_GAP + 4 : 0;
+    
+    const diff = idealGridH - grid.clientHeight;
+    // Only grow
+    if (diff > 0) node.setSize([node.size[0], node.size[1] + diff]);
   }
 
-  /** Snap node to ideal height — used on mode switch (shrinks AND grows).
-   *  Always shows up to MAX_GRID_ROWS visible rows in both grid and row modes. */
   function snapNodeToIdealH() {
-    const curW   = node.size[0];
-    const tw     = getEffectiveThumbW();
-    const th     = getEffectiveThumbH(tw);
-    const minW   = getMinThumbW();
-    // For snapping: always use MAX_GRID_ROWS cap in both modes
-    const count  = items.length;
-    const cols   = viewMode === 'row' ? 1
-                 : Math.max(1, Math.floor((curW - 24 + THUMB_GAP) / (minW + THUMB_GAP)));
-    const rows   = count > 0 ? Math.ceil(count / cols) : 0;
-    const vis    = Math.min(rows, MAX_GRID_ROWS);
-    const gridH  = vis > 0 ? vis * (th + THUMB_GAP) - THUMB_GAP + 4 : 0;
-    const dropH  = count > 0 ? COMPACT_DROPZONE_H : DROPZONE_H;
-    const statH  = count > 0 ? STATUS_H : 0;
-    const snapH  = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V
-                 + dropH + (rows > 0 ? GAP * 2 : GAP) + gridH + statH + 8;
-    node.setSize([curW, snapH]);
+    if (items.length === 0) {
+      const snapH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + DROPZONE_H + GAP + 8;
+      node.setSize([node.size[0], snapH]);
+      return;
+    }
+    const cols  = getThumbCols();
+    const rows  = Math.ceil(items.length / cols);
+    const vis   = Math.min(rows, MAX_GRID_ROWS);
+    const thumb = grid.querySelector('.mil-thumb');
+    if (!thumb || thumb.offsetHeight === 0) return;
+
+    let idealGridH = vis > 0 ? vis * (thumb.offsetHeight + THUMB_GAP) - THUMB_GAP + 4 : 0;
+    
+    const diff = idealGridH - grid.clientHeight;
+    // Shrink AND grow
+    if (diff !== 0) node.setSize([node.size[0], node.size[1] + diff]);
   }
 
   function updateScrollFade() {
@@ -634,6 +898,8 @@ function createWidget(node) {
   function render() {
     statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
+    const cols = getThumbCols();
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     const tw = getEffectiveThumbW();
     const th = getEffectiveThumbH(tw);
 
@@ -644,41 +910,23 @@ function createWidget(node) {
       wrapper.className = "mil-thumb";
       wrapper.draggable = true;
       wrapper.dataset.idx = idx;
-      if (viewMode === "row") {
-        wrapper.style.cssText = `
-          position: relative;
-          width: 100%;
-          box-sizing: border-box;
-          height: ${th}px;
-          border-radius: 6px;
-          overflow: hidden;
-          border: 1px solid #444;
-          flex-shrink: 0;
-          background: #353535;
-        `;
-      } else {
-        const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
-        wrapper.style.cssText = `
-          position: relative;
-          min-width: ${tw}px;
-          max-width: ${Math.round(tw * 1.5)}px;
-          aspect-ratio: ${arRatio.toFixed(4)};
-          border-radius: 6px;
-          overflow: hidden;
-          border: 1px solid #444;
-          flex: 1 0 ${tw}px;
-          background: #353535;
-        `;
-      }
+      const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
+      wrapper.style.cssText = `
+        position: relative;
+        width: 100%;
+        padding-top: ${(100 / arRatio).toFixed(4)}%;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid #444;
+        background: #353535;
+      `;
 
       // ── image ─────────────────────────────────────────────────────────────
       const img = document.createElement("img");
       img.src = item.previewSrc || item.src;
-      // previewSrc already has letterbox/crop baked in — use cover in grid to fill wrapper seamlessly
-      // In row (list) mode always use contain so the full image is visible
-      const fit = (viewMode === "row") ? "contain" : (item.previewSrc ? "cover" : "contain");
-      const imgH = (viewMode === "row") ? `${th}px` : "100%";
-      img.style.cssText = `width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
+      const fit = item.previewSrc ? "cover" : "contain";
+      const imgH = "100%";
+      img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
       img.title = item.filename;
 
       // ── mask overlay canvas (maskViewMode) ──
@@ -792,40 +1040,7 @@ function createWidget(node) {
       wrapper.addEventListener("dragend", () => {
         dragSrcIdx = null;
         wrapper.classList.remove("mil-dragging");
-        grid.querySelectorAll(".mil-drag-over").forEach((el) =>
-          el.classList.remove("mil-drag-over")
-        );
-      });
-
-      wrapper.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        if (dragSrcIdx !== null && dragSrcIdx !== idx) {
-          wrapper.classList.add("mil-drag-over");
-        }
-      });
-
-      wrapper.addEventListener("dragleave", () => {
-        wrapper.classList.remove("mil-drag-over");
-      });
-
-      wrapper.addEventListener("drop", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        wrapper.classList.remove("mil-drag-over");
-        if (dragSrcIdx === null || dragSrcIdx === idx) return;
-
-        const [moved] = items.splice(dragSrcIdx, 1);
-        items.splice(idx, 0, moved);
-
-        // Clear only non-crop previews; crop previews are rebuilt async
-        items.forEach((it) => { if (!hasCrop(it.filename)) delete it.previewSrc; });
-        previewActive = items.some(it => it.previewSrc);
-
-        updateThumbHFromFirst();
-        render();
-        persist();
-        renderCropPreviews();  // async: restore crop thumbnails after reorder
+        clearInsertIndicator();
       });
 
       // ── crop button (top-right, next to remove btn) ──────────────────────
@@ -957,23 +1172,11 @@ function createWidget(node) {
       grid.appendChild(wrapper);
     });
 
-    // In grid mode, add invisible spacers so the last row doesn't over-stretch
-    if (viewMode === "grid" && items.length > 0) {
-      const innerW = grid.clientWidth || (node.size[0] - 24);
-      const cols = Math.max(1, Math.floor((innerW + THUMB_GAP) / (tw + THUMB_GAP)));
-      const remainder = items.length % cols;
-      if (remainder > 0) {
-        for (let s = 0; s < cols - remainder; s++) {
-          const spacer = document.createElement("div");
-          spacer.style.cssText = `flex:1 0 ${tw}px;min-width:${tw}px;height:0;visibility:hidden;`;
-          grid.appendChild(spacer);
-        }
-      }
-    }
+    // Spacers not needed — CSS grid handles column distribution
 
     const count = items.length;
     updateDropZone(count);
-    statusBar.style.display  = count > 0 ? "flex" : "none";
+    statusBar.style.display  = "flex"; // Always show so refreshBtn is visible
     statusLabel.textContent  = count > 0
       ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
       : "";
@@ -982,8 +1185,9 @@ function createWidget(node) {
       (async () => {
         try {
           const { refW, refH } = await computeRefDims();
+          const masterActive = isMasterConnected() && getMasterImageDims();
           const ar = getAspectRatioWidget()?.value ?? "none";
-          const arLabel = ar !== "none" ? ` · ${ar}` : "";
+          const arLabel = masterActive ? " · master" : (ar !== "none" ? ` · ${ar}` : "");
           statusLabel.textContent = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${arLabel}`;
         } catch(e) {
           // ignore error, keep default text
@@ -991,22 +1195,255 @@ function createWidget(node) {
       })();
     }
     clearBtn.style.display      = count > 0 ? "inline-block" : "none";
-    viewToggleBtn.style.display = count > 0 ? "inline-block" : "none";
+    // viewToggleBtn removed
     maskViewBtn.style.display   = count > 0 ? "inline-block" : "none";
+
 
     resizeNode();
     requestAnimationFrame(updateScrollFade);
+
+    // mil-row-mode removed — always grid layout
+    grid.classList.remove("mil-row-mode");
   }
 
-  // Update thumbH: respects aspect_ratio if set, otherwise uses first image
+  // ── Dual drag system: INSERT (edge) + SWAP (center) ────────────────────────
+  // The approach:
+  //  - Cursor in outer 30% of a thumbnail's main axis → INSERT mode (blue line)
+  //  - Cursor in inner 70% (center zone)              → SWAP mode  (orange frame)
+  // A single dragover listener on the grid container handles both.
+
+  // Zone threshold: what fraction from the edge triggers INSERT vs SWAP
+  const EDGE_ZONE = 0.28;
+
+  let _insertTarget = null;  // { el, side:'before'|'after', insertIdx, mode:'insert'|'swap' }
+
+  function clearInsertIndicator() {
+    if (_insertTarget) {
+      _insertTarget.el.classList.remove(
+        "mil-insert-before", "mil-insert-after", "mil-swap-target"
+      );
+      _insertTarget = null;
+    }
+  }
+
+  /**
+   * Returns { el, mode, side, insertIdx } or null.
+   * mode = 'insert' → cursor in edge zone  → show blue line
+   * mode = 'swap'   → cursor in center zone → show orange frame
+   */
+  function findInsertPosition(e) {
+    const thumbEls = [...grid.querySelectorAll(".mil-thumb")];
+    if (thumbEls.length === 0) return null;
+
+    // Find closest thumbnail to cursor
+    let best = null, bestDist = Infinity;
+    for (const el of thumbEls) {
+      const r = el.getBoundingClientRect();
+      // Clamp cursor to rect for distance — gives 0 when cursor is inside
+      const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
+      const dy = Math.max(r.top  - e.clientY, 0, e.clientY - r.bottom);
+      const dist = dx + dy;
+      if (dist < bestDist) { bestDist = dist; best = { el, r }; }
+    }
+    if (!best) return null;
+
+    const { el, r } = best;
+    const elIdx = parseInt(el.dataset.idx, 10);
+
+    // Relative cursor position within the thumbnail (0..1)
+    const relX = (e.clientX - r.left) / r.width;
+    const relY = (e.clientY - r.top)  / r.height;
+
+    // Primary axis depends on view mode
+    let mode, side, insertIdx;
+    {
+      // Grid mode: check left/right edges
+      const inEdge = relX < EDGE_ZONE || relX > 1 - EDGE_ZONE;
+      if (inEdge) {
+        mode = "insert";
+        side = relX < 0.5 ? "before" : "after";
+        insertIdx = side === "before" ? elIdx : elIdx + 1;
+      } else {
+        mode = "swap";
+        side = null;
+        insertIdx = elIdx;  // swap target
+      }
+    }
+    return { el, mode, side, insertIdx, elIdx, dist: bestDist };
+  }
+
+  function applyIndicator(pos) {
+    if (!pos) return;
+    if (pos.mode === "insert") {
+      pos.el.classList.add(pos.side === "before" ? "mil-insert-before" : "mil-insert-after");
+    } else {
+      pos.el.classList.add("mil-swap-target");
+    }
+  }
+
+  function indicatorChanged(prev, next) {
+    if (!prev || !next) return true;
+    return prev.el !== next.el || prev.mode !== next.mode || prev.side !== next.side;
+  }
+
+  grid.addEventListener("dragover", (e) => {
+    const isExternalFile = dragSrcIdx === null && e.dataTransfer?.types?.includes("Files");
+
+    const pos = findInsertPosition(e);
+    if (!pos) return;
+
+    if (isExternalFile) {
+      if (pos.dist > 0) return; // Not hovering directly over a thumbnail -> let it bubble to gridWrapper
+      
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      // Force swap mode for explicit thumbnail replacement
+      const swapPos = { el: pos.el, mode: "swap", side: null, insertIdx: pos.elIdx, elIdx: pos.elIdx };
+      if (indicatorChanged(_insertTarget, swapPos)) {
+        clearInsertIndicator();
+        applyIndicator(swapPos);
+        _insertTarget = swapPos;
+      }
+      return;
+    }
+
+    // ── Internal reorder drag ──
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+
+    // Skip true no-ops (dragging onto itself)
+    const isSelf = pos.elIdx === dragSrcIdx;
+    const isAdjacentInsert = pos.mode === "insert" &&
+      (pos.insertIdx === dragSrcIdx || pos.insertIdx === dragSrcIdx + 1);
+    const noop = isSelf || isAdjacentInsert;
+
+    if (indicatorChanged(_insertTarget, noop ? null : pos)) {
+      clearInsertIndicator();
+    }
+    if (noop) return;
+
+    if (!_insertTarget) {
+      applyIndicator(pos);
+      _insertTarget = pos;
+    }
+  });
+
+  grid.addEventListener("dragleave", (e) => {
+    if (!grid.contains(e.relatedTarget)) {
+      clearInsertIndicator();
+    }
+  });
+
+  grid.addEventListener("drop", (e) => {
+    const isExternalFile = dragSrcIdx === null && e.dataTransfer?.types?.includes("Files");
+
+    if (isExternalFile) {
+      if (!_insertTarget || _insertTarget.dist > 0) return; // Not hovering exactly on a thumbnail -> let it bubble to gridWrapper appending
+
+      e.preventDefault();
+      e.stopPropagation();
+      const targetIdx = _insertTarget.elIdx;
+      clearInsertIndicator();
+      
+      const ol = gridWrapper.querySelector(".mil-drop-overlay");
+      if (ol) ol.style.opacity = "0";
+      gridWrapper.dataset.dragCount = "0";
+
+      const imageFiles = [...e.dataTransfer.files].filter(f => f.type.startsWith("image/"));
+      if (imageFiles.length > 0) replaceFileAt(targetIdx, imageFiles[0]);
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // ── Internal reorder drop ──
+    const pos = _insertTarget;
+    clearInsertIndicator();
+    if (dragSrcIdx === null || !pos) return;
+
+    if (pos.mode === "insert") {
+      // No-op guard
+      if (pos.insertIdx === dragSrcIdx || pos.insertIdx === dragSrcIdx + 1) return;
+      const [moved] = items.splice(dragSrcIdx, 1);
+      const adjustedIdx = pos.insertIdx > dragSrcIdx ? pos.insertIdx - 1 : pos.insertIdx;
+      items.splice(adjustedIdx, 0, moved);
+    } else {
+      // Swap mode: exchange positions
+      const targetIdx = pos.elIdx;
+      if (targetIdx === dragSrcIdx) return;
+      [items[dragSrcIdx], items[targetIdx]] = [items[targetIdx], items[dragSrcIdx]];
+    }
+
+    items.forEach((it) => { if (!hasCrop(it.filename)) delete it.previewSrc; });
+    previewActive = items.some(it => it.previewSrc);
+
+    updateThumbHFromFirst();
+    render();
+    persist();
+    renderCropPreviews();
+  });
+
+  // ── replaceFileAt: upload file and replace item at given index ──────────────────
+  async function replaceFileAt(idx, file) {
+    if (idx < 0 || idx >= items.length) return;
+    statusLabel.textContent = "Uploading…";
+    statusLabel.style.color = "#ffcc66";
+    try {
+      const [dataUrl]  = await Promise.all([fileToDataURL(file)]);
+      const [filename] = await uploadFiles([file]);
+
+      // Clear any crop/mask data from the old file
+      const oldFilename = items[idx].filename;
+      if (oldFilename !== filename) {
+        delete cropMap[oldFilename];
+      }
+
+      items[idx] = { filename, src: dataUrl };
+
+      await updateThumbHFromFirst();
+      statusLabel.style.color = "#8899bb";
+      render();
+      persist();
+      await renderFitPreviews();
+      await renderCropPreviews();
+
+      // Brief orange flash on replaced thumbnail
+      requestAnimationFrame(() => {
+        const thumb = grid.querySelectorAll(".mil-thumb")[idx];
+        if (thumb) {
+          thumb.classList.add("mil-swap-target");
+          setTimeout(() => thumb.classList.remove("mil-swap-target"), 800);
+        }
+      });
+    } catch (err) {
+      statusLabel.textContent = `Error: ${err.message}`;
+      statusLabel.style.color = "#ff6666";
+    }
+  }
+
+  // Update thumbH: respects master_image > aspect_ratio > first image
   async function updateThumbHFromFirst() {
-    if (items.length === 0) { thumbH = THUMB_W; return; }
+    if (items.length === 0 && !isMasterConnected()) { thumbH = THUMB_W; return; }
+
+    // Priority 1: master_image connection
+    const masterDims = getMasterImageDims();
+    if (masterDims) {
+      thumbH = Math.max(20, Math.round(THUMB_W * masterDims.h / masterDims.w));
+      return;
+    }
+
+    // Priority 2: aspect_ratio widget
     const ar = getAspectRatioWidget()?.value ?? "none";
     if (ar !== "none") {
       const [aw, ah] = ar.split(":").map(Number);
       thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
       return;
     }
+
+    // Priority 3: first image natural dims
+    if (items.length === 0) { thumbH = THUMB_W; return; }
     try {
       const { w, h } = await getImageDimensions(items[0].src);
       thumbH = Math.max(20, Math.round(THUMB_W * h / w));
@@ -1034,12 +1471,12 @@ function createWidget(node) {
    * - Has crop transform + inpaint bg: fetches from Python server
    * - Has crop transform + solid bg:   canvas crop/transform path
    * - No crop transform:               letterbox/crop fit against ref dims
-   * When aspect_ratio is set, even idx=0 is fitted to the fixed canvas.
+   * When aspect_ratio is set or master_image is connected, even idx=0 is fitted to the fixed canvas.
    */
   async function renderItemToDataUrl(item, idx) {
-    // Reference image with no aspect_ratio override — return raw
+    // Reference image with no aspect_ratio override AND no master — return raw
     const ar = getAspectRatioWidget()?.value ?? "none";
-    if (idx === 0 && ar === "none") {
+    if (idx === 0 && ar === "none" && !isMasterConnected()) {
       return item.src;
     }
 
@@ -1166,7 +1603,8 @@ function createWidget(node) {
 
     try {
       const { refW: targetW, refH: targetH } = await computeRefDims();
-      const startIdx = ar !== "none" ? 0 : 1;
+      // When master_image is connected or aspect_ratio is set, ALL images get fitted
+      const startIdx = (isMasterConnected() || ar !== "none") ? 0 : 1;
 
       // Dispatch ALL fit renders in parallel via the Worker
       const jobs = [];
@@ -1355,12 +1793,72 @@ function createWidget(node) {
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
 
+  // ── gridWrapper file drag support ─────────────────────────────────────────
+  const dropOverlay = document.createElement("div");
+  dropOverlay.className = "mil-drop-overlay";
+  dropOverlay.style.cssText = `
+    position: absolute;
+    inset: 0;
+    border: 2px dashed #aaccff;
+    border-radius: 10px;
+    background: rgba(90, 122, 191, 0.15);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    z-index: 100;
+    box-sizing: border-box;
+  `;
+  gridWrapper.appendChild(dropOverlay);
 
+  gridWrapper.dataset.dragCount = "0";
+
+  gridWrapper.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    gridWrapper.dataset.dragCount = Number(gridWrapper.dataset.dragCount || 0) + 1;
+    dropOverlay.style.opacity = "1";
+  });
+
+  gridWrapper.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dropOverlay.style.opacity = "1";
+  });
+
+  gridWrapper.addEventListener("dragleave", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    const count = Math.max(0, Number(gridWrapper.dataset.dragCount || 0) - 1);
+    gridWrapper.dataset.dragCount = count;
+    if (count === 0 || !gridWrapper.contains(e.relatedTarget)) {
+      gridWrapper.dataset.dragCount = "0";
+      dropOverlay.style.opacity = "0";
+    }
+  });
+
+  gridWrapper.addEventListener("drop", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    gridWrapper.dataset.dragCount = "0";
+    dropOverlay.style.opacity = "0";
+    if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  });
+  
   clearBtn.addEventListener("click", () => {
-    items  = [];
-    thumbH = THUMB_W;
-    previewActive = false;
-    cropMap = {};
+    if (isMasterConnected() && items.length > 0) {
+      const masterItem = items[0];
+      const masterCrop = cropMap[masterItem.filename];
+      items = [masterItem];
+      cropMap = {};
+      if (masterCrop) cropMap[masterItem.filename] = masterCrop;
+      previewActive = Boolean(masterItem.previewSrc);
+    } else {
+      items  = [];
+      thumbH = THUMB_W;
+      previewActive = false;
+      cropMap = {};
+    }
     render();
     persist();
   });
@@ -1372,13 +1870,14 @@ function createWidget(node) {
   root._restore          = restore;
   root._render           = render;
   root._renderWithResize = () => {
-    // Re-render thumbnails when thumb_size changes — no height change
+    // Re-render thumbnails when thumb_size changes — snap height to fit 4 rows
     render();
+    if (items.length > 0) snapNodeToIdealH();
   };
   root._onAspectRatioChange = async () => {
     // Called whenever aspect_ratio, fit_mode, or megapixels changes.
     // Re-renders all thumbnails and resizes node to reflect the new canvas shape.
-    if (items.length === 0) return;
+    if (items.length === 0) { render(); return; }
     await updateThumbHFromFirst();
     // Clear cached previews so they get regenerated
     items.forEach(it => delete it.previewSrc);
@@ -2415,12 +2914,15 @@ function createWidget(node) {
     function _edEnsureEditsPx() {
       if (_edCvsEditsPx) return;
       if (!edImg) return;
-      const wpX = Math.min(edNatW, 2048);
-      const wpY = Math.round(edNatH * (wpX / edNatW));
+      const eW = effNatW(), eH = effNatH();
+      const wpX = Math.min(eW, 2048);
+      const wpY = Math.round(eH * (wpX / eW));
       _edCvsEditsPx = document.createElement("canvas");
       _edCvsEditsPx.width = wpX; _edCvsEditsPx.height = wpY;
       const ctx = _edCvsEditsPx.getContext("2d");
       ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+
+      // 1) Draw base image (with crop if applied)
       if (edAppliedCrop) {
         const sx = edAppliedCrop.cx * edNatW, sy = edAppliedCrop.cy * edNatH;
         const sw = edAppliedCrop.cw * edNatW, sh = edAppliedCrop.ch * edNatH;
@@ -2428,7 +2930,46 @@ function createWidget(node) {
       } else {
         ctx.drawImage(edImg, 0, 0, wpX, wpY);
       }
+
+      // 2) Bake lasso mask: paint bg color outside selection
+      //    so Edit Pixels sees the same result as Edit Image view.
+      if (edLassoOps.length > 0 || edLassoInverted) {
+        const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
+
+        // Build white-fill mask (white = inside selection)
+        const maskCvs = document.createElement("canvas");
+        maskCvs.width = wpX; maskCvs.height = wpY;
+        const mx = maskCvs.getContext("2d");
+        mx.clearRect(0, 0, wpX, wpY);
+        for (const op of edLassoOps) {
+          if (op.points.length < 3) continue;
+          mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+          mx.fillStyle = "white"; mx.beginPath();
+          mx.moveTo(op.points[0][0] * wpX, op.points[0][1] * wpY);
+          for (let k = 1; k < op.points.length; k++)
+            mx.lineTo(op.points[k][0] * wpX, op.points[k][1] * wpY);
+          mx.closePath(); mx.fill();
+        }
+        if (edLassoInverted) {
+          mx.globalCompositeOperation = "xor";
+          mx.fillStyle = "white"; mx.fillRect(0, 0, wpX, wpY);
+        }
+        mx.globalCompositeOperation = "source-over";
+
+        // Build bg overlay: bg color everywhere, punched out by mask
+        const bgCvs = document.createElement("canvas");
+        bgCvs.width = wpX; bgCvs.height = wpY;
+        const bx = bgCvs.getContext("2d");
+        bx.fillStyle = bgC; bx.fillRect(0, 0, wpX, wpY);
+        bx.globalCompositeOperation = "destination-out";
+        bx.drawImage(maskCvs, 0, 0);
+        bx.globalCompositeOperation = "source-over";
+
+        // Paint bg overlay on top of image
+        ctx.drawImage(bgCvs, 0, 0);
+      }
     }
+
 
     function _edSaveUndo() {
       if (!_edCvsEditsPx) return;
@@ -2917,8 +3458,12 @@ function createWidget(node) {
               ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
               ctx.drawImage(_edCvsEditsPx, -dw/2, -dh/2, dw, dh);
             }
-            // Lasso mask overlay — show bg color outside selection (only in Edit Image mode, not in Edit Pixels)
-            if (edLassoOps.length > 0 && edPanelMode !== "pixels") {
+            // Lasso mask overlay — show bg color outside selection.
+            // In pixels mode: only shown before pixel edits start (_edCvsEditsPx==null),
+            // because once initialized, the lasso is already baked into _edCvsEditsPx.
+            const showLassoOverlay = (edLassoOps.length > 0 || edLassoInverted) &&
+              (edPanelMode !== "pixels" || !_edCvsEditsPx);
+            if (showLassoOverlay) {
               const mw = Math.ceil(dw), mh = Math.ceil(dh);
               // Build mask canvas (white = inside selection)
               if (!_lassoOverlayCvs) _lassoOverlayCvs = document.createElement('canvas');
@@ -5002,7 +5547,7 @@ app.registerExtension({
       origOnCreated?.apply(this, arguments);
 
       const node = this;
-      const initH = computeIdealHeight(0, 300, THUMB_W);
+      const initH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + DROPZONE_H + GAP + 8;
       node.setSize([300, initH]);
 
       const domWidget = node.addDOMWidget(
@@ -5086,6 +5631,26 @@ app.registerExtension({
         requestAnimationFrame(() => {
           node._milDomWidget?.element?._render?.();
         });
+      };
+
+      // Re-render thumbnails when master_image is connected/disconnected
+      node.onConnectionsChange = function (type, index, connected, linkInfo) {
+        // type 1 = input, type 2 = output
+        if (type === 1) {
+          const inp = node.inputs?.[index];
+          if (inp && inp.name === "master_image") {
+            // Trigger the same flow as aspect_ratio change
+            node._milDomWidget?.element?._onAspectRatioChange?.();
+          }
+        }
+      };
+
+      // After execution, master_image source node will have updated imgs —
+      // re-render thumbnails so they pick up the master's aspect ratio.
+      const origOnExecuted = node.onExecuted;
+      node.onExecuted = function (output) {
+        origOnExecuted?.apply(this, arguments);
+        node._milDomWidget?.element?._onAspectRatioChange?.();
       };
     };
 

@@ -727,6 +727,9 @@ class MultiImageLoader:
         return {
             "required": {},
             "optional": {
+                # Optional upstream image whose proportions define the output tensor canvas.
+                # If a batch, only the first image is used.  Overrides aspect_ratio when connected.
+                "master_image": ("IMAGE",),
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list":   ("STRING", {"default": "[]"}),
                 "fit_mode":     (["letterbox", "crop"],),
@@ -735,7 +738,7 @@ class MultiImageLoader:
                 "aspect_ratio": (["none", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
                                  {"default": "none"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
-                "thumb_size":   (["small", "medium", "large"],),  # UI-only
+                "thumb_size":   (["full", "large", "medium", "small"],),  # UI-only: column count
                 "crop_data":    ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
             },
         }
@@ -747,10 +750,14 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
-        return hashlib.md5((image_list + crop_data + aspect_ratio + fit_mode + bg_color + str(megapixels)).encode()).hexdigest()
+    def IS_CHANGED(cls, master_image=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+        # Include master_image shape in the hash so re-execution triggers when it changes
+        master_hash = ""
+        if master_image is not None:
+            master_hash = f"{master_image.shape}"
+        return hashlib.md5((image_list + crop_data + aspect_ratio + fit_mode + bg_color + str(megapixels) + master_hash).encode()).hexdigest()
 
-    def load_images(self, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+    def load_images(self, master_image=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -763,7 +770,7 @@ class MultiImageLoader:
 
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
-        if not filenames:
+        if not filenames and master_image is None:
             return (placeholder_img, placeholder_mask, placeholder_img)
 
         input_dir = Path(folder_paths.get_input_directory())
@@ -772,14 +779,35 @@ class MultiImageLoader:
         orig_tensors = []   # native-resolution batch (no megapixel budget)
         orig_ref_w = orig_ref_h = None  # reference for native-res batch
 
-        # When aspect_ratio is set, pre-compute the fixed canvas size.
-        # Otherwise the first loaded image defines the reference (legacy behaviour).
-        fixed_canvas = aspect_ratio != "none" and bool(aspect_ratio)
-        if fixed_canvas:
+        # ── Master image overrides aspect_ratio when connected ────────────────
+        # Extract the first image from the batch tensor [B, H, W, C]
+        master_canvas = None
+        if master_image is not None:
+            # master_image is a torch tensor [B, H, W, C]
+            m_h = master_image.shape[1]
+            m_w = master_image.shape[2]
+            # Compute the aspect ratio from the master image
+            # Scale to fit the megapixel budget while preserving the master's proportions
+            total_px = max(1, megapixels * 1_000_000)
+            ratio = m_w / m_h
+            c_w = max(1, round(math.sqrt(total_px * ratio)))
+            c_h = max(1, round(math.sqrt(total_px / ratio)))
+            master_canvas = (c_w, c_h)
+            print(f"[MultiImageLoader] master_image override: {m_w}x{m_h} → canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP)")
+
+        # Canvas priority: master_image > aspect_ratio dropdown > first loaded image
+        if master_canvas:
+            ref_w, ref_h = master_canvas
+            fixed_canvas = True
+        elif aspect_ratio != "none" and bool(aspect_ratio):
+            fixed_canvas = True
             ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
             print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
         else:
+            fixed_canvas = False
             ref_w = ref_h = None
+
+
 
         for fname in filenames:
             fpath = input_dir / fname
@@ -794,7 +822,13 @@ class MultiImageLoader:
                 # ── Original-resolution branch (no megapixel budget) ──
                 img_orig = img.copy()
                 if orig_ref_w is None:
-                    if fixed_canvas:
+                    if master_canvas:
+                        # Master image defines ratio; scale to native resolution
+                        native_mp = (img_orig.size[0] * img_orig.size[1]) / 1_000_000
+                        ratio = master_canvas[0] / master_canvas[1]
+                        orig_ref_w = max(1, round(math.sqrt(native_mp * 1_000_000 * ratio)))
+                        orig_ref_h = max(1, round(math.sqrt(native_mp * 1_000_000 / ratio)))
+                    elif fixed_canvas:
                         # Respect aspect ratio at native resolution:
                         # compute canvas at same ratio as fixed_canvas but scaled to native MP
                         native_mp = (img_orig.size[0] * img_orig.size[1]) / 1_000_000
