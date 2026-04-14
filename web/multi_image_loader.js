@@ -127,23 +127,23 @@ function injectStyles() {
       outline: 2px dashed #7ab0ff;
     }
     .mil-thumb.mil-drag-over {
-      outline: 2px solid #ffe066;
-      background: rgba(255,220,80,0.12);
+      outline: 2px solid #7ab0ff;
+      background: rgba(122,176,255,0.15);
     }
-    /* ── Swap mode: orange frame around target thumbnail ── */
+    /* ── Swap mode: blue frame around target thumbnail ── */
     .mil-thumb.mil-swap-target {
-      outline: 3px solid #ff9f3a;
-      box-shadow: inset 0 0 0 2px #ff9f3a, 0 0 10px 2px rgba(255,159,58,0.55);
-      background: rgba(255,140,20,0.14);
+      outline: 3px solid #7ab0ff;
+      box-shadow: inset 0 0 0 2px #7ab0ff, 0 0 10px 2px rgba(122,176,255,0.55);
+      background: rgba(122,176,255,0.14);
     }
     /* ── Insert mode: glowing blue line between thumbnails ── */
     .mil-insert-before::before,
     .mil-insert-after::after {
       content: '';
       position: absolute;
-      background: #3d9fff;
+      background: #7ab0ff;
       border-radius: 3px;
-      box-shadow: 0 0 10px 3px rgba(61,159,255,0.75), 0 0 3px 1px rgba(180,220,255,0.9);
+      box-shadow: 0 0 10px 3px rgba(122,176,255,0.75), 0 0 3px 1px rgba(180,220,255,0.9);
       pointer-events: none;
       z-index: 10;
     }
@@ -171,7 +171,7 @@ function injectStyles() {
       position: absolute;
       top: 2px;
       left: 3px;
-      background: rgba(0,160,100,0.88);
+      background: rgba(60,90,150,0.95);
       color: #fff;
       font-size: 8px;
       font-family: sans-serif;
@@ -187,9 +187,9 @@ function injectStyles() {
     }
     .mil-crop-enter { animation: mil-fadein 0.18s ease-out; }
     @keyframes mil-paste-flash {
-      0%   { box-shadow: inset 0 0 0 2px #44ff88, 0 0 10px rgba(68,255,136,0.55); }
-      15%  { box-shadow: inset 0 0 0 2px #44ff88, 0 0 10px rgba(68,255,136,0.55); }
-      100% { box-shadow: inset 0 0 0 2px rgba(68,255,136,0),  0 0 0   rgba(68,255,136,0); }
+      0%   { box-shadow: inset 0 0 0 2px #7ab0ff, 0 0 10px rgba(122,176,255,0.65); }
+      15%  { box-shadow: inset 0 0 0 2px #7ab0ff, 0 0 10px rgba(122,176,255,0.65); }
+      100% { box-shadow: inset 0 0 0 2px rgba(122,176,255,0),  0 0 0   rgba(122,176,255,0); }
     }
     .mil-paste-flash { animation: mil-paste-flash 5s ease-out forwards; }
     .mil-scroll-fade {
@@ -200,6 +200,29 @@ function injectStyles() {
       display: none;
       z-index: 1;
       border-radius: 0 0 4px 4px;
+    }
+    .mil-selected::after {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border: 3px solid #7ab0ff;
+      border-radius: 4px;
+      pointer-events: none;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5);
+      z-index: 2;
+    }
+    @keyframes mil-paste-fade {
+      0%   { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5); border: 3px solid rgba(122,176,255,1); }
+      100% { box-shadow: inset 0 0 0 1px rgba(0,0,0,0);   border: 3px solid rgba(122,176,255,0); }
+    }
+    .mil-paste-fade::after {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 2;
+      animation: mil-paste-fade 0.8s ease-out forwards;
     }
   `;
   document.head.appendChild(style);
@@ -225,6 +248,15 @@ function createWidget(node) {
     min-width: 180px;
     overflow: hidden;
   `;
+
+  // Ensure ComfyUI selects this node whenever any part of our DOM widget is clicked
+  // This solves the issue where clicking a thumbnail steals focus without selecting the node,
+  // causing the global Ctrl+V interceptor to fail.
+  root.addEventListener("mousedown", (e) => {
+    if (app.canvas && node) {
+       app.canvas.selectNodes([node]);
+    }
+  }, { capture: true });
 
   // ── drop zone ─────────────────────────────────────────────────────────────
   const dropZone = document.createElement("div");
@@ -345,6 +377,54 @@ function createWidget(node) {
     clearBtn.style.background  = "#3a2020";
     clearBtn.style.borderColor = "#884444";
   });
+  
+  const undoBtn = document.createElement("button");
+  undoBtn.textContent = "↶ Undo";
+  undoBtn.title = "Undo last action";
+  undoBtn.className = "mil-btn";
+  undoBtn.style.cssText = `
+    background: #252525;
+    color: #555;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 10px;
+    cursor: default;
+    display: none;
+  `;
+  undoBtn.addEventListener("mouseenter", () => {
+    if (undoStack.length > 0) {
+      undoBtn.style.background = "#333";
+      undoBtn.style.borderColor = "#444";
+      undoBtn.style.color = "#aaccff";
+    }
+  });
+  undoBtn.addEventListener("mouseleave", () => {
+    if (undoStack.length > 0) {
+      undoBtn.style.background = "#252525";
+      undoBtn.style.borderColor = "#333";
+      undoBtn.style.color = "#8899bb";
+    }
+  });
+  undoBtn.addEventListener("click", () => {
+    if (undoStack.length > 0) popUndoState();
+  });
+  
+  function syncUndoBtn() {
+    if (undoStack.length > 0) {
+      undoBtn.style.display = "inline-block";
+      undoBtn.style.color = "#8899bb";
+      undoBtn.style.cursor = "pointer";
+      undoBtn.style.background = "#252525";
+      undoBtn.style.borderColor = "#333";
+    } else {
+      undoBtn.style.display = "none";
+    }
+  }
+
+  // Position it right next to clear all
+  btnGroup.appendChild(undoBtn);
+
   statusBar.appendChild(statusLabel);
   statusBar.appendChild(btnGroup);
 
@@ -356,10 +436,88 @@ function createWidget(node) {
   // Each item: { filename: string, src: string, previewSrc?: string }
   let items  = [];
   let thumbH = THUMB_W;  // updated from first image's aspect ratio
+  
+  // ── Undo stack ────────────────────────────────────────────────────────────
+  const undoStack = [];
+  const MAX_UNDO = 30;
+
+  function pushUndoState() {
+    undoStack.push({
+      items: JSON.parse(JSON.stringify(items)),
+      cropMap: JSON.parse(JSON.stringify(cropMap))
+    });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    if (typeof syncUndoBtn === "function") syncUndoBtn();
+  }
+
+  function popUndoState() {
+    if (undoStack.length === 0) return;
+    const state = undoStack.pop();
+    items = state.items;
+    cropMap = state.cropMap;
+    selectedIdx = null;
+    previewActive = items.some(it => it.previewSrc);
+    if (typeof syncUndoBtn === "function") syncUndoBtn();
+    
+    // Rerender and repaint everything
+    // NOTE: We do NOT strictly need to regenerate renderFitPreviews or renderCropPreviews
+    // because JSON.parse(JSON.stringify) perfectly restored the base64 previewSrc images!
+    updateThumbHFromFirst().then(() => {
+      render();
+      persist();
+    });
+  }
   // viewMode removed — layout is always grid; column count driven by thumb_size
 
   // Drag-reorder state
   let dragSrcIdx = null;
+  let selectedIdx = null; // Track selected thumbnail
+  let _cachedCopyBlob = null; // Pre-rendered PNG blob for instant Ctrl+C
+  let _cachedCopyIdx  = null; // Which idx the cached blob belongs to
+
+  // Pre-render the selected thumbnail to a PNG blob in background.
+  // When Ctrl+C fires, we can write this blob instantly (no async delay)
+  // so the browser's user-gesture window doesn't expire.
+  function precacheSelectedBlob() {
+    _cachedCopyBlob = null;
+    _cachedCopyIdx  = null;
+    if (selectedIdx === null || selectedIdx < 0 || selectedIdx >= items.length) return;
+    const idx = selectedIdx;
+    const item = items[idx];
+    (async () => {
+      try {
+        const dataUrl = await renderItemToDataUrl(item, idx);
+        // Check selection didn't change while we were rendering
+        if (selectedIdx !== idx) return;
+        const resp = await fetch(dataUrl);
+        let blob = await resp.blob();
+        if (selectedIdx !== idx) return;
+        // Ensure PNG
+        if (blob.type !== "image/png") {
+          const cvs = document.createElement("canvas");
+          const img = await loadImage(dataUrl);
+          cvs.width = img.naturalWidth; cvs.height = img.naturalHeight;
+          cvs.getContext("2d").drawImage(img, 0, 0);
+          blob = await new Promise(r => cvs.toBlob(r, "image/png"));
+        }
+        if (selectedIdx !== idx) return;
+        _cachedCopyBlob = blob;
+        _cachedCopyIdx  = idx;
+      } catch(err) {
+        console.warn("[MIL] precache blob failed:", err);
+      }
+    })();
+  }
+
+  document.addEventListener("mousedown", (e) => {
+    // Deselect if clicking outside any thumbnail in this node
+    if (!root.contains(e.target) || !e.target.closest(".mil-thumb")) {
+      selectedIdx = null;
+      _cachedCopyBlob = null;
+      _cachedCopyIdx  = null;
+      try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
+    }
+  });
 
   // Preview state
   let previewActive = false;
@@ -413,7 +571,7 @@ function createWidget(node) {
 
   // ── refresh button ─────────────────────────────────────────────────────────
   const refreshBtn = document.createElement("button");
-  refreshBtn.textContent = "↻";
+  refreshBtn.textContent = "↻ Cache Images";
   refreshBtn.title = "Refresh Images · Pull master_image as first thumbnail";
   refreshBtn.className = "mil-btn";
   refreshBtn.style.cssText = `
@@ -421,8 +579,8 @@ function createWidget(node) {
     color: #aaa;
     border: 1px solid #444;
     border-radius: 4px;
-    padding: 3px 7px;
-    font-size: 13px;
+    padding: 3px 10px;
+    font-size: 10px;
     cursor: pointer;
     display: inline-block;
     line-height: 1;
@@ -526,26 +684,35 @@ function createWidget(node) {
       if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
       const blob = await resp.blob();
 
-      // Derive a filename from the URL query params, or generate one
-      let masterFilename = "master_image.png";
+      // Derive an extension and force filename to start with "master_image" for tracking
+      let ext = "png";
       try {
         const u = new URL(imgSrc, location.origin);
         const fn = u.searchParams.get("filename");
-        if (fn) masterFilename = fn.replace(/^.*[\\/]/, "");
+        if (fn && fn.includes(".")) ext = fn.split('.').pop();
       } catch {}
-      const file = new File([blob], masterFilename, { type: blob.type || "image/png" });
+      const masterFilename = `master_image_${Date.now()}.${ext}`;
+      const file = new File([blob], masterFilename, { type: blob.type || `image/${ext}` });
 
       // Upload to ComfyUI input
       const dataUrl = await fileToDataURL(file);
       const [uploadedName] = await uploadFiles([file]);
 
-      // Insert at position 0 or replace existing position 0
+      // Insert at position 0, or replace if position 0 is already an old master image
+      pushUndoState();
       if (items.length > 0) {
         const oldFilename = items[0].filename;
-        if (oldFilename !== uploadedName) {
-          delete cropMap[oldFilename];
+        // Old versions might have uploaded as ComfyUI_temp or generic names, 
+        // but new ones will start with master_image_
+        if (oldFilename.startsWith("master_image") || oldFilename.startsWith("ComfyUI_temp")) {
+          if (oldFilename !== uploadedName) {
+            delete cropMap[oldFilename];
+          }
+          items[0] = { filename: uploadedName, src: dataUrl };
+        } else {
+          // Position 0 is an explicitly imported user image, don't overwrite it!
+          items.unshift({ filename: uploadedName, src: dataUrl });
         }
-        items[0] = { filename: uploadedName, src: dataUrl };
       } else {
         items.push({ filename: uploadedName, src: dataUrl });
       }
@@ -908,6 +1075,7 @@ function createWidget(node) {
       // ── wrapper ──────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
       wrapper.className = "mil-thumb";
+      if (idx === selectedIdx) wrapper.classList.add("mil-selected");
       wrapper.draggable = true;
       wrapper.dataset.idx = idx;
       const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
@@ -1021,6 +1189,7 @@ function createWidget(node) {
       `;
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        pushUndoState();
         items.splice(idx, 1);
         items.forEach((it) => delete it.previewSrc);
         previewActive = false;
@@ -1109,21 +1278,74 @@ function createWidget(node) {
         copyBtn.style.opacity   = "0";
         maskBtnEl.style.opacity = "0";
       });
+      wrapper.addEventListener("click", (e) => {
+        // Only toggle selection if clicking the thumbnail directly (not its buttons)
+        if (e.target.closest("button")) return;
+        const wasSelected = selectedIdx === idx;
+        selectedIdx = null;
+        _cachedCopyBlob = null;
+        _cachedCopyIdx  = null;
+        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
+        
+        if (!wasSelected) {
+          selectedIdx = idx;
+          wrapper.classList.add("mil-selected");
+          precacheSelectedBlob();
+        }
+      });
       wrapper.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
         // Apply any pending edits, then open Mask Editor directly
         openMaskEditor(idx);
       });
       copyBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        // Select this thumbnail so Ctrl+C/X also work after clicking copy
+        selectedIdx = idx;
+        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
+        wrapper.classList.add("mil-selected");
+
         copyBtn.textContent = "⏳";
         (async () => {
           try {
             const dataUrl = await renderItemToDataUrl(item, idx);
             const resp = await fetch(dataUrl);
-            const blob = await resp.blob();
-            await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
-            copyBtn.style.color = "#5f5";
+            let blob = await resp.blob();
+            // Ensure PNG
+            if (blob.type !== "image/png") {
+              const cvs = document.createElement("canvas");
+              const img2 = await loadImage(dataUrl);
+              cvs.width = img2.naturalWidth; cvs.height = img2.naturalHeight;
+              cvs.getContext("2d").drawImage(img2, 0, 0);
+              blob = await new Promise(r => cvs.toBlob(r, "image/png"));
+            }
+            // Try Clipboard API
+            let ok = false;
+            if (navigator.clipboard?.write) {
+              try {
+                await navigator.clipboard.write([new ClipboardItem({"image/png": blob})]);
+                ok = true;
+              } catch(_) {}
+            }
+            // Fallback: contenteditable + execCommand
+            if (!ok) {
+              const url = URL.createObjectURL(blob);
+              const fi = document.createElement("img");
+              fi.src = url;
+              await new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
+              const wrap = document.createElement("div");
+              wrap.contentEditable = "true";
+              wrap.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;";
+              wrap.appendChild(fi);
+              document.body.appendChild(wrap);
+              const range = document.createRange();
+              range.selectNodeContents(wrap);
+              const sel = window.getSelection();
+              sel.removeAllRanges(); sel.addRange(range);
+              ok = document.execCommand("copy");
+              document.body.removeChild(wrap);
+              URL.revokeObjectURL(url);
+            }
+            copyBtn.style.color = ok ? "#5f5" : "#f55";
           } catch(err) {
             copyBtn.style.color = "#f55";
             console.error("[MIL] Copy failed:", err);
@@ -1366,6 +1588,7 @@ function createWidget(node) {
     if (pos.mode === "insert") {
       // No-op guard
       if (pos.insertIdx === dragSrcIdx || pos.insertIdx === dragSrcIdx + 1) return;
+      pushUndoState();
       const [moved] = items.splice(dragSrcIdx, 1);
       const adjustedIdx = pos.insertIdx > dragSrcIdx ? pos.insertIdx - 1 : pos.insertIdx;
       items.splice(adjustedIdx, 0, moved);
@@ -1373,16 +1596,19 @@ function createWidget(node) {
       // Swap mode: exchange positions
       const targetIdx = pos.elIdx;
       if (targetIdx === dragSrcIdx) return;
+      pushUndoState();
       [items[dragSrcIdx], items[targetIdx]] = [items[targetIdx], items[dragSrcIdx]];
     }
 
-    items.forEach((it) => { if (!hasCrop(it.filename)) delete it.previewSrc; });
+    // Rather than deleting previewSrc for un-cropped items out from under the UI,
+    // we keep the previews as they are to avoid flickering, and trigger a background refresh
+    // because index 0 might have changed, affecting standard dimensions.
     previewActive = items.some(it => it.previewSrc);
 
     updateThumbHFromFirst();
     render();
     persist();
-    renderCropPreviews();
+    renderFitPreviews().then(() => renderCropPreviews());
   });
 
   // ── replaceFileAt: upload file and replace item at given index ──────────────────
@@ -1395,12 +1621,15 @@ function createWidget(node) {
       const [filename] = await uploadFiles([file]);
 
       // Clear any crop/mask data from the old file
+      pushUndoState();
       const oldFilename = items[idx].filename;
       if (oldFilename !== filename) {
         delete cropMap[oldFilename];
       }
 
       items[idx] = { filename, src: dataUrl };
+
+      if (selectedIdx === idx) selectedIdx = null;
 
       await updateThumbHFromFirst();
       statusLabel.style.color = "#8899bb";
@@ -1409,12 +1638,12 @@ function createWidget(node) {
       await renderFitPreviews();
       await renderCropPreviews();
 
-      // Brief orange flash on replaced thumbnail
+      // Brief orange fade-out on replaced thumbnail
       requestAnimationFrame(() => {
         const thumb = grid.querySelectorAll(".mil-thumb")[idx];
         if (thumb) {
-          thumb.classList.add("mil-swap-target");
-          setTimeout(() => thumb.classList.remove("mil-swap-target"), 800);
+          thumb.classList.add("mil-paste-fade");
+          setTimeout(() => thumb.classList.remove("mil-paste-fade"), 850);
         }
       });
     } catch (err) {
@@ -1589,11 +1818,21 @@ function createWidget(node) {
     return cvs.toDataURL("image/png");
   }
 
+  function hasCrop(filename) {
+    const t = cropMap[filename];
+    if (!t) return false;
+    if (t.bg === "telea" || t.bg === "navier-stokes") return true;
+    return !!(
+      t.cx != null || t.cy != null || t.cw != null || t.ch != null ||
+      t.imageEditsDataUrl || (t.lassoOps && t.lassoOps.length) || (t.maskOps && t.maskOps.length) ||
+      t.ox || t.oy || (t.scale !== undefined && t.scale !== 1 && t.scale !== 0) || t.rotate || t.flipH || t.flipV
+    );
+  }
+
+  // ... [we'll skip modifying everything inside renderItemToDataUrl since it just works] ...
+  
   /**
    * Renders a canvas-based fit preview for thumbnails.
-   * When aspect_ratio is set: renders ALL images (including #0) to the fixed canvas.
-   * When aspect_ratio is "none": renders images #1+ against image #0 as reference.
-   * mode = "letterbox" | "crop"  (reads fit_mode widget).
    */
   async function renderFitPreviews() {
     if (items.length < 1) return;
@@ -1603,12 +1842,13 @@ function createWidget(node) {
 
     try {
       const { refW: targetW, refH: targetH } = await computeRefDims();
-      // When master_image is connected or aspect_ratio is set, ALL images get fitted
       const startIdx = (isMasterConnected() || ar !== "none") ? 0 : 1;
 
-      // Dispatch ALL fit renders in parallel via the Worker
       const jobs = [];
       for (let i = startIdx; i < items.length; i++) {
+        // Skip items that have custom crops; they are handled by renderCropPreviews
+        if (hasCrop(items[i].filename)) continue;
+
         const itemBg = cropMap[items[i].filename]?.bg;
         const bgColor = (mode === "letterbox")
           ? ((itemBg && /^#[0-9a-fA-F]{6}$/.test(itemBg)) ? itemBg : getEffectiveBgColor())
@@ -1631,27 +1871,23 @@ function createWidget(node) {
   }
 
   /**
-   * Regenerates thumbnails for items that have a crop/editor transform stored
-   * in cropMap. Respects fit_mode and aspect_ratio, same as renderItemToDataUrl.
-   * Must be called after renderFitPreviews so all items get a consistent preview.
+   * Regenerates thumbnails for items that have a crop/editor transform.
    */
   async function renderCropPreviews() {
     if (items.length < 1) return;
     const { refW, refH } = await computeRefDims();
     const mode = getFitModeWidget()?.value ?? "letterbox";
 
-    // Dispatch all crop renders in parallel via the Worker
     const jobs = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const t = cropMap[item.filename];
-      if (!t) continue;  // no transform — handled by renderFitPreviews
+      if (!hasCrop(item.filename)) continue;  // handled by renderFitPreviews
 
+      const t = cropMap[item.filename];
       const bgRaw = t.bg ?? getEffectiveBgColor();
       const isInpaint = bgRaw === "telea" || bgRaw === "navier-stokes";
 
       if (isInpaint) {
-        // Inpaint path — Python server renders this (can't be off-threaded)
         jobs.push(
           fetch("/multi_image_loader/preview", {
             method: "POST",
@@ -1665,9 +1901,7 @@ function createWidget(node) {
           }).catch(e => console.warn(`[MIL] inpaint preview error: ${item.filename}`, e))
         );
       } else {
-        // Solid-fill path — off-thread via Worker
         const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
-        // If pixel edits exist, use the edited image (crop already baked in)
         const imgSrc = t.imageEditsDataUrl || item.src;
         const xform = t.imageEditsDataUrl
           ? { ...t, cx: undefined, cy: undefined, cw: undefined, ch: undefined }
@@ -1733,6 +1967,7 @@ function createWidget(node) {
       const dataURLs  = await Promise.all(imageFiles.map(fileToDataURL));
       const filenames = await uploadFiles(imageFiles);
 
+      pushUndoState();
       const insertedCount = filenames.length;
       filenames.forEach((fn, i) => {
         items.push({ filename: fn, src: dataURLs[i] });
@@ -1846,6 +2081,7 @@ function createWidget(node) {
   });
   
   clearBtn.addEventListener("click", () => {
+    pushUndoState();
     if (isMasterConnected() && items.length > 0) {
       const masterItem = items[0];
       const masterCrop = cropMap[masterItem.filename];
@@ -1869,6 +2105,112 @@ function createWidget(node) {
   root._addFiles         = addFiles;
   root._restore          = restore;
   root._render           = render;
+  root._hasSelection     = () => selectedIdx !== null;
+  root._getCachedBlob    = () => (_cachedCopyIdx === selectedIdx && _cachedCopyBlob) ? _cachedCopyBlob : null;
+  root._undo             = popUndoState;
+  root._copySelected     = async () => {
+    if (selectedIdx === null || selectedIdx < 0 || selectedIdx >= items.length) return;
+    const idxSnap = selectedIdx;
+
+    // ── Obtain the PNG blob ──────────────────────────────────────────────────
+    // Prefer pre-cached blob (ready instantly, keeps user-gesture alive).
+    // Fall back to rendering on demand (used by the ⎘ button click path).
+    let blob = (_cachedCopyIdx === idxSnap && _cachedCopyBlob) ? _cachedCopyBlob : null;
+
+    if (!blob) {
+      try {
+        const item = items[idxSnap];
+        const dataUrl = await renderItemToDataUrl(item, idxSnap);
+        const resp = await fetch(dataUrl);
+        blob = await resp.blob();
+        if (blob.type !== "image/png") {
+          const cvs = document.createElement("canvas");
+          const img = await loadImage(dataUrl);
+          cvs.width = img.naturalWidth; cvs.height = img.naturalHeight;
+          cvs.getContext("2d").drawImage(img, 0, 0);
+          blob = await new Promise(r => cvs.toBlob(r, "image/png"));
+        }
+      } catch (err) {
+        console.error("[MIL] Copy - render failed:", err);
+        return;
+      }
+    }
+
+    // ── Write to clipboard ───────────────────────────────────────────────────
+    let copied = false;
+
+    // Strategy 1: Clipboard API (works in Chrome, Edge, modern Brave with gesture)
+    if (navigator.clipboard?.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        copied = true;
+      } catch (err) {
+        console.warn("[MIL] Clipboard API write failed, trying fallback:", err);
+      }
+    }
+
+    // Strategy 2: contenteditable + execCommand (legacy but widely supported)
+    if (!copied) {
+      try {
+        const url = URL.createObjectURL(blob);
+        const fi  = document.createElement("img");
+        fi.src = url;
+        await new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
+
+        const wrap = document.createElement("div");
+        wrap.contentEditable = "true";
+        wrap.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;";
+        wrap.appendChild(fi);
+        document.body.appendChild(wrap);
+
+        const range = document.createRange();
+        range.selectNodeContents(wrap);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        copied = document.execCommand("copy");
+        document.body.removeChild(wrap);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error("[MIL] Fallback copy also failed:", err);
+      }
+    }
+
+    if (!copied) {
+      alert("MIL: Could not copy image to clipboard.\nPlease check browser clipboard permissions (brave://settings/content/clipboard).");
+      return;
+    }
+
+    // Visual feedback — green flash
+    const thumb = grid.querySelectorAll(".mil-thumb")[idxSnap];
+    if (thumb) {
+      thumb.style.borderColor = "#5f5";
+      setTimeout(() => { thumb.style.borderColor = ""; }, 600);
+    }
+  };
+  root._cutSelected      = async () => {
+    if (selectedIdx === null || selectedIdx < 0 || selectedIdx >= items.length) return;
+    await root._copySelected();
+    
+    // Remove the item
+    pushUndoState();
+    const fn = items[selectedIdx].filename;
+    items.splice(selectedIdx, 1);
+    delete cropMap[fn];
+    
+    // Check if it was master image
+    if (selectedIdx === 0 && Array.from(document.querySelectorAll(".mil-thumb")).length > 0) {
+       // if we deleted master image, keep layout
+    }
+    
+    selectedIdx = null;
+    previewActive = items.some(it => it.previewSrc);
+    await updateThumbHFromFirst();
+    render();
+    persist();
+    await renderCropPreviews();
+  };
   root._renderWithResize = () => {
     // Re-render thumbnails when thumb_size changes — snap height to fit 4 rows
     render();
@@ -3999,6 +4341,7 @@ function createWidget(node) {
       const valid=new Set(items.map(i=>i.filename));
       const _nodeBg = getEffectiveBgColor();
       // commit session to cropMap — preserve mask data that lives alongside edit transforms
+      pushUndoState();
       for (const fn of valid) {
         const t=ses[fn];
         // Carry forward existing mask data
@@ -4069,7 +4412,20 @@ function createWidget(node) {
         console.warn("[MIL] clipboard read failed:", e);
       }
     }
-    if (files.length) await addFiles(files);
+    await root._pasteFiles(files);
+  };
+
+  root._pasteFiles = async function (files) {
+    if (files.length) {
+      if (selectedIdx !== null && selectedIdx >= 0 && selectedIdx < items.length) {
+        await replaceFileAt(selectedIdx, files[0]);
+        if (files.length > 1) {
+          await addFiles(files.slice(1));
+        }
+      } else {
+        await addFiles(files);
+      }
+    }
   };
 
 
@@ -5446,6 +5802,14 @@ app.registerExtension({
 
   // ── Global Ctrl+V clipboard paste ──────────────────────────────────────────
   setup() {
+    let lastPasteTs = 0;
+    function tryDebouncePaste() {
+      const now = Date.now();
+      if (now - lastPasteTs < 300) return false;
+      lastPasteTs = now;
+      return true;
+    }
+
     /**
      * Listen for the native `paste` event (triggered by Ctrl+V in most browsers)
      * and also for our own keydown fallback using the async Clipboard API.
@@ -5463,7 +5827,15 @@ app.registerExtension({
     function getTargetNode() {
       const milNodes = getMILNodes();
       if (!milNodes.length) return null;
-      // Must be explicitly selected
+      
+      // 1. If any node has an active internal selection (blue border thumbnail), it's the target!
+      for (const n of milNodes) {
+        if (n._milDomWidget?.element?.querySelector(".mil-selected")) {
+          return n;
+        }
+      }
+
+      // 2. Otherwise fallback to ComfyUI's standard node selection
       const selected = milNodes.filter(n =>
         n.is_selected ||
         (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
@@ -5472,66 +5844,98 @@ app.registerExtension({
       return null;
     }
 
-    // Handle native paste events (Ctrl+V → ClipboardEvent with clipboardData)
-    // ── Capture-phase paste listener ─────────────────────────────────────────
-    // Registering with { capture: true } makes our handler run BEFORE
-    // ComfyUI's bubble-phase paste listener (which would create a Load Image
-    // node). When we take over the event we call stopImmediatePropagation()
-    // so ComfyUI never sees it — no modification to core code needed.
-    document.addEventListener("paste", async (e) => {
-      // Don't intercept paste when the user is typing in a text input
+    // ── Capture-phase keydown listener (Copy/Cut/Undo) ───
+    window.addEventListener("keydown", async (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key !== "c" && key !== "x" && key !== "z") return;
+
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
 
-      const items = e.clipboardData?.items
-        ? Array.from(e.clipboardData.items)
-        : [];
-      const imageItems = items.filter(i => i.kind === "file" && i.type.startsWith("image/"));
-      if (!imageItems.length) return;
+      // Only block if OUR crop/mask editor overlay is actually open
+      const overlayOpen = !!document.querySelector(".mil-crop-overlay, .mil-mask-overlay, .mil-overlay");
+      if (overlayOpen) return;
 
       const node = getTargetNode();
       if (!node) return;
-
-      // We're handling this — stop ComfyUI from also acting on it
-      e.preventDefault();
-      e.stopImmediatePropagation();
 
       const el = node._milDomWidget?.element;
       if (!el) return;
 
-      const files = imageItems.map(i => {
-        const blob = i.getAsFile();
-        const ext  = i.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-        return new File([blob], `clipboard_${Date.now()}.${ext}`, { type: i.type });
-      });
-      await el._addFiles(files);
+      if ((key === "c" || key === "x") && !(el._hasSelection && el._hasSelection())) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      if (key === "c") {
+        // Fast path: use pre-cached blob (rendered when thumbnail was selected)
+        // so we can write to clipboard while the user gesture is still alive.
+        const cachedBlob = el._getCachedBlob?.();
+        if (cachedBlob) {
+          try {
+            await navigator.clipboard.write([
+              new ClipboardItem({ "image/png": cachedBlob })
+            ]);
+            const selThumb = el.querySelector?.(".mil-selected");
+            if (selThumb) {
+              selThumb.style.borderColor = "#5f5";
+              setTimeout(() => { selThumb.style.borderColor = ""; }, 600);
+            }
+          } catch (err) {
+            console.warn("[MIL] Cached clipboard write failed, trying full path:", err);
+            if (el._copySelected) await el._copySelected();
+          }
+        } else {
+          if (el._copySelected) await el._copySelected();
+        }
+        return;
+      }
+
+      if (key === "x") {
+        if (el._cutSelected) await el._cutSelected();
+        return;
+      }
+
+      if (key === "z") {
+        if (el._undo) el._undo();
+        return;
+      }
     }, { capture: true });
 
-    // ── Capture-phase keydown listener (async Clipboard API fallback) ─────────
-    // For cases where the native `paste` event doesn't fire (e.g. when the
-    // LiteGraph canvas element has focus). We stop propagation synchronously
-    // as soon as we know a MIL node is selected, then read the clipboard async.
-    document.addEventListener("keydown", async (e) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== "v") return;
+    // ── Capture-phase paste listener ───
+    window.addEventListener("paste", async (e) => {
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
 
+      const overlayOpen = !!document.querySelector(".mil-crop-overlay, .mil-mask-overlay, .mil-overlay");
+      if (overlayOpen) return;
+
       const node = getTargetNode();
       if (!node) return;
+      
+      const el = node._milDomWidget?.element;
+      if (!el) return;
 
-      // Stop immediately — prevents any Ctrl+V keydown handler in ComfyUI
-      e.stopImmediatePropagation();
-
-      // Use async Clipboard API to read the image
-      try {
-        const clipItems = await navigator.clipboard.read();
-        const el = node._milDomWidget?.element;
-        if (el?._pasteFromClipboard) await el._pasteFromClipboard(clipItems);
-      } catch (err) {
-        // Clipboard API may be denied; the capture-phase paste event above
-        // will have already handled it in that case.
-        if (!err.message?.includes("denied")) {
-          console.warn("[MIL] Clipboard API error:", err);
+      // Extract image files natively (bypasses permission prompts)
+      const items = Array.from(e.clipboardData?.items || []);
+      const imgItems = items.filter(it => it.type.startsWith("image/"));
+      if (imgItems.length > 0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        
+        const files = [];
+        for (const item of imgItems) {
+           const f = item.getAsFile();
+           if (f) {
+             const renamed = new File([f], `pasted_${Date.now()}_${Math.floor(Math.random()*1000)}.png`, { type: f.type });
+             files.push(renamed);
+           }
+        }
+        
+        if (files.length > 0) {
+          if (!tryDebouncePaste()) return;
+          if (el._addFiles) await el._addFiles(files);
         }
       }
     }, { capture: true });
