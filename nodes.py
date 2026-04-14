@@ -727,9 +727,9 @@ class MultiImageLoader:
         return {
             "required": {},
             "optional": {
-                # Optional upstream image whose proportions define the output tensor canvas.
-                # If a batch, only the first image is used.  Overrides aspect_ratio when connected.
-                "master_image": ("IMAGE",),
+                # Optional upstream images whose proportions define the output tensor canvas.
+                # All images in the batch are injected as the first elements of the output.
+                "images": ("IMAGE",),
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list":   ("STRING", {"default": "[]"}),
                 "fit_mode":     (["letterbox", "crop"],),
@@ -739,7 +739,9 @@ class MultiImageLoader:
                                  {"default": "none"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
                 "thumb_size":   (["full", "large", "medium", "small"],),  # UI-only: column count
+                "double_click": (["Edit Image", "Edit Pixel", "Mask"], {"default": "Edit Image"}),
                 "crop_data":    ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
+                "selected_items": ("STRING", {"default": "[]"}),  # UI-only: JSON list of selected filenames
             },
         }
 
@@ -750,14 +752,14 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, master_image=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
-        # Include master_image shape in the hash so re-execution triggers when it changes
+    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
+        # Include images shape in the hash so re-execution triggers when it changes
         master_hash = ""
-        if master_image is not None:
-            master_hash = f"{master_image.shape}"
-        return hashlib.md5((image_list + crop_data + aspect_ratio + fit_mode + bg_color + str(megapixels) + master_hash).encode()).hexdigest()
+        if images is not None:
+            master_hash = f"{images.shape}"
+        return hashlib.md5((image_list + crop_data + selected_items + aspect_ratio + fit_mode + bg_color + str(megapixels) + master_hash).encode()).hexdigest()
 
-    def load_images(self, master_image=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", crop_data="{}"):
+    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -768,9 +770,25 @@ class MultiImageLoader:
         except Exception:
             transforms = {}
 
+        try:
+            selected_filenames = json.loads(selected_items) if selected_items else []
+            if not isinstance(selected_filenames, list):
+                selected_filenames = []
+        except Exception:
+            selected_filenames = []
+
+        filtered_filenames = []
+        if selected_filenames:
+            for fname in filenames:
+                if fname in selected_filenames:
+                    filtered_filenames.append(fname)
+        else:
+            # Option A: fallback to all images if selection is empty
+            filtered_filenames = filenames
+
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
-        if not filenames and master_image is None:
+        if not filtered_filenames and images is None:
             return (placeholder_img, placeholder_mask, placeholder_img)
 
         input_dir = Path(folder_paths.get_input_directory())
@@ -779,26 +797,33 @@ class MultiImageLoader:
         orig_tensors = []   # native-resolution batch (no megapixel budget)
         orig_ref_w = orig_ref_h = None  # reference for native-res batch
 
-        # ── Master image overrides aspect_ratio when connected ────────────────
-        # Extract the first image from the batch tensor [B, H, W, C]
+        import torch.nn.functional as F
+        
+        # ── Upstream images override aspect_ratio when connected ───────────────
+        # Extract all images from the batch tensor [B, H, W, C]
         master_canvas = None
-        if master_image is not None:
-            # master_image is a torch tensor [B, H, W, C]
-            m_h = master_image.shape[1]
-            m_w = master_image.shape[2]
-            # Compute the aspect ratio from the master image
-            # Scale to fit the megapixel budget while preserving the master's proportions
+        if images is not None:
+            # images is a torch tensor [B, H, W, C]
+            m_b = images.shape[0]
+            m_h = images.shape[1]
+            m_w = images.shape[2]
+            
+            orig_ref_w = m_w
+            orig_ref_h = m_h
+            
+            # Compute the aspect ratio from the first image of the input batch
+            # Scale to fit the megapixel budget while preserving proportions
             total_px = max(1, megapixels * 1_000_000)
             ratio = m_w / m_h
             c_w = max(1, round(math.sqrt(total_px * ratio)))
             c_h = max(1, round(math.sqrt(total_px / ratio)))
             master_canvas = (c_w, c_h)
-            print(f"[MultiImageLoader] master_image override: {m_w}x{m_h} → canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP)")
-
-        # Canvas priority: master_image > aspect_ratio dropdown > first loaded image
-        if master_canvas:
             ref_w, ref_h = master_canvas
             fixed_canvas = True
+            
+            print(f"[MultiImageLoader] images input override: {m_w}x{m_h} → canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP) setting dimensions only")
+            
+        # Canvas priority: images input > aspect_ratio dropdown > first loaded image
         elif aspect_ratio != "none" and bool(aspect_ratio):
             fixed_canvas = True
             ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
@@ -807,9 +832,40 @@ class MultiImageLoader:
             fixed_canvas = False
             ref_w = ref_h = None
 
-
-
+        # Pre-compute target canvas dimensions based on the FIRST uploaded image in the entire batch, 
+        # not the first selected image. This guarantees backend dimensions mirror frontend canvas shapes.
+        first_valid_img = None
         for fname in filenames:
+            fpath = input_dir / fname
+            if fpath.exists():
+                try:
+                    img_tmp = Image.open(fpath)
+                    img_tmp = ImageOps.exif_transpose(img_tmp)
+                    first_valid_img = img_tmp.copy()
+                    break
+                except Exception:
+                    pass
+
+        if first_valid_img is not None:
+            first_native_w, first_native_h = first_valid_img.size
+            if orig_ref_w is None:
+                if master_canvas:
+                    native_mp = (first_native_w * first_native_h) / 1_000_000
+                    ratio = master_canvas[0] / master_canvas[1]
+                    orig_ref_w = max(1, round(math.sqrt(native_mp * 1_000_000 * ratio)))
+                    orig_ref_h = max(1, round(math.sqrt(native_mp * 1_000_000 / ratio)))
+                elif fixed_canvas:
+                    native_mp = (first_native_w * first_native_h) / 1_000_000
+                    orig_ref_w, orig_ref_h = _compute_canvas_dims(aspect_ratio, native_mp)
+                else:
+                    orig_ref_w = first_native_w
+                    orig_ref_h = first_native_h
+
+            if ref_w is None:
+                tmp_scaled = _scale_to_megapixels(first_valid_img, megapixels)
+                ref_w, ref_h = tmp_scaled.size
+
+        for fname in filtered_filenames:
             fpath = input_dir / fname
             if not fpath.exists():
                 print(f"[MultiImageLoader] Warning: file not found \u2013 {fpath}")
@@ -821,20 +877,6 @@ class MultiImageLoader:
 
                 # ── Original-resolution branch (no megapixel budget) ──
                 img_orig = img.copy()
-                if orig_ref_w is None:
-                    if master_canvas:
-                        # Master image defines ratio; scale to native resolution
-                        native_mp = (img_orig.size[0] * img_orig.size[1]) / 1_000_000
-                        ratio = master_canvas[0] / master_canvas[1]
-                        orig_ref_w = max(1, round(math.sqrt(native_mp * 1_000_000 * ratio)))
-                        orig_ref_h = max(1, round(math.sqrt(native_mp * 1_000_000 / ratio)))
-                    elif fixed_canvas:
-                        # Respect aspect ratio at native resolution:
-                        # compute canvas at same ratio as fixed_canvas but scaled to native MP
-                        native_mp = (img_orig.size[0] * img_orig.size[1]) / 1_000_000
-                        orig_ref_w, orig_ref_h = _compute_canvas_dims(aspect_ratio, native_mp)
-                    else:
-                        orig_ref_w, orig_ref_h = img_orig.size
                 t_orig = transforms.get(fname)
                 if t_orig:
                     img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color))
@@ -846,10 +888,6 @@ class MultiImageLoader:
                 # ── Scaled branch (megapixel budget) ──
                 img = _scale_to_megapixels(img, megapixels)
                 source_size = img.size
-
-                if ref_w is None:
-                    ref_w, ref_h = img.size
-                    print(f"[MultiImageLoader] ref size: {ref_w}\u00d7{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
 
                 t = transforms.get(fname)
                 # Resolve node-level bg_color word to RGB tuple

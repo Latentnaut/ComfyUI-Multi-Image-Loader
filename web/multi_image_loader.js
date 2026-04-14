@@ -138,7 +138,7 @@ function injectStyles() {
     }
     /* ── Insert mode: glowing blue line between thumbnails ── */
     .mil-insert-before::before,
-    .mil-insert-after::after {
+    .mil-insert-after::before {
       content: '';
       position: absolute;
       background: #7ab0ff;
@@ -149,22 +149,22 @@ function injectStyles() {
     }
     /* Vertical line for grid mode */
     .mil-grid:not(.mil-row-mode) .mil-insert-before::before,
-    .mil-grid:not(.mil-row-mode) .mil-insert-after::after {
+    .mil-grid:not(.mil-row-mode) .mil-insert-after::before {
       top: 0; bottom: 0;
       width: 5px;
       left: -5px;
     }
-    .mil-grid:not(.mil-row-mode) .mil-insert-after::after {
+    .mil-grid:not(.mil-row-mode) .mil-insert-after::before {
       left: auto; right: -5px;
     }
     /* Horizontal line for row mode */
     .mil-grid.mil-row-mode .mil-insert-before::before,
-    .mil-grid.mil-row-mode .mil-insert-after::after {
+    .mil-grid.mil-row-mode .mil-insert-after::before {
       left: 0; right: 0;
       height: 5px;
       top: -5px;
     }
-    .mil-grid.mil-row-mode .mil-insert-after::after {
+    .mil-grid.mil-row-mode .mil-insert-after::before {
       top: auto; bottom: -5px;
     }
     .mil-first-badge {
@@ -351,6 +351,56 @@ function createWidget(node) {
   `;
   const statusLabel = document.createElement("span");
   statusLabel.style.textAlign = "center";
+  statusLabel.style.whiteSpace = "pre-wrap";
+
+  let _statusMsgTimer = null;
+  let _defaultStatusText = "";
+  function setStatusText(text) {
+    _defaultStatusText = text;
+    if (!_statusMsgTimer) {
+      statusLabel.textContent = text;
+      statusLabel.style.color = "#8899bb";
+    }
+  }
+  function flashStatusMessage(msg, durationMs = 2500) {
+    if (_statusMsgTimer) clearTimeout(_statusMsgTimer);
+    statusLabel.style.color = "#aaccff";
+    statusLabel.textContent = msg;
+    _statusMsgTimer = setTimeout(() => {
+      _statusMsgTimer = null;
+      setStatusText(_defaultStatusText);
+    }, durationMs);
+  }
+
+  function updateStatusBarText() {
+    const count = items.length;
+    const selCount = selectedIndices.size;
+    
+    if (count === 0) {
+      setStatusText("");
+      return;
+    }
+    
+    setStatusText(`${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`);
+    
+    (async () => {
+      try {
+        const { refW, refH } = await computeRefDims();
+        const masterActive = isMasterConnected() && getMasterImageDims();
+        const ar = getAspectRatioWidget()?.value ?? "none";
+        const arLabel = masterActive ? " · upstream" : (ar !== "none" ? ` · ${ar}` : "");
+        const baseText = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${arLabel}`;
+        
+        if (selCount > 0) {
+          setStatusText(`${baseText}\n${selCount} image${selCount !== 1 ? "s" : ""} selected for the output batch`);
+        } else {
+          setStatusText(baseText);
+        }
+      } catch(e) {
+        // ignore error, keep default text
+      }
+    })();
+  }
 
   // Right-side button group
   const btnGroup = document.createElement("div");
@@ -456,6 +506,8 @@ function createWidget(node) {
     items = state.items;
     cropMap = state.cropMap;
     selectedIdx = null;
+    selectedIndices.clear();
+    anchorIdx = null;
     previewActive = items.some(it => it.previewSrc);
     if (typeof syncUndoBtn === "function") syncUndoBtn();
     
@@ -471,7 +523,9 @@ function createWidget(node) {
 
   // Drag-reorder state
   let dragSrcIdx = null;
-  let selectedIdx = null; // Track selected thumbnail
+  let selectedIdx = null; // Track primary selected thumbnail
+  let selectedIndices = new Set(); // Multi-selection tracking
+  let anchorIdx = null; // Anchor for shift-click range selection
   let _cachedCopyBlob = null; // Pre-rendered PNG blob for instant Ctrl+C
   let _cachedCopyIdx  = null; // Which idx the cached blob belongs to
 
@@ -508,16 +562,6 @@ function createWidget(node) {
       }
     })();
   }
-
-  document.addEventListener("mousedown", (e) => {
-    // Deselect if clicking outside any thumbnail in this node
-    if (!root.contains(e.target) || !e.target.closest(".mil-thumb")) {
-      selectedIdx = null;
-      _cachedCopyBlob = null;
-      _cachedCopyIdx  = null;
-      try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
-    }
-  });
 
   // Preview state
   let previewActive = false;
@@ -572,7 +616,7 @@ function createWidget(node) {
   // ── refresh button ─────────────────────────────────────────────────────────
   const refreshBtn = document.createElement("button");
   refreshBtn.textContent = "↻ Cache Images";
-  refreshBtn.title = "Refresh Images · Pull master_image as first thumbnail";
+  refreshBtn.title = "Refresh Images · Pull connected images as first thumbnails";
   refreshBtn.className = "mil-btn";
   refreshBtn.style.cssText = `
     background: #252525;
@@ -593,7 +637,10 @@ function createWidget(node) {
     refreshBtn.style.background = "#252525";
     refreshBtn.style.borderColor = "#444";
   });
-  refreshBtn.addEventListener("click", () => doRefreshImages());
+  refreshBtn.addEventListener("click", () => {
+    doRefreshImages();
+    flashStatusMessage("Images refreshed");
+  });
   btnGroup.appendChild(refreshBtn);
 
   // (viewToggleBtn removed — thumb_size now controls column layout)
@@ -637,14 +684,14 @@ function createWidget(node) {
   btnGroup.appendChild(clearBtn);
 
   // ── doRefreshImages ─────────────────────────────────────────────────────────
-  // Reads the first frame from the connected master_image source node.
+  // Reads the first frame from the connected images source node.
   // Injects a temporary PreviewImage node into the subgraph to force execution 
   // and guarantee we capture the output image directly from the websocket.
   async function doRefreshImages() {
     if (!node.inputs) return;
-    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    const masterInput = node.inputs.find(inp => inp.name === "images");
     if (!masterInput || masterInput.link == null) {
-      // No master connected — just re-render existing items
+      // No input connected — just re-render existing items
       render();
       await renderFitPreviews();
       await renderCropPreviews();
@@ -662,60 +709,65 @@ function createWidget(node) {
     statusLabel.textContent = "Executing master subgraph…";
     statusLabel.style.color = "#ffcc66";
 
-    let imgSrc = null;
+    let imgUrls = null;
     try {
-      imgSrc = await _execSourceSubgraph(srcNode, linkInfo.origin_slot);
+      imgUrls = await _execSourceSubgraph(srcNode, linkInfo.origin_slot);
     } catch (e) {
       console.warn("[MIL Refresh] Subgraph execution failed:", e);
     }
 
-    if (!imgSrc) {
-      statusLabel.textContent = "No image returned — check node outputs";
+    if (!imgUrls || imgUrls.length === 0) {
+      statusLabel.textContent = "No images returned — check node outputs";
       statusLabel.style.color = "#ff9966";
       return;
     }
 
-    statusLabel.textContent = "Pulling master image…";
+    statusLabel.textContent = `Pulling ${imgUrls.length} image(s)…`;
     statusLabel.style.color = "#ffcc66";
 
     try {
-      // Fetch the preview image as a blob
-      const resp = await fetch(imgSrc);
-      if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
-      const blob = await resp.blob();
-
-      // Derive an extension and force filename to start with "master_image" for tracking
-      let ext = "png";
-      try {
-        const u = new URL(imgSrc, location.origin);
-        const fn = u.searchParams.get("filename");
-        if (fn && fn.includes(".")) ext = fn.split('.').pop();
-      } catch {}
-      const masterFilename = `master_image_${Date.now()}.${ext}`;
-      const file = new File([blob], masterFilename, { type: blob.type || `image/${ext}` });
-
-      // Upload to ComfyUI input
-      const dataUrl = await fileToDataURL(file);
-      const [uploadedName] = await uploadFiles([file]);
-
-      // Insert at position 0, or replace if position 0 is already an old master image
       pushUndoState();
-      if (items.length > 0) {
-        const oldFilename = items[0].filename;
-        // Old versions might have uploaded as ComfyUI_temp or generic names, 
-        // but new ones will start with master_image_
-        if (oldFilename.startsWith("master_image") || oldFilename.startsWith("ComfyUI_temp")) {
-          if (oldFilename !== uploadedName) {
-            delete cropMap[oldFilename];
-          }
-          items[0] = { filename: uploadedName, src: dataUrl };
-        } else {
-          // Position 0 is an explicitly imported user image, don't overwrite it!
-          items.unshift({ filename: uploadedName, src: dataUrl });
-        }
-      } else {
-        items.push({ filename: uploadedName, src: dataUrl });
+      
+      const newFiles = [];
+      const dataUrls = [];
+      
+      for (let i = 0; i < imgUrls.length; i++) {
+        const imgSrc = imgUrls[i];
+        const resp = await fetch(imgSrc);
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+
+        let ext = "png";
+        try {
+          const u = new URL(imgSrc, location.origin);
+          const fn = u.searchParams.get("filename");
+          if (fn && fn.includes(".")) ext = fn.split('.').pop();
+        } catch {}
+        const masterFilename = `master_image_${Date.now()}_${i}.${ext}`;
+        const file = new File([blob], masterFilename, { type: blob.type || `image/${ext}` });
+        
+        newFiles.push(file);
+        dataUrls.push(await fileToDataURL(file));
       }
+
+      if (newFiles.length === 0) throw new Error("Failed to download any valid images");
+      
+      // Upload bulk to ComfyUI
+      const uploadedNames = await uploadFiles(newFiles);
+      
+      const newItems = [];
+      for (let i = 0; i < uploadedNames.length; i++) {
+        newItems.push({ filename: uploadedNames[i], src: dataUrls[i] });
+      }
+
+      // Remove any previously cached master images from the very start of the array
+      while (items.length > 0 && (items[0].filename.startsWith("master_image") || items[0].filename.startsWith("ComfyUI_temp"))) {
+        const oldFn = items.shift().filename;
+        delete cropMap[oldFn];
+      }
+
+      // Prepend the new batch
+      items.unshift(...newItems);
 
       await updateThumbHFromFirst();
       statusLabel.style.color = "#8899bb";
@@ -743,7 +795,7 @@ function createWidget(node) {
   // ── _execSourceSubgraph ─────────────────────────────────────────────────────
   // Injects a temporary PreviewImage node to force the subgraph to execute
   // and safely extracts its output via websocket.
-  // Returns a Promise<string|null> resolving to the image URL.
+  // Returns a Promise<string[]|null> resolving to an array of image URLs.
   function _execSourceSubgraph(srcNode, srcSlot) {
     return new Promise(async (resolve) => {
       let resolved = false;
@@ -766,13 +818,12 @@ function createWidget(node) {
           resolved = true;
           cleanup();
           console.log("[MIL Refresh] ✅ Preview intercepted via proxy node");
-          let imgSrc = null;
+          let imgUrls = null;
           const images = event.detail?.output?.images;
           if (images && images.length > 0) {
-            const img = images[0];
-            imgSrc = `/view?filename=${encodeURIComponent(img.filename)}&type=${img.type || "temp"}&subfolder=${encodeURIComponent(img.subfolder || "")}`;
+            imgUrls = images.map(img => `/view?filename=${encodeURIComponent(img.filename)}&type=${img.type || "temp"}&subfolder=${encodeURIComponent(img.subfolder || "")}`);
           }
-          resolve(imgSrc);
+          resolve(imgUrls);
         }
       };
 
@@ -864,6 +915,10 @@ function createWidget(node) {
     return node.widgets?.find((w) => w.name === "image_list");
   }
 
+  function getSelectedItemsWidget() {
+    return node.widgets?.find((w) => w.name === "selected_items");
+  }
+
   function getAspectRatioWidget() {
     return node.widgets?.find((w) => w.name === "aspect_ratio");
   }
@@ -891,6 +946,12 @@ function createWidget(node) {
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
+    
+    const sw = getSelectedItemsWidget();
+    if (sw) {
+      sw.value = JSON.stringify(Array.from(selectedIndices).map(idx => items[idx]?.filename).filter(Boolean));
+    }
+    
     persistCropData();
     node.setDirtyCanvas(true, true);
   }
@@ -914,12 +975,12 @@ function createWidget(node) {
     if (w) w.value = JSON.stringify(cropMap);
   }
 
-  // ── master_image connection helper ────────────────────────────────────────
-  // Returns { w, h } of the connected master_image source node's last output,
+  // ── input connection helper ────────────────────────────────────────
+  // Returns { w, h } of the connected images source node's last output,
   // or null if not connected / not yet executed.
   function getMasterImageDims() {
     if (!node.inputs) return null;
-    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    const masterInput = node.inputs.find(inp => inp.name === "images");
     if (!masterInput || masterInput.link == null) return null;
     const linkInfo = app.graph.links[masterInput.link];
     if (!linkInfo) return null;
@@ -936,10 +997,10 @@ function createWidget(node) {
     return null;
   }
 
-  /** Check if master_image input is connected. */
+  /** Check if images input is connected. */
   function isMasterConnected() {
     if (!node.inputs) return false;
-    const masterInput = node.inputs.find(inp => inp.name === "master_image");
+    const masterInput = node.inputs.find(inp => inp.name === "images");
     return !!(masterInput && masterInput.link != null);
   }
 
@@ -1063,7 +1124,7 @@ function createWidget(node) {
   // ── render ────────────────────────────────────────────────────────────────
 
   function render() {
-    statusLabel.style.color = "#8899bb";
+    if (!_statusMsgTimer) statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const cols = getThumbCols();
     grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
@@ -1075,7 +1136,7 @@ function createWidget(node) {
       // ── wrapper ──────────────────────────────────────────────────────────
       const wrapper = document.createElement("div");
       wrapper.className = "mil-thumb";
-      if (idx === selectedIdx) wrapper.classList.add("mil-selected");
+      if (selectedIndices.has(idx)) wrapper.classList.add("mil-selected");
       wrapper.draggable = true;
       wrapper.dataset.idx = idx;
       const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
@@ -1190,10 +1251,24 @@ function createWidget(node) {
       removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         pushUndoState();
-        items.splice(idx, 1);
+        
+        let toRemove = [idx];
+        if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+          toRemove = Array.from(selectedIndices).sort((a,b) => b - a);
+        }
+        
+        for (const i of toRemove) {
+          items.splice(i, 1);
+        }
         items.forEach((it) => delete it.previewSrc);
         previewActive = false;
+        
+        selectedIndices.clear();
+        selectedIdx = null;
+        anchorIdx = null;
+        
         if (items.length === 0) thumbH = THUMB_W;
+        flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
         render();
         persist();
       });
@@ -1281,28 +1356,66 @@ function createWidget(node) {
       wrapper.addEventListener("click", (e) => {
         // Only toggle selection if clicking the thumbnail directly (not its buttons)
         if (e.target.closest("button")) return;
-        const wasSelected = selectedIdx === idx;
-        selectedIdx = null;
-        _cachedCopyBlob = null;
-        _cachedCopyIdx  = null;
-        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
         
-        if (!wasSelected) {
+        if (e.shiftKey && anchorIdx !== null) {
+          selectedIndices.clear();
+          const start = Math.min(anchorIdx, idx);
+          const end = Math.max(anchorIdx, idx);
+          for (let i = start; i <= end; i++) selectedIndices.add(i);
           selectedIdx = idx;
-          wrapper.classList.add("mil-selected");
-          precacheSelectedBlob();
+        } else {
+          if (selectedIndices.has(idx)) {
+            selectedIndices.delete(idx);
+            if (selectedIdx === idx) {
+              selectedIdx = selectedIndices.size > 0 ? Array.from(selectedIndices).pop() : null;
+            }
+          } else {
+            selectedIndices.add(idx);
+            selectedIdx = idx;
+            anchorIdx = idx;
+          }
         }
+
+        _cachedCopyBlob = null;
+        _cachedCopyIdx = null;
+        
+        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
+        const allWrappers = grid.querySelectorAll(".mil-thumb");
+        selectedIndices.forEach(i => {
+           if (allWrappers[i]) allWrappers[i].classList.add("mil-selected");
+        });
+
+        if (selectedIdx !== null) precacheSelectedBlob();
+        persist();
+        updateStatusBarText();
       });
       wrapper.addEventListener("dblclick", (e) => {
-        // Apply any pending edits, then open Mask Editor directly
-        openMaskEditor(idx);
+        // Find double_click widget setting
+        const dcWidget = node.widgets?.find(w => w.name === "double_click");
+        const action = dcWidget ? dcWidget.value : "Edit Image";
+        
+        if (action === "Edit Pixel") {
+          openCropEditor(idx, false, "pixels");
+        } else if (action === "Mask") {
+          openMaskEditor(idx);
+        } else {
+          // Default to Edit Image
+          openCropEditor(idx, false, "edit");
+        }
       });
       copyBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        // Select this thumbnail so Ctrl+C/X also work after clicking copy
+        // Set this as primary but don't clear multi-selection if it's already in it
+        if (!selectedIndices.has(idx)) {
+          selectedIndices.clear();
+          selectedIndices.add(idx);
+          try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
+          wrapper.classList.add("mil-selected");
+        }
         selectedIdx = idx;
-        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
-        wrapper.classList.add("mil-selected");
+        anchorIdx = idx;
+        persist();
+        updateStatusBarText();
 
         copyBtn.textContent = "⏳";
         (async () => {
@@ -1349,7 +1462,9 @@ function createWidget(node) {
           } catch(err) {
             copyBtn.style.color = "#f55";
             console.error("[MIL] Copy failed:", err);
+            flashStatusMessage("Copy failed");
           } finally {
+            if (ok) flashStatusMessage("Image copied");
             copyBtn.textContent = "⎘";
             setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
           }
@@ -1399,23 +1514,9 @@ function createWidget(node) {
     const count = items.length;
     updateDropZone(count);
     statusBar.style.display  = "flex"; // Always show so refreshBtn is visible
-    statusLabel.textContent  = count > 0
-      ? `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`
-      : "";
+    
+    updateStatusBarText();
 
-    if (count > 0) {
-      (async () => {
-        try {
-          const { refW, refH } = await computeRefDims();
-          const masterActive = isMasterConnected() && getMasterImageDims();
-          const ar = getAspectRatioWidget()?.value ?? "none";
-          const arLabel = masterActive ? " · master" : (ar !== "none" ? ` · ${ar}` : "");
-          statusLabel.textContent = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${arLabel}`;
-        } catch(e) {
-          // ignore error, keep default text
-        }
-      })();
-    }
     clearBtn.style.display      = count > 0 ? "inline-block" : "none";
     // viewToggleBtn removed
     maskViewBtn.style.display   = count > 0 ? "inline-block" : "none";
@@ -1940,6 +2041,23 @@ function createWidget(node) {
     const cw = getCropDataWidget();
     try { cropMap = JSON.parse(cw?.value || "{}"); } catch { cropMap = {}; }
 
+    // Restore selected items
+    const sw = getSelectedItemsWidget();
+    try {
+      const selectedFilenames = JSON.parse(sw?.value || "[]");
+      selectedIndices.clear();
+      selectedFilenames.forEach((fn) => {
+        const idx = items.findIndex((it) => it.filename === fn);
+        if (idx !== -1) selectedIndices.add(idx);
+      });
+      // also set selectedIdx to the first one if present so UI has an anchor
+      if (selectedIndices.size > 0 && selectedIdx === null) {
+        selectedIdx = Array.from(selectedIndices)[0];
+      }
+    } catch {
+      // ignore
+    }
+
     try {
       const { w: iw, h: ih } = await getImageDimensions(viewURL(filenames[0]));
       thumbH = Math.max(20, Math.round(THUMB_W * ih / iw));
@@ -1956,7 +2074,7 @@ function createWidget(node) {
 
   // ── addFiles (called by drag-drop / file picker) ──────────────────────────
 
-  async function addFiles(files) {
+  async function addFiles(files, insertIdx = -1) {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (!imageFiles.length) return;
 
@@ -1968,10 +2086,19 @@ function createWidget(node) {
       const filenames = await uploadFiles(imageFiles);
 
       pushUndoState();
-      const insertedCount = filenames.length;
-      filenames.forEach((fn, i) => {
-        items.push({ filename: fn, src: dataURLs[i] });
-      });
+      
+      const newItems = filenames.map((fn, i) => ({ filename: fn, src: dataURLs[i] }));
+      const insertedCount = newItems.length;
+      let startFlashIdx = 0;
+      
+      if (insertIdx !== -1 && insertIdx <= items.length) {
+        items.splice(insertIdx, 0, ...newItems);
+        startFlashIdx = insertIdx;
+        selectedIdx = insertIdx + insertedCount - 1; // optionally select the last pasted item
+      } else {
+        startFlashIdx = items.length;
+        items.push(...newItems);
+      }
 
       // Compute thumbH respecting aspect_ratio widget (1:1, 16:9, etc.)
       await updateThumbHFromFirst();
@@ -1987,11 +2114,17 @@ function createWidget(node) {
       // Flash newly added thumbnails with a green border that fades over 5 s
       requestAnimationFrame(() => {
         const allThumbs = grid.querySelectorAll(".mil-thumb");
-        const start = allThumbs.length - insertedCount;
-        for (let i = Math.max(0, start); i < allThumbs.length; i++) {
+        const endFlashIdx = Math.min(startFlashIdx + insertedCount, allThumbs.length);
+        for (let i = startFlashIdx; i < endFlashIdx; i++) {
+          if (!allThumbs[i]) continue;
           allThumbs[i].classList.remove("mil-paste-flash");
           void allThumbs[i].offsetWidth; // force reflow
           allThumbs[i].classList.add("mil-paste-flash");
+        }
+        
+        // Scroll to the newly inserted items if needed
+        if (allThumbs[startFlashIdx]) {
+           allThumbs[startFlashIdx].scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
       });
     } catch (err) {
@@ -2089,12 +2222,17 @@ function createWidget(node) {
       cropMap = {};
       if (masterCrop) cropMap[masterItem.filename] = masterCrop;
       previewActive = Boolean(masterItem.previewSrc);
+      flashStatusMessage("Cleared all except master image");
     } else {
       items  = [];
       thumbH = THUMB_W;
       previewActive = false;
       cropMap = {};
+      flashStatusMessage("All images cleared");
     }
+    selectedIdx = null;
+    selectedIndices.clear();
+    anchorIdx = null;
     render();
     persist();
   });
@@ -2108,6 +2246,32 @@ function createWidget(node) {
   root._hasSelection     = () => selectedIdx !== null;
   root._getCachedBlob    = () => (_cachedCopyIdx === selectedIdx && _cachedCopyBlob) ? _cachedCopyBlob : null;
   root._undo             = popUndoState;
+  
+  root._removeSelectedItems = () => {
+    if (selectedIdx === null) return;
+    pushUndoState();
+    
+    let toRemove = [selectedIdx];
+    if (selectedIndices.size > 1) {
+      toRemove = Array.from(selectedIndices).sort((a,b) => b - a);
+    }
+    
+    for (const i of toRemove) {
+      items.splice(i, 1);
+    }
+    items.forEach((it) => delete it.previewSrc);
+    previewActive = false;
+    
+    selectedIndices.clear();
+    selectedIdx = null;
+    anchorIdx = null;
+    
+    if (items.length === 0) thumbH = THUMB_W;
+    if (typeof flashStatusMessage === "function") flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
+    render();
+    persist();
+  };
+
   root._copySelected     = async () => {
     if (selectedIdx === null || selectedIdx < 0 || selectedIdx >= items.length) return;
     const idxSnap = selectedIdx;
@@ -2205,6 +2369,9 @@ function createWidget(node) {
     }
     
     selectedIdx = null;
+    selectedIndices.clear();
+    anchorIdx = null;
+    if (typeof flashStatusMessage === "function") flashStatusMessage("Image cut");
     previewActive = items.some(it => it.previewSrc);
     await updateThumbHFromFirst();
     render();
@@ -2898,12 +3065,15 @@ function createWidget(node) {
     // slider + click-to-type angle
     const rotRow = document.createElement("div");
     rotRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
+    
+    const rotValEl = document.createElement("div");
+    rotValEl.style.cssText=`background:#1e1e1e;color:#ccc;border:1px solid #333;border-radius:3px;font-size:${_fs10};width:${Math.round(44*uiScale)}px;text-align:center;cursor:text;user-select:none;flex-shrink:0;padding:2px 0;box-sizing:border-box;`;
+    rotValEl.textContent="0\u00b0";
+
     const rotSlider = document.createElement("input");
     rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
     rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
-    const rotValEl = document.createElement("div");
-    rotValEl.style.cssText=`color:#888;font-size:${_fs10};min-width:${Math.round(38*uiScale)}px;text-align:right;cursor:text;user-select:none;flex-shrink:0;`;
-    rotValEl.textContent="0\u00b0";
+    
     function syncRotUI(){
       rotSlider.value = edRotate;
       rotValEl.textContent = edRotate + "\u00b0";
@@ -2911,7 +3081,7 @@ function createWidget(node) {
     rotValEl.addEventListener("click", () => {
       const inp = document.createElement("input");
       inp.type="number"; inp.min=-180; inp.max=180; inp.value=edRotate;
-      inp.style.cssText=`width:${Math.round(40*uiScale)}px;background:#1a1a1a;color:#ccc;border:1px solid #444;border-radius:3px;font-size:${_fs10};padding:1px 3px;`;
+      inp.style.cssText=`width:100%;height:100%;box-sizing:border-box;background:transparent;color:#ccc;border:none;outline:none;font-size:${_fs10};text-align:center;`;
       rotValEl.innerHTML=""; rotValEl.appendChild(inp);
       inp.focus(); inp.select();
       function commit(){
@@ -2926,7 +3096,7 @@ function createWidget(node) {
       edRotate=parseInt(rotSlider.value); rotValEl.textContent=edRotate+"\u00b0"; updLbl(); redraw();
       requestInpaintPreview();
     });
-    rotRow.appendChild(rotSlider); rotRow.appendChild(rotValEl);
+    rotRow.appendChild(rotValEl); rotRow.appendChild(rotSlider);
     secEdit.appendChild(rotRow);
 
     // Background fill elements (created here, appended later — after Remove BG)
@@ -4417,11 +4587,12 @@ function createWidget(node) {
 
   root._pasteFiles = async function (files) {
     if (files.length) {
+      if (typeof flashStatusMessage === "function") {
+        flashStatusMessage(`Pasted ${files.length} image${files.length > 1 ? "s" : ""}`);
+      }
       if (selectedIdx !== null && selectedIdx >= 0 && selectedIdx < items.length) {
-        await replaceFileAt(selectedIdx, files[0]);
-        if (files.length > 1) {
-          await addFiles(files.slice(1));
-        }
+        // Insert AFTER the selected image
+        await addFiles(files, selectedIdx + 1);
       } else {
         await addFiles(files);
       }
@@ -5844,12 +6015,10 @@ app.registerExtension({
       return null;
     }
 
-    // ── Capture-phase keydown listener (Copy/Cut/Undo) ───
+    // ── Capture-phase keydown listener (Copy/Cut/Undo/Delete) ───
     window.addEventListener("keydown", async (e) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
-      if (key !== "c" && key !== "x" && key !== "z") return;
-
+      
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
 
@@ -5862,6 +6031,17 @@ app.registerExtension({
 
       const el = node._milDomWidget?.element;
       if (!el) return;
+
+      // Intercept Delete/Backspace on thumbnails
+      if ((key === "delete" || key === "backspace") && el._hasSelection && el._hasSelection()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (el._removeSelectedItems) el._removeSelectedItems();
+        return;
+      }
+
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (key !== "c" && key !== "x" && key !== "z") return;
 
       if ((key === "c" || key === "x") && !(el._hasSelection && el._hasSelection())) return;
 
@@ -5877,6 +6057,7 @@ app.registerExtension({
             await navigator.clipboard.write([
               new ClipboardItem({ "image/png": cachedBlob })
             ]);
+            if (typeof el.flashStatusMessage === "function") el.flashStatusMessage("Image copied via hotkey");
             const selThumb = el.querySelector?.(".mil-selected");
             if (selThumb) {
               selThumb.style.borderColor = "#5f5";
@@ -5935,7 +6116,8 @@ app.registerExtension({
         
         if (files.length > 0) {
           if (!tryDebouncePaste()) return;
-          if (el._addFiles) await el._addFiles(files);
+          if (el._pasteFiles) await el._pasteFiles(files);
+          else if (el._addFiles) await el._addFiles(files);
         }
       }
     }, { capture: true });
@@ -5970,7 +6152,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "crop_data"];
+        const hiddenNames = ["image_list", "crop_data", "selected_items"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "converted-widget";
@@ -6007,7 +6189,7 @@ app.registerExtension({
         });
 
         // Hide internal-only widgets from user
-        ["image_list", "crop_data", "custom_bg_hex"].forEach(name => {
+        ["image_list", "crop_data", "selected_items", "custom_bg_hex"].forEach(name => {
           const hw = node.widgets?.find(ww => ww.name === name);
           if (hw) {
             hw.type = "converted-widget";
