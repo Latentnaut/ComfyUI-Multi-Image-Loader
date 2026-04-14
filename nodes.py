@@ -727,10 +727,8 @@ class MultiImageLoader:
         return {
             "required": {},
             "optional": {
-                # proportions define the output tensor canvas. Both 'images' (new) 
-                # and 'master_image' (legacy) are checked for backward compatibility.
+                # Optional upstream images whose proportions define the output tensor canvas.
                 "images": ("IMAGE",),
-                "master_image": ("IMAGE",),
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list":   ("STRING", {"default": "[]"}),
                 "fit_mode":     (["letterbox", "crop"],),
@@ -753,19 +751,14 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", master_image=None):
+    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
         # Include images shape in the hash so re-execution triggers when it changes
         master_hash = ""
         if images is not None:
-            master_hash += f"I{images.shape}"
-        if master_image is not None:
-            master_hash += f"M{master_image.shape}"
+            master_hash = f"{images.shape}"
         return hashlib.md5((image_list + crop_data + selected_items + aspect_ratio + fit_mode + bg_color + str(megapixels) + master_hash).encode()).hexdigest()
 
-    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", master_image=None):
-        # Backward compatibility for 'master_image' input name
-        if images is None:
-            images = master_image
+    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
         try:
             filenames = json.loads(image_list)
         except Exception:
