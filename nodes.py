@@ -864,7 +864,28 @@ class MultiImageLoader:
                 tmp_scaled = _scale_to_megapixels(first_valid_img, megapixels)
                 ref_w, ref_h = tmp_scaled.size
 
+        # Fallback if no valid image was found (e.g. only BLANK images)
+        if orig_ref_w is None:
+            orig_ref_w, orig_ref_h = 512, 512
+        if ref_w is None:
+            tmp_scaled = _scale_to_megapixels(Image.new("RGB", (512, 512)), megapixels)
+            ref_w, ref_h = tmp_scaled.size
+
         for fname in filtered_filenames:
+            if fname.startswith("__BLANK__"):
+                _bg_rgb = _parse_bg_color_word(bg_color)
+                
+                img_orig = Image.new("RGB", (orig_ref_w, orig_ref_h), _bg_rgb)
+                orig_arr = np.array(img_orig).astype(np.float32) / 255.0
+                orig_tensors.append(torch.from_numpy(orig_arr).unsqueeze(0))
+
+                img_scaled = Image.new("RGB", (ref_w, ref_h), _bg_rgb)
+                arr = np.array(img_scaled).astype(np.float32) / 255.0
+                tensors.append(torch.from_numpy(arr).unsqueeze(0))
+                
+                mask_tensors.append(torch.ones((1, ref_h, ref_w), dtype=torch.float32))
+                continue
+
             fpath = input_dir / fname
             if not fpath.exists():
                 print(f"[MultiImageLoader] Warning: file not found \u2013 {fpath}")
