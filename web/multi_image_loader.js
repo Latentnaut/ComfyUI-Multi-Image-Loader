@@ -4418,9 +4418,15 @@ function createWidget(node) {
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand" && edLassoDrawing) {
-          const prev = edLassoCurrentPts[edLassoCurrentPts.length - 1];
-          const pt = e.shiftKey ? _snapOrtho45(prev, cNx, cNy) : { x: cNx, y: cNy };
-          edLassoCurrentPts.push(pt); redraw(); return;
+          if (e.shiftKey && edLassoCurrentPts.length >= 1) {
+            // Shift: collapse entire stroke to a single straight snapped line from origin
+            const origin = edLassoCurrentPts[0];
+            const snapped = _snapOrtho45(origin, cNx, cNy);
+            edLassoCurrentPts = [origin, snapped];
+          } else {
+            edLassoCurrentPts.push({ x: cNx, y: cNy });
+          }
+          redraw(); return;
         }
         if (edLassoTool === "polygonal" && edLassoCurrentPts.length > 0) {
           const last = edLassoCurrentPts[edLassoCurrentPts.length - 1];
