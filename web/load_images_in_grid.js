@@ -2474,6 +2474,23 @@ function createWidget(node) {
     let _cachedLassoPath2DW = 0, _cachedLassoPath2DH = 0;
     // Shim: mark lasso mask dirty + invalidate path cache
     function _lassoChanged() { _lassoMaskDirty = true; _lassoPath2DVersion++; }
+    function _getLassoClipPath(pw, ph) {
+      // Rebuild only when selection changes (version) or canvas dimensions change
+      if (_cachedLassoPath2D && _cachedLassoPath2DVersion === _lassoPath2DVersion
+          && _cachedLassoPath2DW === pw && _cachedLassoPath2DH === ph)
+        return _cachedLassoPath2D;
+      const path = new Path2D();
+      for (const op of edLassoOps) {
+        if (op.points.length < 3) continue;
+        path.moveTo(op.points[0][0] * pw, op.points[0][1] * ph);
+        for (let i = 1; i < op.points.length; i++) path.lineTo(op.points[i][0] * pw, op.points[i][1] * ph);
+        path.closePath();
+      }
+      _cachedLassoPath2D = path;
+      _cachedLassoPath2DW = pw; _cachedLassoPath2DH = ph;
+      _cachedLassoPath2DVersion = _lassoPath2DVersion;
+      return path;
+    }
     // Cached mask + edge data for performance
     let _cachedMaskCvs = null;
     let _cachedMaskW = 0, _cachedMaskH = 0;
@@ -3311,7 +3328,9 @@ function createWidget(node) {
     // ══════════════════════════════════════════════════════════════════
     // ── IMAGE TOOLS section (Blur / Smudge / CA Fill on image pixels) ──
     // ══════════════════════════════════════════════════════════════════
-    let edPixelTool = null;  // null | "blur" | "smudge"
+    let edPixelTool = null;  // null | "blur" | "smudge" | "brush" | "eyedropper"
+    let edColorFg = "#ffffff";
+    let edColorBg = "#000000";
     let _edCvsEditsPx = null;
     let _edEditsUndoStack = [];
     let _edSmudgeBuf = null;
@@ -3320,6 +3339,7 @@ function createWidget(node) {
     let _edBrushPts = [];
     let _edBrushPos = null;
     let _edCafillLoading = false;
+    let _edAltEyedrop = false; // Alt held while brush — temp eyedropper
 
     // Image dims in pixels panel (mirrors secEdit dims)
     const pxDimLbl = document.createElement("div");
@@ -4325,9 +4345,56 @@ function createWidget(node) {
         const rPx = parseFloat(ptBrSlider.value) * pxScale;
         if (edPixelTool === "blur") {
           _edApplyBlur(epx, epy, rPx);
-        } else {
+        } else if (edPixelTool === "brush") {
+          const prevPt = _edBrushPts.length > 0 ? _edBrushPts[_edBrushPts.length - 1] : null;
+          if (prevPt) {
+            const ctx = _edCvsEditsPx.getContext("2d");
+            ctx.lineCap = "round"; ctx.lineJoin = "round";
+            ctx.strokeStyle = edColorFg; ctx.lineWidth = rPx * 2;
+            if (edLassoOps.length > 0) {
+                // Fast GPU path: compile lasso as Path2D, clip natively — no temp canvas needed
+                const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+                const clipPath = _getLassoClipPath(pw, ph);
+                ctx.save();
+                if (edLassoInverted) {
+                  const inv = new Path2D(); inv.rect(0, 0, pw, ph); inv.addPath(clipPath);
+                  ctx.clip(inv, "evenodd");
+                } else {
+                  ctx.clip(clipPath);
+                }
+                ctx.lineCap = "round"; ctx.lineJoin = "round";
+                ctx.strokeStyle = edColorFg; ctx.lineWidth = rPx * 2;
+                ctx.beginPath(); ctx.moveTo(prevPt.x, prevPt.y); ctx.lineTo(epx, epy); ctx.stroke();
+                ctx.restore();
+            } else {
+                ctx.beginPath(); ctx.moveTo(prevPt.x, prevPt.y); ctx.lineTo(epx, epy); ctx.stroke();
+            }
+          } else {
+            const ctx = _edCvsEditsPx.getContext("2d");
+            ctx.fillStyle = edColorFg;
+            if (edLassoOps.length > 0) {
+                // Fast GPU path: Path2D clip for first dot too
+                const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+                const clipPath = _getLassoClipPath(pw, ph);
+                ctx.save();
+                if (edLassoInverted) {
+                  const inv = new Path2D(); inv.rect(0, 0, pw, ph); inv.addPath(clipPath);
+                  ctx.clip(inv, "evenodd");
+                } else {
+                  ctx.clip(clipPath);
+                }
+                ctx.fillStyle = edColorFg;
+                ctx.beginPath(); ctx.arc(epx, epy, rPx, 0, Math.PI * 2); ctx.fill();
+                ctx.restore();
+            } else {
+                ctx.beginPath(); ctx.arc(epx, epy, rPx, 0, Math.PI * 2); ctx.fill();
+            }
+          }
+        } else if (edPixelTool === "smudge") {
           const prevPt = _edBrushPts.length > 0 ? _edBrushPts[_edBrushPts.length - 1] : null;
           if (prevPt) _edApplySmudge(prevPt, { x: epx, y: epy }, rPx);
+        } else if (edPixelTool === "eyedropper") {
+           _edApplyEyedropper(epx, epy);
         }
         _edBrushPts.push({ x: epx, y: epy });
         redraw(); return;
@@ -4534,7 +4601,36 @@ function createWidget(node) {
         const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
         const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
         const { dw, dh } = _imgRenderDims();
-        _edBrushPts = [{ x: (cx - (imgCX - dw/2)) * pxScale, y: (cy - (imgCY - dh/2)) * pxScale }];
+        const startX = (cx - (imgCX - dw/2)) * pxScale;
+        const startY = (cy - (imgCY - dh/2)) * pxScale;
+        _edBrushPts = [{ x: startX, y: startY }];
+        
+        if (_edAltEyedrop || edPixelTool === "eyedropper") {
+          _edApplyEyedropper(startX, startY);
+        } else if (edPixelTool === "brush") {
+          const rPx = parseFloat(ptBrSlider.value) * pxScale;
+          const ctx = _edCvsEditsPx.getContext("2d");
+          if (edLassoOps.length > 0) {
+              // Fast GPU path: Path2D clip for mousedown initial dot
+              const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+              const clipPath = _getLassoClipPath(pw, ph);
+              const ctx2 = _edCvsEditsPx.getContext("2d");
+              ctx2.save();
+              if (edLassoInverted) {
+                const inv = new Path2D(); inv.rect(0, 0, pw, ph); inv.addPath(clipPath);
+                ctx2.clip(inv, "evenodd");
+              } else {
+                ctx2.clip(clipPath);
+              }
+              ctx2.fillStyle = edColorFg;
+              ctx2.beginPath(); ctx2.arc(startX, startY, rPx, 0, Math.PI * 2); ctx2.fill();
+              ctx2.restore();
+          } else {
+              ctx.fillStyle = edColorFg; ctx.beginPath();
+              ctx.arc(startX, startY, rPx, 0, Math.PI * 2); ctx.fill();
+          }
+          redraw();
+        }
         return;
       }
       // ── lasso start / polygonal click ──
