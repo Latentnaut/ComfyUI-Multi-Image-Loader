@@ -3479,7 +3479,7 @@ function createWidget(node) {
     const ptToolRow = document.createElement("div");
     ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
     const ptBtns = {};
-    [["brush","🖌️ Brush"], ["eyedropper","💉 Eyedrop"], ["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
+    [["brush","🖌️ Brush"], ["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
       const b = document.createElement("button");
       b.textContent = lbl;
       b.style.cssText = `flex:1 0 auto;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
@@ -3497,26 +3497,26 @@ function createWidget(node) {
     ptToolRow.appendChild(ptCABtn);
     secPixels.appendChild(ptToolRow);
 
-    // Foreground / Background colors UI
-    const ptColorRow = document.createElement("div");
-    ptColorRow.style.cssText = `position:relative;width:40px;height:40px;margin:2px 0 0 2px;`;
-    
-    // Background picker
-    const ptBgPicker = document.createElement("input");
-    ptBgPicker.type = "color"; ptBgPicker.value = edColorBg;
-    ptBgPicker.style.cssText = `position:absolute;width:24px;height:24px;left:14px;top:14px;border:1px solid #111;padding:0;cursor:pointer;`;
-    ptBgPicker.addEventListener("input", (e) => { edColorBg = e.target.value; });
-    
-    // Foreground picker
+    // ── Always-visible color + eyedropper row ──
+    const ptColorWrapper = document.createElement("div");
+    ptColorWrapper.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:nowrap;`;
+
     const ptFgPicker = document.createElement("input");
     ptFgPicker.type = "color"; ptFgPicker.value = edColorFg;
-    ptFgPicker.style.cssText = `position:absolute;width:24px;height:24px;left:0px;top:0px;border:1px solid #111;padding:0;cursor:pointer;z-index:2;`;
+    ptFgPicker.title = "Foreground color";
+    ptFgPicker.style.cssText = `width:26px;height:26px;border:1.5px solid #555;padding:0;cursor:pointer;border-radius:3px;flex-shrink:0;`;
     ptFgPicker.addEventListener("input", (e) => { edColorFg = e.target.value; });
-    
+
+    const ptBgPicker = document.createElement("input");
+    ptBgPicker.type = "color"; ptBgPicker.value = edColorBg;
+    ptBgPicker.title = "Background color";
+    ptBgPicker.style.cssText = `width:26px;height:26px;border:1.5px solid #555;padding:0;cursor:pointer;border-radius:3px;flex-shrink:0;`;
+    ptBgPicker.addEventListener("input", (e) => { edColorBg = e.target.value; });
+
     const ptSwapBtn = document.createElement("button");
     ptSwapBtn.innerHTML = `↹`;
-    ptSwapBtn.title = "Swap colors (X)";
-    ptSwapBtn.style.cssText = `position:absolute;left:28px;top:-4px;background:none;border:none;color:#aaa;cursor:pointer;font-size:12px;z-index:3;`;
+    ptSwapBtn.title = "Swap FG/BG (X)";
+    ptSwapBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;color:#aaa;border-radius:${_r5};padding:2px 5px;font-size:13px;cursor:pointer;flex-shrink:0;`;
     ptSwapBtn.addEventListener("click", () => {
       const t = edColorFg; edColorFg = edColorBg; edColorBg = t;
       ptFgPicker.value = edColorFg; ptBgPicker.value = edColorBg;
@@ -3525,23 +3525,28 @@ function createWidget(node) {
     const ptResetBtn = document.createElement("button");
     ptResetBtn.innerHTML = `🔳`;
     ptResetBtn.title = "Reset to Default (D)";
-    ptResetBtn.style.cssText = `position:absolute;left:-8px;top:28px;background:none;border:none;cursor:pointer;font-size:10px;z-index:3;filter:grayscale(1);`;
+    ptResetBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;border-radius:${_r5};padding:2px 5px;font-size:11px;cursor:pointer;filter:grayscale(1);flex-shrink:0;`;
     ptResetBtn.addEventListener("click", () => {
       edColorFg = "#ffffff"; edColorBg = "#000000";
       ptFgPicker.value = edColorFg; ptBgPicker.value = edColorBg;
     });
-    
-    ptColorRow.appendChild(ptBgPicker); ptColorRow.appendChild(ptFgPicker);
-    ptColorRow.appendChild(ptSwapBtn); ptColorRow.appendChild(ptResetBtn);
-    
-    const ptColorWrapper = document.createElement("div");
-    ptColorWrapper.style.cssText = `display:none;align-items:center;margin-top:4px;gap:8px;`;
-    const ptColorLabel = document.createElement("span");
-    ptColorLabel.style.cssText = `color:#888;font-size:${_fs10};`;
-    ptColorLabel.textContent = "Colors";
-    ptColorWrapper.appendChild(ptColorLabel);
-    ptColorWrapper.appendChild(ptColorRow);
+
+    const ptEyeBtn = document.createElement("button");
+    ptEyeBtn.textContent = "💉 Eyedrop";
+    ptEyeBtn.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptEyeBtn.addEventListener("mouseenter", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#2a2a2a"; ptEyeBtn.style.borderColor="#555"; } });
+    ptEyeBtn.addEventListener("mouseleave", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#1e1e1e"; ptEyeBtn.style.borderColor="#3a3a3a"; } });
+    ptEyeBtn.addEventListener("click", () => _selectPixelTool("eyedropper"));
+    ptBtns["eyedropper"] = ptEyeBtn;
+
+    ptColorWrapper.appendChild(ptFgPicker);
+    ptColorWrapper.appendChild(ptBgPicker);
+    ptColorWrapper.appendChild(ptSwapBtn);
+    ptColorWrapper.appendChild(ptResetBtn);
+    ptColorWrapper.appendChild(ptEyeBtn);
     secPixels.appendChild(ptColorWrapper);
+
+    const ptColorRow = ptColorWrapper; // alias for compatibility
 
     // Smudge strength slider
     const ptSmudgeRow = document.createElement("div");
@@ -3604,7 +3609,7 @@ function createWidget(node) {
       ptSmudgeRow.style.display = edPixelTool === "smudge" ? "flex" : "none";
       const needsSize = ["blur", "smudge", "brush"].includes(edPixelTool);
       ptBrushRow.style.display = needsSize ? "flex" : "none";
-      ptColorWrapper.style.display = ["brush", "eyedropper"].includes(edPixelTool) ? "flex" : "none";
+      // ptColorWrapper is always visible — no display toggle needed
       // Update cursor
       if (edPixelTool) {
         ca.style.cursor = "none";
