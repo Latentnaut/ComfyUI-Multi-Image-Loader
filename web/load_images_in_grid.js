@@ -3403,6 +3403,7 @@ function createWidget(node) {
     let _edBrushPts = [];
     let _edBrushPos = null;
     let _edCafillLoading = false;
+    let _edAltEyedrop = false; // Alt held while brush — temp eyedropper
 
     // Image dims in pixels panel (mirrors secEdit dims)
     const pxDimLbl = document.createElement("div");
@@ -4670,11 +4671,12 @@ function createWidget(node) {
         const startY = (cy - (imgCY - dh/2)) * pxScale;
         _edBrushPts = [{ x: startX, y: startY }];
         
-        if (edPixelTool === "brush") {
+        if (_edAltEyedrop || edPixelTool === "eyedropper") {
+          _edApplyEyedropper(startX, startY);
+        } else if (edPixelTool === "brush") {
           const rPx = parseFloat(ptBrSlider.value) * pxScale;
           const ctx = _edCvsEditsPx.getContext("2d");
           if (edLassoOps.length > 0) {
-              // Fast GPU path: Path2D clip for mousedown initial dot
               const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
               const clipPath = _getLassoClipPath(pw, ph);
               const ctx2 = _edCvsEditsPx.getContext("2d");
@@ -4693,8 +4695,6 @@ function createWidget(node) {
               ctx.arc(startX, startY, rPx, 0, Math.PI * 2); ctx.fill();
           }
           redraw();
-        } else if (edPixelTool === "eyedropper") {
-          _edApplyEyedropper(startX, startY);
         }
         return;
       }
@@ -4828,8 +4828,35 @@ function createWidget(node) {
         if (k === "d") { edColorFg = "#ffffff"; edColorBg = "#000000"; if(typeof ptFgPicker !== 'undefined') {ptFgPicker.value=edColorFg; ptBgPicker.value=edColorBg;} }
         if (k === "x") { const t = edColorFg; edColorFg = edColorBg; edColorBg = t; if(typeof ptFgPicker !== 'undefined') {ptFgPicker.value=edColorFg; ptBgPicker.value=edColorBg;} }
       }
+      // Alt held with brush — temporary eyedropper (like Photoshop)
+      if (e.key === "Alt" && edPixelTool === "brush") {
+        e.preventDefault();
+        _edAltEyedrop = true;
+        ca.style.cursor = "crosshair";
+        if (ptBtns["eyedropper"]) {
+          ptBtns["eyedropper"].style.background = "#1a2a3a";
+          ptBtns["eyedropper"].style.color = "#7ab0ff";
+          ptBtns["eyedropper"].style.borderColor = "#445599";
+        }
+        return;
+      }
+    }
+    function onKeyUp(e) {
+      if (e.key === "Alt" && _edAltEyedrop) {
+        _edAltEyedrop = false;
+        if (edPixelTool === "brush") {
+          ca.style.cursor = "none";
+          if (ptBtns["eyedropper"]) {
+            ptBtns["eyedropper"].style.background = "#1e1e1e";
+            ptBtns["eyedropper"].style.color = "#aaa";
+            ptBtns["eyedropper"].style.borderColor = "#3a3a3a";
+          }
+          redraw();
+        }
+      }
     }
     window.addEventListener("keydown", onKey, { capture: true });
+    window.addEventListener("keyup",   onKeyUp);
     prevB.addEventListener("click", ()=>{ if(curIdx>0)             { saveToSes(); loadIdx(curIdx-1); } });
     nextB.addEventListener("click", ()=>{ if(curIdx<items.length-1){ saveToSes(); loadIdx(curIdx+1); } });
 
@@ -4839,6 +4866,7 @@ function createWidget(node) {
       cancelAnimationFrame(rafId); ro.disconnect();
       stopLassoAnts();
       window.removeEventListener("keydown",    onKey, { capture: true });
+      window.removeEventListener("keyup",      onKeyUp);
       window.removeEventListener("mousemove",  onGlobalMove);
       window.removeEventListener("mouseup",    onGlobalUp);
       ov.remove();
