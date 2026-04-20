@@ -2949,15 +2949,19 @@ function createWidget(node) {
       lassoInfoLbl.textContent = txt;
     }
 
-    // ── Orthogonal/45° snap helper (Shift key while drawing) ──
-    // Returns {x, y} snapped to the nearest 45° angle from lastPt
-    function _snapOrtho45(lastPt, nx, ny) {
+    // ── Orthogonal/45° snap helper ──
+    // dw/dh = rendered image pixel dimensions — required for aspect-correct angles.
+    // Without them, 45° in normalized space looks visually wrong for non-square images.
+    function _snapOrtho45(lastPt, nx, ny, dw, dh) {
       if (!lastPt) return { x: nx, y: ny };
-      const dx = nx - lastPt.x, dy = ny - lastPt.y;
-      const angle = Math.atan2(dy, dx); // -π to π
+      const pw = dw || 1, ph = dh || 1;
+      // Convert to canvas pixels for correct visual angle calculation
+      const dpx = (nx - lastPt.x) * pw, dpy = (ny - lastPt.y) * ph;
+      const angle = Math.atan2(dpy, dpx);
       const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4); // nearest 45°
-      const dist = Math.hypot(dx, dy);
-      return { x: lastPt.x + dist * Math.cos(snap), y: lastPt.y + dist * Math.sin(snap) };
+      const dist = Math.hypot(dpx, dpy);
+      // Convert snapped result back to normalized coordinates
+      return { x: lastPt.x + dist * Math.cos(snap) / pw, y: lastPt.y + dist * Math.sin(snap) / ph };
     }
 
     // ── Commit a completed polygon/freehand shape ──
@@ -4419,11 +4423,12 @@ function createWidget(node) {
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand" && edLassoDrawing) {
+          const { dw: _sdw, dh: _sdh } = _imgRenderDims();
           if (e.shiftKey) {
             // Shift held: lock to a straight snapped segment from anchor
             if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
             const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
-            const snapped = _snapOrtho45(anchor, cNx, cNy);
+            const snapped = _snapOrtho45(anchor, cNx, cNy, _sdw, _sdh);
             edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
             edLassoCurrentPts.push(snapped); // live preview endpoint
           } else if (_lassoShiftAnchorIdx >= 0) {
@@ -4438,7 +4443,12 @@ function createWidget(node) {
         }
         if (edLassoTool === "polygonal" && edLassoCurrentPts.length > 0) {
           const last = edLassoCurrentPts[edLassoCurrentPts.length - 1];
-          _lassoCursorNorm = e.shiftKey ? _snapOrtho45(last, cNx, cNy) : { x: cNx, y: cNy };
+          if (e.shiftKey) {
+            const { dw: _sdw, dh: _sdh } = _imgRenderDims();
+            _lassoCursorNorm = _snapOrtho45(last, cNx, cNy, _sdw, _sdh);
+          } else {
+            _lassoCursorNorm = { x: cNx, y: cNy };
+          }
           redraw(); return;
         }
         return; // lasso mode active — don't pan
@@ -4674,7 +4684,7 @@ function createWidget(node) {
           }
           edLassoCurrentPts.push(
             e.shiftKey && edLassoCurrentPts.length > 0
-              ? _snapOrtho45(edLassoCurrentPts[edLassoCurrentPts.length - 1], cNx, cNy)
+              ? _snapOrtho45(edLassoCurrentPts[edLassoCurrentPts.length - 1], cNx, cNy, _cdw, _cdh)
               : { x: cNx, y: cNy }
           ); redraw();
         }
