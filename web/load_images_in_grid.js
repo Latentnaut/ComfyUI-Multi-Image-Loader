@@ -4458,9 +4458,8 @@ function createWidget(node) {
           if (e.shiftKey) {
             if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
             const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
-            const snapped = _snapOrtho45(anchor, cNx, cNy, _sdw, _sdh);
             edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
-            edLassoCurrentPts.push(snapped);
+            edLassoCurrentPts.push({ x: cNx, y: cNy }); // straight line to cursor
           } else if (_lassoShiftAnchorIdx >= 0) {
             _lassoShiftAnchorIdx = -1;
           } else {

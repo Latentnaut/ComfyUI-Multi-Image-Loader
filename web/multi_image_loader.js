@@ -4428,9 +4428,8 @@ function createWidget(node) {
             // Shift held: lock to a straight snapped segment from anchor
             if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
             const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
-            const snapped = _snapOrtho45(anchor, cNx, cNy, _sdw, _sdh);
             edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
-            edLassoCurrentPts.push(snapped); // live preview endpoint
+            edLassoCurrentPts.push({ x: cNx, y: cNy }); // straight line to cursor, no angle constraint
           } else if (_lassoShiftAnchorIdx >= 0) {
             // Shift just released: snapped endpoint already committed — just exit shift mode
             _lassoShiftAnchorIdx = -1;
