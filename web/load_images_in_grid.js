@@ -2474,6 +2474,7 @@ function createWidget(node) {
     let _lassoOverlayBg = null;
     let _lassoMaskDirty = true;
     let _lassoCursorNorm = null;
+    let _lassoShiftAnchorIdx = -1; // index into edLassoCurrentPts when Shift was last pressed
     // Reusable temp canvas for brush clipping (avoids GC pressure from createElement per mousemove)
     let _brushClipCvs = null; let _brushClipCtx = null; // kept for potential future use
     // ── Path2D lasso clip cache — version counter ensures rebuild whenever selection changes ──
@@ -4451,12 +4452,14 @@ function createWidget(node) {
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand" && edLassoDrawing) {
-          if (e.shiftKey && edLassoCurrentPts.length >= 1) {
-            // Shift: collapse entire stroke to a single straight snapped line from origin
-            const origin = edLassoCurrentPts[0];
-            const snapped = _snapOrtho45(origin, cNx, cNy);
-            edLassoCurrentPts = [origin, snapped];
+          if (e.shiftKey) {
+            if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
+            const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
+            const snapped = _snapOrtho45(anchor, cNx, cNy);
+            edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
+            edLassoCurrentPts.push(snapped);
           } else {
+            _lassoShiftAnchorIdx = -1;
             edLassoCurrentPts.push({ x: cNx, y: cNy });
           }
           redraw(); return;
@@ -4689,7 +4692,7 @@ function createWidget(node) {
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand") {
-          edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; ca.style.cursor = 'crosshair';
+          edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; _lassoShiftAnchorIdx = -1; ca.style.cursor = 'crosshair';
         } else {
           if (edLassoCurrentPts.length >= 3) {
             const { dw: _cdw, dh: _cdh } = _imgRenderDims();
