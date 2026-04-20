@@ -3478,12 +3478,12 @@ function createWidget(node) {
     }, "Reset all pixel edits"));
 
     const ptToolRow = document.createElement("div");
-    ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:nowrap;`;
+    ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
     const ptBtns = {};
     [["brush","🖌️ Brush"], ["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
       const b = document.createElement("button");
       b.textContent = lbl;
-      b.style.cssText = `flex:1;min-width:0;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
+      b.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
       b.addEventListener("mouseenter", () => { if (edPixelTool !== k) { b.style.background="#2a2a2a"; b.style.borderColor="#555"; } });
       b.addEventListener("mouseleave", () => { if (edPixelTool !== k) { b.style.background="#1e1e1e"; b.style.borderColor="#3a3a3a"; } });
       b.addEventListener("click", () => _selectPixelTool(k));
@@ -3491,18 +3491,17 @@ function createWidget(node) {
     });
     const ptCABtn = document.createElement("button");
     ptCABtn.textContent = "✨ CA Fill";
-    ptCABtn.style.cssText = `flex:1;min-width:0;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
+    ptCABtn.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
     ptCABtn.addEventListener("mouseenter", () => { ptCABtn.style.background="#2a2a2a"; ptCABtn.style.borderColor="#555"; });
     ptCABtn.addEventListener("mouseleave", () => { ptCABtn.style.background="#1e1e1e"; ptCABtn.style.borderColor="#3a3a3a"; });
     ptCABtn.addEventListener("click", () => _edRunCAFill());
     ptToolRow.appendChild(ptCABtn);
     secPixels.appendChild(ptToolRow);
 
-    // ── Always-visible color + eyedropper row ──
+    // ── Color row: compact FG/BG + swap + reset ──
     const ptColorWrapper = document.createElement("div");
     ptColorWrapper.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;`;
 
-    // Compact stacked FG/BG (Photoshop style)
     const ptColorStack = document.createElement("div");
     ptColorStack.style.cssText = `position:relative;width:42px;height:30px;flex-shrink:0;`;
 
@@ -3537,19 +3536,20 @@ function createWidget(node) {
       ptFgPicker.value = edColorFg; ptBgPicker.value = edColorBg;
     });
 
+    ptColorWrapper.appendChild(ptColorStack);
+    ptColorWrapper.appendChild(ptSwapBtn);
+    ptColorWrapper.appendChild(ptResetBtn);
+    secPixels.appendChild(ptColorWrapper);
+
+    // ── Eyedropper row (below colors) ──
     const ptEyeBtn = document.createElement("button");
-    ptEyeBtn.textContent = "💉 Eyedrop";
-    ptEyeBtn.style.cssText = `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptEyeBtn.textContent = "💉 Eyedropper";
+    ptEyeBtn.style.cssText = `width:100%;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;margin-top:4px;box-sizing:border-box;`;
     ptEyeBtn.addEventListener("mouseenter", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#2a2a2a"; ptEyeBtn.style.borderColor="#555"; } });
     ptEyeBtn.addEventListener("mouseleave", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#1e1e1e"; ptEyeBtn.style.borderColor="#3a3a3a"; } });
     ptEyeBtn.addEventListener("click", () => _selectPixelTool("eyedropper"));
     ptBtns["eyedropper"] = ptEyeBtn;
-
-    ptColorWrapper.appendChild(ptColorStack);
-    ptColorWrapper.appendChild(ptSwapBtn);
-    ptColorWrapper.appendChild(ptResetBtn);
-    ptColorWrapper.appendChild(ptEyeBtn);
-    secPixels.appendChild(ptColorWrapper);
+    secPixels.appendChild(ptEyeBtn);
 
     const ptColorRow = ptColorWrapper; // alias for compatibility
 
@@ -3569,20 +3569,20 @@ function createWidget(node) {
     ptSmudgeRow.appendChild(ptSmLbl); ptSmudgeRow.appendChild(ptSmSlider); ptSmudgeRow.appendChild(ptSmVal);
     secPixels.appendChild(ptSmudgeRow);
 
-    // Dedicated brush size slider for image tools
+    // Dedicated brush size row: Size | value badge | slider
     const ptBrushRow = document.createElement("div");
     ptBrushRow.style.cssText = `display:none;gap:${_gap5};align-items:center;`;
     const ptBrLbl = document.createElement("span");
     ptBrLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
     ptBrLbl.textContent = "Size";
+    const ptBrVal = document.createElement("span");
+    ptBrVal.style.cssText = `color:#ccc;font-size:${_fs10};font-weight:600;min-width:28px;text-align:right;flex-shrink:0;`;
+    ptBrVal.textContent = "30";
     const ptBrSlider = document.createElement("input");
     ptBrSlider.type = "range"; ptBrSlider.min = "4"; ptBrSlider.max = "150"; ptBrSlider.value = "30";
     ptBrSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    const ptBrVal = document.createElement("span");
-    ptBrVal.style.cssText = `color:#888;font-size:${_fs10};min-width:36px;padding-right:4px;text-align:right;box-sizing:border-box;`;
-    ptBrVal.textContent = "30px";
-    ptBrSlider.addEventListener("input", () => { ptBrVal.textContent = ptBrSlider.value+"px"; redraw(); });
-    ptBrushRow.appendChild(ptBrLbl); ptBrushRow.appendChild(ptBrSlider); ptBrushRow.appendChild(ptBrVal);
+    ptBrSlider.addEventListener("input", () => { ptBrVal.textContent = ptBrSlider.value; redraw(); });
+    ptBrushRow.appendChild(ptBrLbl); ptBrushRow.appendChild(ptBrVal); ptBrushRow.appendChild(ptBrSlider);
     secPixels.appendChild(ptBrushRow);
 
     // Undo / Redo row
