@@ -4458,8 +4458,10 @@ function createWidget(node) {
             const snapped = _snapOrtho45(anchor, cNx, cNy);
             edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
             edLassoCurrentPts.push(snapped);
-          } else {
+          } else if (_lassoShiftAnchorIdx >= 0) {
+            // Shift just released: snapped point stays committed, exit shift mode
             _lassoShiftAnchorIdx = -1;
+          } else {
             edLassoCurrentPts.push({ x: cNx, y: cNy });
           }
           redraw(); return;

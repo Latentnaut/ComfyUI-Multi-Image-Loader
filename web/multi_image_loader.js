@@ -4420,16 +4420,18 @@ function createWidget(node) {
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand" && edLassoDrawing) {
           if (e.shiftKey) {
-            // Shift just pressed — set anchor at current last point
+            // Shift held: lock to a straight snapped segment from anchor
             if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
-            // Collapse everything after anchor to one snapped point
             const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
             const snapped = _snapOrtho45(anchor, cNx, cNy);
             edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
-            edLassoCurrentPts.push(snapped);
-          } else {
-            // Shift released — anchor no longer active, resume free accumulation
+            edLassoCurrentPts.push(snapped); // live preview endpoint
+          } else if (_lassoShiftAnchorIdx >= 0) {
+            // Shift just released: snapped endpoint already committed — just exit shift mode
             _lassoShiftAnchorIdx = -1;
+            // No push: the committed snapped point is the pivot; free drawing resumes next move
+          } else {
+            // Normal free drawing
             edLassoCurrentPts.push({ x: cNx, y: cNy });
           }
           redraw(); return;
