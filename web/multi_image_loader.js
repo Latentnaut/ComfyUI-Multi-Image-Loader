@@ -3447,12 +3447,12 @@ function createWidget(node) {
     }, "Reset all pixel edits"));
 
     const ptToolRow = document.createElement("div");
-    ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
+    ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:nowrap;`;
     const ptBtns = {};
     [["brush","🖌️ Brush"], ["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
       const b = document.createElement("button");
       b.textContent = lbl;
-      b.style.cssText = `flex:1 0 auto;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+      b.style.cssText = `flex:1;min-width:0;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
       b.addEventListener("mouseenter", () => { if (edPixelTool !== k) { b.style.background="#2a2a2a"; b.style.borderColor="#555"; } });
       b.addEventListener("mouseleave", () => { if (edPixelTool !== k) { b.style.background="#1e1e1e"; b.style.borderColor="#3a3a3a"; } });
       b.addEventListener("click", () => _selectPixelTool(k));
@@ -3460,7 +3460,7 @@ function createWidget(node) {
     });
     const ptCABtn = document.createElement("button");
     ptCABtn.textContent = "✨ CA Fill";
-    ptCABtn.style.cssText = `flex:1 0 auto;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptCABtn.style.cssText = `flex:1;min-width:0;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`;
     ptCABtn.addEventListener("mouseenter", () => { ptCABtn.style.background="#2a2a2a"; ptCABtn.style.borderColor="#555"; });
     ptCABtn.addEventListener("mouseleave", () => { ptCABtn.style.background="#1e1e1e"; ptCABtn.style.borderColor="#3a3a3a"; });
     ptCABtn.addEventListener("click", () => _edRunCAFill());
@@ -3469,27 +3469,30 @@ function createWidget(node) {
 
     // ── Always-visible color + eyedropper row ──
     const ptColorWrapper = document.createElement("div");
-    ptColorWrapper.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:nowrap;`;
+    ptColorWrapper.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;`;
 
-    // FG swatch (click opens native color picker)
+    // Compact stacked FG/BG (Photoshop style)
+    const ptColorStack = document.createElement("div");
+    ptColorStack.style.cssText = `position:relative;width:42px;height:30px;flex-shrink:0;`;
+
+    const ptBgPicker = document.createElement("input");
+    ptBgPicker.type = "color"; ptBgPicker.value = edColorBg; ptBgPicker.title = "Background color";
+    ptBgPicker.style.cssText = `position:absolute;width:22px;height:22px;left:14px;top:8px;border:1.5px solid #333;padding:0;cursor:pointer;border-radius:2px;`;
+    ptBgPicker.addEventListener("input", (e) => { edColorBg = e.target.value; });
+
     const ptFgPicker = document.createElement("input");
-    ptFgPicker.type = "color"; ptFgPicker.value = edColorFg;
-    ptFgPicker.title = "Foreground color";
-    ptFgPicker.style.cssText = `width:26px;height:26px;border:1.5px solid #555;padding:0;cursor:pointer;border-radius:3px;flex-shrink:0;`;
+    ptFgPicker.type = "color"; ptFgPicker.value = edColorFg; ptFgPicker.title = "Foreground color";
+    ptFgPicker.style.cssText = `position:absolute;width:22px;height:22px;left:0;top:0;border:1.5px solid #555;padding:0;cursor:pointer;border-radius:2px;z-index:2;`;
     ptFgPicker.addEventListener("input", (e) => { edColorFg = e.target.value; });
 
-    // BG swatch
-    const ptBgPicker = document.createElement("input");
-    ptBgPicker.type = "color"; ptBgPicker.value = edColorBg;
-    ptBgPicker.title = "Background color";
-    ptBgPicker.style.cssText = `width:26px;height:26px;border:1.5px solid #555;padding:0;cursor:pointer;border-radius:3px;flex-shrink:0;`;
-    ptBgPicker.addEventListener("input", (e) => { edColorBg = e.target.value; });
+    ptColorStack.appendChild(ptBgPicker);
+    ptColorStack.appendChild(ptFgPicker);
 
     // Swap button
     const ptSwapBtn = document.createElement("button");
     ptSwapBtn.innerHTML = `↹`;
     ptSwapBtn.title = "Swap FG/BG (X)";
-    ptSwapBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;color:#aaa;border-radius:${_r5};padding:2px 5px;font-size:13px;cursor:pointer;flex-shrink:0;`;
+    ptSwapBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;color:#aaa;border-radius:${_r5};padding:1px 5px;font-size:12px;cursor:pointer;flex-shrink:0;`;
     ptSwapBtn.addEventListener("click", () => {
       const t = edColorFg; edColorFg = edColorBg; edColorBg = t;
       ptFgPicker.value = edColorFg; ptBgPicker.value = edColorBg;
@@ -3499,29 +3502,28 @@ function createWidget(node) {
     const ptResetBtn = document.createElement("button");
     ptResetBtn.innerHTML = `🔳`;
     ptResetBtn.title = "Reset to Default (D)";
-    ptResetBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;border-radius:${_r5};padding:2px 5px;font-size:11px;cursor:pointer;filter:grayscale(1);flex-shrink:0;`;
+    ptResetBtn.style.cssText = `background:#1e1e1e;border:1px solid #3a3a3a;border-radius:${_r5};padding:1px 5px;font-size:10px;cursor:pointer;filter:grayscale(1);flex-shrink:0;`;
     ptResetBtn.addEventListener("click", () => {
       edColorFg = "#ffffff"; edColorBg = "#000000";
       ptFgPicker.value = edColorFg; ptBgPicker.value = edColorBg;
     });
 
-    // Eyedropper toggle button (same style as other tool buttons)
+    // Eyedropper toggle
     const ptEyeBtn = document.createElement("button");
     ptEyeBtn.textContent = "💉 Eyedrop";
-    ptEyeBtn.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptEyeBtn.style.cssText = `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
     ptEyeBtn.addEventListener("mouseenter", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#2a2a2a"; ptEyeBtn.style.borderColor="#555"; } });
     ptEyeBtn.addEventListener("mouseleave", () => { if (edPixelTool !== "eyedropper") { ptEyeBtn.style.background="#1e1e1e"; ptEyeBtn.style.borderColor="#3a3a3a"; } });
     ptEyeBtn.addEventListener("click", () => _selectPixelTool("eyedropper"));
     ptBtns["eyedropper"] = ptEyeBtn;
 
-    ptColorWrapper.appendChild(ptFgPicker);
-    ptColorWrapper.appendChild(ptBgPicker);
+    ptColorWrapper.appendChild(ptColorStack);
     ptColorWrapper.appendChild(ptSwapBtn);
     ptColorWrapper.appendChild(ptResetBtn);
     ptColorWrapper.appendChild(ptEyeBtn);
     secPixels.appendChild(ptColorWrapper);
 
-    const ptColorRow = ptColorWrapper; // alias kept for compatibility with _syncPixelToolUI
+    const ptColorRow = ptColorWrapper; // alias for compatibility
 
     // Smudge strength slider
     const ptSmudgeRow = document.createElement("div");
