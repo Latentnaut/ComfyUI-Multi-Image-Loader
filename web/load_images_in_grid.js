@@ -2755,7 +2755,7 @@ function createWidget(node) {
         applyStyle(lassoFreehandB, f); applyStyle(lassoPolyB, p);
         applyStyle(pxLassoFreehandB, f); applyStyle(pxLassoPolyB, p);
         ca.style.cursor = "crosshair";
-        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: add \u00b7 Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: add \u00b7 Alt: subtract";
+        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: ortho · add · Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: ortho · add · Alt: subtract";
       } else {
         applyStyle(lassoFreehandB, offS); applyStyle(lassoPolyB, offS);
         applyStyle(pxLassoFreehandB, offS); applyStyle(pxLassoPolyB, offS);
@@ -2966,7 +2966,7 @@ function createWidget(node) {
     // Hint + Info
     const lassoHintLbl = document.createElement("div");
     lassoHintLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;line-height:1.3;`;
-    lassoHintLbl.textContent = "Shift: add \u00b7 Alt: subtract";
+    lassoHintLbl.textContent = "Shift: ortho · add · Alt: subtract";
     secEdit.appendChild(lassoHintLbl);
     const lassoInfoLbl = document.createElement("div");
     lassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
@@ -2980,6 +2980,16 @@ function createWidget(node) {
       if (addN && subN) txt += ` (${addN} add, ${subN} sub)`;
       if (edLassoInverted) txt += " \u00b7 inverted";
       lassoInfoLbl.textContent = txt;
+    }
+
+    // ── Orthogonal/45° snap helper (Shift key while drawing) ──
+    function _snapOrtho45(lastPt, nx, ny) {
+      if (!lastPt) return { x: nx, y: ny };
+      const dx = nx - lastPt.x, dy = ny - lastPt.y;
+      const angle = Math.atan2(dy, dx);
+      const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+      const dist = Math.hypot(dx, dy);
+      return { x: lastPt.x + dist * Math.cos(snap), y: lastPt.y + dist * Math.sin(snap) };
     }
 
     // ── Commit a completed polygon/freehand shape ──
@@ -4441,10 +4451,14 @@ function createWidget(node) {
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
         if (edLassoTool === "freehand" && edLassoDrawing) {
-          edLassoCurrentPts.push({ x: cNx, y: cNy }); redraw(); return;
+          const prev = edLassoCurrentPts[edLassoCurrentPts.length - 1];
+          const pt = e.shiftKey ? _snapOrtho45(prev, cNx, cNy) : { x: cNx, y: cNy };
+          edLassoCurrentPts.push(pt); redraw(); return;
         }
         if (edLassoTool === "polygonal" && edLassoCurrentPts.length > 0) {
-          _lassoCursorNorm = { x: cNx, y: cNy }; redraw(); return;
+          const last = edLassoCurrentPts[edLassoCurrentPts.length - 1];
+          _lassoCursorNorm = e.shiftKey ? _snapOrtho45(last, cNx, cNy) : { x: cNx, y: cNy };
+          redraw(); return;
         }
         return; // lasso mode active — don't pan
       }
@@ -4677,7 +4691,11 @@ function createWidget(node) {
             const d = Math.hypot(cx - p0c.cx, cy - p0c.cy); // distance in canvas pixels
             if (d < 10) { commitLassoShape(edLassoCurrentPts, e); return; }
           }
-          edLassoCurrentPts.push({ x: cNx, y: cNy }); redraw();
+          edLassoCurrentPts.push(
+            e.shiftKey && edLassoCurrentPts.length > 0
+              ? _snapOrtho45(edLassoCurrentPts[edLassoCurrentPts.length - 1], cNx, cNy)
+              : { x: cNx, y: cNy }
+          ); redraw();
         }
         return;
       }
