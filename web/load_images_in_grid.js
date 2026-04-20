@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ComfyUI-Multi-Image-Loader  –  Frontend Extension v3.0
  *
  * Changes in v3.0:
@@ -2467,6 +2467,13 @@ function createWidget(node) {
     let _lassoOverlayBg = null;
     let _lassoMaskDirty = true;
     let _lassoCursorNorm = null;
+    // Lasso Path2D cache (used by _lassoChanged shim for compatibility with transplanted UI)
+    let _lassoPath2DVersion = 0;
+    let _cachedLassoPath2D = null;
+    let _cachedLassoPath2DVersion = -1;
+    let _cachedLassoPath2DW = 0, _cachedLassoPath2DH = 0;
+    // Shim: mark lasso mask dirty + invalidate path cache
+    function _lassoChanged() { _lassoMaskDirty = true; _lassoPath2DVersion++; }
     // Cached mask + edge data for performance
     let _cachedMaskCvs = null;
     let _cachedMaskW = 0, _cachedMaskH = 0;
@@ -3610,21 +3617,49 @@ function createWidget(node) {
 
     function _edSaveUndo() {
       if (!_edCvsEditsPx) return;
-      _edEditsUndoStack.push(_edCvsEditsPx.toDataURL("image/webp", 0.92));
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      _edEditsUndoStack.push(ctx.getImageData(0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height));
       if (_edEditsUndoStack.length > 10) _edEditsUndoStack.shift();
+      _edEditsRedoStack = []; // new action clears redo history
     }
 
     function _edUndoEdits() {
       if (_edEditsUndoStack.length === 0) return;
-      const src = _edEditsUndoStack.pop();
-      const img = new Image();
-      img.onload = () => {
-        const ctx = _edCvsEditsPx.getContext("2d");
-        ctx.clearRect(0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height);
-        ctx.drawImage(img, 0, 0);
-        redraw();
-      };
-      img.src = src;
+      // Save current state to redo stack before reverting
+      if (_edCvsEditsPx) {
+        const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+        _edEditsRedoStack.push(ctx.getImageData(0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height));
+      }
+      const snap = _edEditsUndoStack.pop();
+      const ctx = _edCvsEditsPx.getContext("2d");
+      ctx.putImageData(snap, 0, 0);
+      redraw();
+    }
+
+    function _edRedoEdits() {
+      if (_edEditsRedoStack.length === 0) return;
+      // Save current state to undo before going forward
+      if (_edCvsEditsPx) {
+        const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+        _edEditsUndoStack.push(ctx.getImageData(0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height));
+      }
+      const snap = _edEditsRedoStack.pop();
+      const ctx = _edCvsEditsPx.getContext("2d");
+      ctx.putImageData(snap, 0, 0);
+      redraw();
+    }
+
+    function _edApplyEyedropper(ex, ey) {
+      if (!_edCvsEditsPx) return;
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const px = Math.round(ex), py = Math.round(ey);
+      if (px < 0 || px >= _edCvsEditsPx.width || py < 0 || py >= _edCvsEditsPx.height) return;
+      const imgData = ctx.getImageData(px, py, 1, 1).data;
+      if (imgData[3] > 0) { // Not transparent
+        const hex = "#" + [imgData[0], imgData[1], imgData[2]].map(x => x.toString(16).padStart(2, '0')).join('');
+        edColorFg = hex;
+        if (typeof ptFgPicker !== 'undefined') ptFgPicker.value = hex;
+      }
     }
 
     // ── Blur on image: separable box blur O(N·R) ──────────────────
