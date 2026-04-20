@@ -6454,7 +6454,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "crop_data", "selected_items"];
+        const hiddenNames = ["image_list", "crop_data", "selected_items", "reference_image", "thumb_size"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "converted-widget";

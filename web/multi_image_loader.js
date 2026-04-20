@@ -59,8 +59,6 @@ const THUMB_W            = 72;
 const THUMB_GAP          = 5;
 const MAX_GRID_ROWS      = 4;   // rows visible before scroll kicks in
 const COMPACT_DROPZONE_H = 32;  // collapsed height when images are loaded
-// Column count per thumb_size preset — images grow freely to fill the node width
-const THUMB_COLS         = { full: 1, large: 2, medium: 3, small: 4 };
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -427,6 +425,24 @@ function createWidget(node) {
     clearBtn.style.background  = "#3a2020";
     clearBtn.style.borderColor = "#884444";
   });
+
+  const addBlankBtn = document.createElement("button");
+  addBlankBtn.textContent = "+ Add Null";
+  addBlankBtn.className = "mil-btn";
+  addBlankBtn.style.cssText = `
+    background: #004400; border: 1px solid #006600;
+    color: #44ff44; border-radius: 4px; padding: 3px 10px;
+    font-size: 10px; cursor: pointer;
+  `;
+  addBlankBtn.title = "Add a blank/null panel to the payload queue.";
+  addBlankBtn.addEventListener("mouseenter", () => {
+    addBlankBtn.style.background  = "#006600";
+    addBlankBtn.style.borderColor = "#44ff44";
+  });
+  addBlankBtn.addEventListener("mouseleave", () => {
+    addBlankBtn.style.background  = "#004400";
+    addBlankBtn.style.borderColor = "#006600";
+  });
   
   const undoBtn = document.createElement("button");
   undoBtn.textContent = "↶ Undo";
@@ -485,7 +501,8 @@ function createWidget(node) {
   // ── state ─────────────────────────────────────────────────────────────────
   // Each item: { filename: string, src: string, previewSrc?: string }
   let items  = [];
-  let thumbH = THUMB_W;  // updated from first image's aspect ratio
+  let thumbH = THUMB_W;  // updated from reference image's aspect ratio
+  let referenceImage = "";
   
   // ── Undo stack ────────────────────────────────────────────────────────────
   const undoStack = [];
@@ -681,6 +698,7 @@ function createWidget(node) {
   });
   syncMaskViewBtn();
   btnGroup.appendChild(maskViewBtn);
+  btnGroup.appendChild(addBlankBtn);
   btnGroup.appendChild(clearBtn);
 
   // ── doRefreshImages ─────────────────────────────────────────────────────────
@@ -919,6 +937,10 @@ function createWidget(node) {
     return node.widgets?.find((w) => w.name === "selected_items");
   }
 
+  function getReferenceImageWidget() {
+    return node.widgets?.find((w) => w.name === "reference_image");
+  }
+
   function getAspectRatioWidget() {
     return node.widgets?.find((w) => w.name === "aspect_ratio");
   }
@@ -936,7 +958,7 @@ function createWidget(node) {
   function getEffectiveBgColor() {
     const val = getBgColorWidget()?.value ?? "gray";
     // Word labels (new)
-    const wordMap = { gray: "#808080", black: "#000000", white: "#ffffff" };
+    const wordMap = { gray: "#808080", black: "#000000", white: "#ffffff", red: "#cc0000" };
     if (wordMap[val]) return wordMap[val];
     // Hex values (legacy / pre-restart compatibility)
     if (/^#[0-9a-fA-F]{6}$/.test(val)) return val;
@@ -951,6 +973,9 @@ function createWidget(node) {
     if (sw) {
       sw.value = JSON.stringify(Array.from(selectedIndices).map(idx => items[idx]?.filename).filter(Boolean));
     }
+    
+    const rw = getReferenceImageWidget();
+    if (rw) rw.value = referenceImage;
     
     persistCropData();
     node.setDirtyCanvas(true, true);
@@ -1029,17 +1054,26 @@ function createWidget(node) {
       return { refW, refH };
     }
 
-    // Priority 3: first image natural dims
-    const r0 = await getImageDimensions(items[0].src);
+    // Priority 3: reference image (if set) OR first image natural dims
+    let refSrc = items[0].src;
+    if (referenceImage) {
+      const refItem = items.find(it => it.filename === referenceImage);
+      if (refItem) refSrc = refItem.src;
+    }
+    const r0 = await getImageDimensions(refSrc);
     return { refW: r0.w, refH: r0.h };
   }
 
   // (renderCropPreviews — defined later after renderFitPreviews)
 
-  /** Number of columns for the current thumb_size preset. */
+  /** Number of columns for the current grid preset. */
   function getThumbCols() {
-    const szKey = node.widgets?.find((ww) => ww.name === "thumb_size")?.value ?? "medium";
-    return THUMB_COLS[szKey] ?? 4;
+    const colsWidget = node.widgets?.find((ww) => ww.name === "grid_columns");
+    if (colsWidget) {
+      const val = parseInt(colsWidget.value, 10);
+      if (!isNaN(val) && val > 0) return val;
+    }
+    return 3;
   }
 
   function getMinThumbW() {
@@ -1116,7 +1150,7 @@ function createWidget(node) {
         <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
         <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
         <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
-        <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using first image as canvas reference</div>
+        <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using selected reference image (⭐) or first image</div>
       `;
     }
   }
@@ -1124,6 +1158,12 @@ function createWidget(node) {
   // ── render ────────────────────────────────────────────────────────────────
 
   function render() {
+    // If the currently assigned reference image was deleted, clear the reference and update state.
+    if (referenceImage !== "" && !items.find(it => it.filename === referenceImage)) {
+      referenceImage = "";
+      persist();
+    }
+
     if (!_statusMsgTimer) statusLabel.style.color = "#8899bb";
     grid.innerHTML = "";
     const cols = getThumbCols();
@@ -1140,22 +1180,29 @@ function createWidget(node) {
       wrapper.draggable = true;
       wrapper.dataset.idx = idx;
       const arRatio = tw / th;   // e.g. 1.0 for 1:1, 1.778 for 16:9
+      const isBlank = !!(item.is_blank);
+      const wrapperBg = isBlank ? getEffectiveBgColor() : "#353535";
       wrapper.style.cssText = `
         position: relative;
         width: 100%;
         padding-top: ${(100 / arRatio).toFixed(4)}%;
         border-radius: 6px;
         overflow: hidden;
-        border: 1px solid #444;
-        background: #353535;
+        border: ${isBlank ? "1.5px dashed #666" : "1px solid #444"};
+        background: ${wrapperBg};
       `;
 
-      // ── image ─────────────────────────────────────────────────────────────
+      // ── image / blank placeholder ─────────────────────────────────────────
       const img = document.createElement("img");
       img.src = item.previewSrc || item.src;
       const fit = item.previewSrc ? "cover" : "contain";
       const imgH = "100%";
-      img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
+      if (isBlank) {
+        // For blank panels: show a subtle null icon, hide the 1x1 transparent img
+        img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:none;pointer-events:none;`;
+      } else {
+        img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
+      }
       img.title = item.filename;
 
       // ── mask overlay canvas (maskViewMode) ──
@@ -1233,7 +1280,34 @@ function createWidget(node) {
         pointer-events:none;z-index:1;
       `;
 
-
+      // ── reference badge/placa de autoridad (top-left) ──
+      const refBtn = document.createElement("button");
+      const isRef = referenceImage !== "" ? (referenceImage === item.filename) : (idx === 0);
+      refBtn.textContent = isRef ? "⭐" : "☆";
+      refBtn.title = isRef ? "Reference Image" : "Set as Reference Image";
+      refBtn.style.cssText = `
+        position:absolute;top:2px;left:2px;
+        background:${isRef ? "rgba(40,40,40,0.85)" : "rgba(40,40,40,0.65)"};
+        color:${isRef ? "#ffd700" : "#eee"};
+        border:none;border-radius:3px;
+        width:16px;height:14px;font-size:10px;
+        cursor:pointer;padding:0;line-height:14px;text-align:center;
+        opacity:${isRef ? "1" : "0"};transition:opacity 0.15s;
+        z-index:2;
+      `;
+      refBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (referenceImage === item.filename) {
+          return; // Prevent unsetting
+        } else {
+          referenceImage = item.filename; // set
+        }
+        await updateThumbHFromFirst();
+        persist();
+        render();
+        await renderFitPreviews();
+        await renderCropPreviews();
+      });
 
       // ── remove button (top-right, shown on hover) ─────────────────────────
       const removeBtn = document.createElement("button");
@@ -1287,14 +1361,15 @@ function createWidget(node) {
         clearInsertIndicator();
       });
 
-      // ── crop button (top-right, next to remove btn) ──────────────────────
-      const cropBtn = document.createElement("button");
-      cropBtn.textContent = "✂";
-      cropBtn.title = "Edit image";
+      // ── panel button (top-right, next to remove btn) ──────────────────────
+      const panelBtn = document.createElement("button");
+      panelBtn.textContent = "⛶";
+      panelBtn.title = "Open Panel";
       const cropActive = hasCrop(item.filename);
-      cropBtn.style.cssText = `
+      const maskActive = hasMask(item.filename);
+      panelBtn.style.cssText = `
         position:absolute;top:2px;right:18px;
-        background:${cropActive ? "rgba(110,110,110,0.9)" : "rgba(40,40,40,0.82)"};
+        background:${(cropActive || maskActive) ? "rgba(110,110,110,0.9)" : "rgba(40,40,40,0.82)"};
         color:#eee;
         border:none;border-radius:3px;
         width:14px;height:14px;font-size:8px;
@@ -1302,37 +1377,26 @@ function createWidget(node) {
         opacity:0;transition:opacity 0.15s;
         z-index:2;
       `;
-      cropBtn.addEventListener("click", (e) => {
+      panelBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        openCropEditor(idx);
+        const dcWidget = node.widgets?.find(w => w.name === "double_click");
+        const action = dcWidget ? dcWidget.value : "Edit Image";
+        
+        if (action === "Edit Pixel") {
+          openCropEditor(idx, false, "pixels");
+        } else if (action === "Mask") {
+          openMaskEditor(idx);
+        } else {
+          openCropEditor(idx, false, "edit");
+        }
       });
 
-      // ── mask button (◧, next to crop btn) ────────────────────────────────────
-      const maskBtnEl = document.createElement("button");
-      maskBtnEl.textContent = "\u25D0";
-      maskBtnEl.title = "Edit mask";
-      const maskActive = hasMask(item.filename);
-      maskBtnEl.style.cssText = `
-        position:absolute;top:2px;right:34px;
-        background:${maskActive ? "rgba(30,80,30,0.92)" : "rgba(40,40,40,0.82)"};
-        color:${maskActive ? "#7fff7f" : "#eee"};
-        border:none;border-radius:3px;
-        width:14px;height:14px;font-size:8px;
-        cursor:pointer;padding:0;line-height:14px;text-align:center;
-        opacity:0;transition:opacity 0.15s;
-        z-index:2;
-      `;
-      maskBtnEl.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openMaskEditor(idx);
-      });
-
-      // ── copy button (top-right, next to mask btn) ──────────────────────
+      // ── copy button (top-right, next to panel btn) ──────────────────────
       const copyBtn = document.createElement("button");
       copyBtn.textContent = "⎘";
       copyBtn.title = "Copy image";
       copyBtn.style.cssText = `
-        position:absolute;top:2px;right:50px;
+        position:absolute;top:2px;right:34px;
         background:rgba(40,40,40,0.82);
         color:#eee;
         border:none;border-radius:3px;
@@ -1343,15 +1407,15 @@ function createWidget(node) {
       `;
       wrapper.addEventListener("mouseenter", () => {
         removeBtn.style.opacity = "1";
-        cropBtn.style.opacity   = "1";
+        panelBtn.style.opacity   = "1";
         copyBtn.style.opacity   = "1";
-        maskBtnEl.style.opacity = "1";
+        refBtn.style.opacity    = "1";
       });
       wrapper.addEventListener("mouseleave", () => {
         removeBtn.style.opacity = "0";
-        cropBtn.style.opacity   = "0";
+        panelBtn.style.opacity   = "0";
         copyBtn.style.opacity   = "0";
-        maskBtnEl.style.opacity = "0";
+        refBtn.style.opacity    = isRef ? "1" : "0";
       });
       wrapper.addEventListener("click", (e) => {
         // Only toggle selection if clicking the thumbnail directly (not its buttons)
@@ -1503,9 +1567,9 @@ function createWidget(node) {
       if (maskOvEl) wrapper.appendChild(maskOvEl);
       wrapper.appendChild(badge);
       wrapper.appendChild(copyBtn);
-      wrapper.appendChild(maskBtnEl);
-      wrapper.appendChild(cropBtn);
+      wrapper.appendChild(panelBtn);
       wrapper.appendChild(removeBtn);
+      wrapper.appendChild(refBtn);
       grid.appendChild(wrapper);
     });
 
@@ -1772,10 +1836,15 @@ function createWidget(node) {
       return;
     }
 
-    // Priority 3: first image natural dims
+    // Priority 3: reference image (if set) OR first image natural dims
     if (items.length === 0) { thumbH = THUMB_W; return; }
     try {
-      const { w, h } = await getImageDimensions(items[0].src);
+      let refSrc = items[0].src;
+      if (referenceImage) {
+        const refItem = items.find(it => it.filename === referenceImage);
+        if (refItem) refSrc = refItem.src;
+      }
+      const { w, h } = await getImageDimensions(refSrc);
       thumbH = Math.max(20, Math.round(THUMB_W * h / w));
     } catch {
       thumbH = THUMB_W;
@@ -2043,6 +2112,10 @@ function createWidget(node) {
     const cw = getCropDataWidget();
     try { cropMap = JSON.parse(cw?.value || "{}"); } catch { cropMap = {}; }
 
+    // Restore reference image
+    const rw = getReferenceImageWidget();
+    referenceImage = rw?.value || "";
+
     // Restore selected items
     const sw = getSelectedItemsWidget();
     try {
@@ -2215,6 +2288,21 @@ function createWidget(node) {
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
   
+  addBlankBtn.addEventListener("click", () => {
+    if (items.length >= 256) {
+      if (typeof flashStatusMessage === "function") flashStatusMessage("Max 256 items limit reached");
+      return;
+    }
+    const blankObj = {
+      filename: "__BLANK__" + Date.now() + ".png",
+      src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+      is_blank: true
+    };
+    items.push(blankObj);
+    serializeImages();
+    render();
+  });
+
   clearBtn.addEventListener("click", () => {
     pushUndoState();
     if (isMasterConnected() && items.length > 0) {
@@ -6518,7 +6606,7 @@ app.registerExtension({
       node._milDomWidget = domWidget;
 
       setTimeout(() => {
-        const hiddenNames = ["image_list", "crop_data", "selected_items"];
+        const hiddenNames = ["image_list", "crop_data", "selected_items", "reference_image", "thumb_size"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
             w.type = "converted-widget";
@@ -6532,8 +6620,8 @@ app.registerExtension({
             if (w.element) w.element.style.display = "none";
           }
         });
-        // Re-render+resize when user changes thumbnail size
-        const tsW = node.widgets?.find((w) => w.name === "thumb_size");
+        // Re-render+resize when user changes grid_columns
+        const tsW = node.widgets?.find((w) => w.name === "grid_columns");
         if (tsW) {
           const origCb = tsW.callback;
           tsW.callback = function (...args) {
@@ -6555,7 +6643,7 @@ app.registerExtension({
         });
 
         // Hide internal-only widgets from user
-        ["image_list", "crop_data", "selected_items", "custom_bg_hex"].forEach(name => {
+        ["image_list", "crop_data", "selected_items", "reference_image", "custom_bg_hex"].forEach(name => {
           const hw = node.widgets?.find(ww => ww.name === name);
           if (hw) {
             hw.type = "converted-widget";

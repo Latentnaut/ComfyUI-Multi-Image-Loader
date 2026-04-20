@@ -737,28 +737,34 @@ class MultiImageLoader:
                 "aspect_ratio": (["none", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
                                  {"default": "none"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
-                "thumb_size":   (["full", "large", "medium", "small"],),  # UI-only: column count
+                "thumb_size":   (["full", "large", "medium", "small"], {"default": "medium"}), # KEEP FOR BACKWARDS COMPATIBILITY
                 "double_click": (["Edit Image", "Edit Pixel", "Mask"], {"default": "Edit Image"}),
                 "crop_data":    ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
                 "selected_items": ("STRING", {"default": "[]"}),  # UI-only: JSON list of selected filenames
+                "reference_image": ("STRING", {"default": ""}),  # UI-only: selected reference image for canvas sizing
+                "grid_columns": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
+                "grid_rows":    ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
+                "randomize":    (["None", "Only Images", "Images and Nulls"], {"default": "None"}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE",)
-    RETURN_NAMES = ("image_batch", "mask_batch", "image_original",)
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE",)
+    RETURN_NAMES = ("image_batch", "mask_batch", "image_original", "grid_image", "grid_hires",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
+    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+        if randomize != "None":
+            return float("NaN")
         # Include images shape in the hash so re-execution triggers when it changes
         master_hash = ""
         if images is not None:
             master_hash = f"{images.shape}"
-        return hashlib.md5((image_list + crop_data + selected_items + aspect_ratio + fit_mode + bg_color + str(megapixels) + master_hash).encode()).hexdigest()
+        return hashlib.md5((image_list + crop_data + selected_items + reference_image + aspect_ratio + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
 
-    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]"):
+    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -788,7 +794,7 @@ class MultiImageLoader:
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
         if not filtered_filenames and images is None:
-            return (placeholder_img, placeholder_mask, placeholder_img)
+            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img)
 
         input_dir = Path(folder_paths.get_input_directory())
         tensors      = []
@@ -798,20 +804,38 @@ class MultiImageLoader:
 
         import torch.nn.functional as F
         
-        # ── Upstream images override aspect_ratio when connected ───────────────
-        # Extract all images from the batch tensor [B, H, W, C]
+        # ── Canvas dimension priority ─────────────────────────────────────────
+        # 1. reference_image (badge)  — highest, user explicitly chose this
+        # 2. upstream images input    — connected tensor dimensions
+        # 3. aspect_ratio dropdown    — explicit ratio selection
+        # 4. first image in the list  — natural fallback
         master_canvas = None
-        if images is not None:
-            # images is a torch tensor [B, H, W, C]
-            m_b = images.shape[0]
+        first_valid_img = None
+        badge_resolved = False
+
+        # Step 1: Try reference_image (badge) first
+        if reference_image:
+            fpath = input_dir / reference_image
+            if fpath.exists():
+                try:
+                    img_tmp = Image.open(fpath)
+                    img_tmp = ImageOps.exif_transpose(img_tmp)
+                    first_valid_img = img_tmp.copy()
+                    badge_resolved = True
+                    orig_ref_w, orig_ref_h = img_tmp.size
+                    tmp_scaled = _scale_to_megapixels(img_tmp, megapixels)
+                    ref_w, ref_h = tmp_scaled.size
+                    fixed_canvas = True
+                    print(f"[MultiImageLoader] BADGE override: {reference_image} ({orig_ref_w}x{orig_ref_h}) -> canvas {ref_w}x{ref_h}")
+                except Exception as e:
+                    print(f"[MultiImageLoader] Failed to open badge reference: {e}")
+
+        # Step 2: If no badge, try upstream images input
+        if not badge_resolved and images is not None:
             m_h = images.shape[1]
             m_w = images.shape[2]
-            
             orig_ref_w = m_w
             orig_ref_h = m_h
-            
-            # Compute the aspect ratio from the first image of the input batch
-            # Scale to fit the megapixel budget while preserving proportions
             total_px = max(1, megapixels * 1_000_000)
             ratio = m_w / m_h
             c_w = max(1, round(math.sqrt(total_px * ratio)))
@@ -819,33 +843,31 @@ class MultiImageLoader:
             master_canvas = (c_w, c_h)
             ref_w, ref_h = master_canvas
             fixed_canvas = True
-            
-            print(f"[MultiImageLoader] images input override: {m_w}x{m_h} → canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP) setting dimensions only")
-            
-        # Canvas priority: images input > aspect_ratio dropdown > first loaded image
-        elif aspect_ratio != "none" and bool(aspect_ratio):
+            print(f"[MultiImageLoader] images input: {m_w}x{m_h} -> canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP)")
+
+        # Step 3: If no badge and no upstream, try aspect_ratio
+        elif not badge_resolved and aspect_ratio != "none" and bool(aspect_ratio):
             fixed_canvas = True
             ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
             print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
-        else:
+        elif not badge_resolved:
             fixed_canvas = False
             ref_w = ref_h = None
 
-        # Pre-compute target canvas dimensions based on the FIRST uploaded image in the entire batch, 
-        # not the first selected image. This guarantees backend dimensions mirror frontend canvas shapes.
-        first_valid_img = None
-        for fname in filenames:
-            fpath = input_dir / fname
-            if fpath.exists():
-                try:
-                    img_tmp = Image.open(fpath)
-                    img_tmp = ImageOps.exif_transpose(img_tmp)
-                    first_valid_img = img_tmp.copy()
-                    break
-                except Exception:
-                    pass
+        # Step 4: Fallback - find first valid image if badge didn't resolve
+        if first_valid_img is None:
+            for fname in filenames:
+                fpath = input_dir / fname
+                if fpath.exists():
+                    try:
+                        img_tmp = Image.open(fpath)
+                        img_tmp = ImageOps.exif_transpose(img_tmp)
+                        first_valid_img = img_tmp.copy()
+                        break
+                    except Exception:
+                        pass
 
-        if first_valid_img is not None:
+        if first_valid_img is not None and not badge_resolved:
             first_native_w, first_native_h = first_valid_img.size
             if orig_ref_w is None:
                 if master_canvas:
@@ -939,66 +961,16 @@ class MultiImageLoader:
                 continue
 
         if not tensors:
-            return (placeholder_img, placeholder_mask, placeholder_img)
+            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img)
 
         batch      = torch.cat(tensors, dim=0)
         mask_batch = torch.cat(mask_tensors, dim=0)
         orig_batch = torch.cat(orig_tensors, dim=0) if orig_tensors else placeholder_img
-        return (batch, mask_batch, orig_batch)
-
-
-# ─── Registrations ────────────────────────────────────────────────────────────
-
-class LoadImagesInGrid(MultiImageLoader):
-    
-    @classmethod
-    def INPUT_TYPES(cls):
-        inputs = MultiImageLoader.INPUT_TYPES()
-        import copy
-        inputs = copy.deepcopy(inputs)
-        
-        if "thumb_size" in inputs["optional"]:
-            del inputs["optional"]["thumb_size"]
-            
-        inputs["optional"]["grid_columns"] = ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"})
-        inputs["optional"]["grid_rows"]    = ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"})
-        inputs["optional"]["randomize"]    = (["None", "Only Images", "Images and Nulls"], {"default": "None"})
-        return inputs
-
-    RETURN_TYPES = ("IMAGE", "IMAGE",)
-    RETURN_NAMES = ("grid_image", "grid_hires",)
-    FUNCTION = "compose_grid"
-    CATEGORY = "image/loaders"
-    
-    @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, randomize="None", double_click="Edit Image", crop_data="{}", selected_items="[]"):
-        # When randomize is active, always re-execute so the shuffle is fresh each run
-        if randomize != "None":
-            return float("NaN")
-        master_hash = ""
-        if images is not None:
-            master_hash = f"{images.shape}"
-        import hashlib
-        return hashlib.md5((image_list + crop_data + selected_items + aspect_ratio + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
-
-    def compose_grid(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, randomize="None", double_click="Edit Image", crop_data="{}", selected_items="[]"):
-        batch, mask_batch, orig_batch = self.load_images(
-            images=images, 
-            image_list=image_list, 
-            fit_mode=fit_mode, 
-            bg_color=bg_color, 
-            aspect_ratio=aspect_ratio, 
-            megapixels=megapixels, 
-            thumb_size="medium", 
-            double_click=double_click, 
-            crop_data=crop_data, 
-            selected_items=selected_items
-        )
         
         grid_image = self._make_grid(batch, grid_rows, grid_columns, randomize, image_list)
         grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns, randomize, image_list)
         
-        return (grid_image, grid_hires)
+        return (batch, mask_batch, orig_batch, grid_image, grid_hires)
 
     def _make_grid(self, batch, rows, cols, randomize="None", image_list="[]"):
         import torch, random, json
@@ -1047,6 +1019,37 @@ class LoadImagesInGrid(MultiImageLoader):
         grid = grid_items.reshape(1, rows * H, cols * W, C)
         return grid
 
+
+# ─── Deprecated Backwards Compatibility ──────────────────────────────────────
+
+class LoadImagesInGrid(MultiImageLoader):
+    """
+    Deprecated class to preserve existing user workflows.
+    Binds the multi-image-loader backend logic to the original (IMAGE, IMAGE) output signature.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = MultiImageLoader.INPUT_TYPES()
+        return inputs
+
+    RETURN_TYPES = ("IMAGE", "IMAGE",)
+    RETURN_NAMES = ("grid_image", "grid_hires",)
+    FUNCTION = "compose_grid"
+    CATEGORY = "image/loaders"
+    
+    @classmethod
+    def IS_CHANGED(cls, *args, **kwargs):
+        return MultiImageLoader.IS_CHANGED(*args, **kwargs)
+
+    def compose_grid(self, *args, **kwargs):
+        # Unpack the 5 tuple output from new load_images implementation
+        # (batch, mask_batch, orig_batch, grid_image, grid_hires)
+        _1, _2, _3, grid_image, grid_hires = self.load_images(*args, **kwargs)
+        return (grid_image, grid_hires)
+
+
+# ─── Registrations ────────────────────────────────────────────────────────────
+
 NODE_CLASS_MAPPINGS = {
     "MultiImageLoader": MultiImageLoader,
     "LoadImagesInGrid": LoadImagesInGrid,
@@ -1054,5 +1057,5 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MultiImageLoader": "Load Multiple Images 🖼️",
-    "LoadImagesInGrid": "Load Images in Grid 🖼️",
+    "LoadImagesInGrid": "Load Images in Grid (Deprecated) 🖼️",
 }
