@@ -2458,9 +2458,12 @@ function createWidget(node) {
     let edLassoMode = false;
     let edLassoTool = "freehand";
     let edLassoOps = [];
+    let edLassoIsPaint = false;
     let edLassoInverted = false;
+    let pxLassoInvertB = null;
     let edLassoCurrentPts = [];
     let edLassoDrawing = false;
+    let _lassoShiftAnchorIdx = -1;
     let edLassoAntsOffset = 0;
     let edLassoAntsRaf = null;
     let _lassoOverlayCvs = null;
