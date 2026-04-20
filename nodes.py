@@ -962,6 +962,7 @@ class LoadImagesInGrid(MultiImageLoader):
             
         inputs["optional"]["grid_columns"] = ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"})
         inputs["optional"]["grid_rows"]    = ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"})
+        inputs["optional"]["randomize"]    = (["None", "Only Images", "Images and Nulls"], {"default": "None"})
         return inputs
 
     RETURN_TYPES = ("IMAGE", "IMAGE",)
@@ -970,14 +971,17 @@ class LoadImagesInGrid(MultiImageLoader):
     CATEGORY = "image/loaders"
     
     @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, double_click="Edit Image", crop_data="{}", selected_items="[]"):
+    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, randomize="None", double_click="Edit Image", crop_data="{}", selected_items="[]"):
+        # When randomize is active, always re-execute so the shuffle is fresh each run
+        if randomize != "None":
+            return float("NaN")
         master_hash = ""
         if images is not None:
             master_hash = f"{images.shape}"
         import hashlib
         return hashlib.md5((image_list + crop_data + selected_items + aspect_ratio + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
 
-    def compose_grid(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, double_click="Edit Image", crop_data="{}", selected_items="[]"):
+    def compose_grid(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, grid_columns=3, grid_rows=3, randomize="None", double_click="Edit Image", crop_data="{}", selected_items="[]"):
         batch, mask_batch, orig_batch = self.load_images(
             images=images, 
             image_list=image_list, 
@@ -991,30 +995,56 @@ class LoadImagesInGrid(MultiImageLoader):
             selected_items=selected_items
         )
         
-        grid_image = self._make_grid(batch, grid_rows, grid_columns)
-        grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns)
+        grid_image = self._make_grid(batch, grid_rows, grid_columns, randomize, image_list)
+        grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns, randomize, image_list)
         
         return (grid_image, grid_hires)
 
-    def _make_grid(self, batch, rows, cols):
-        import torch
+    def _make_grid(self, batch, rows, cols, randomize="None", image_list="[]"):
+        import torch, random, json
         B, H, W, C = batch.shape
         max_images = rows * cols
         
-        batch = batch[:max_images]
-        actual_b = batch.shape[0]
+        # Slice to grid capacity
+        grid_items = batch[:max_images]
+        actual_b = grid_items.shape[0]
         
+        if randomize != "None" and actual_b > 1:
+            # Parse filenames to identify blank (Null Image) positions
+            try:
+                filenames = json.loads(image_list)[:max_images]
+            except Exception:
+                filenames = []
+            # Pad filename list to match actual batch length
+            while len(filenames) < actual_b:
+                filenames.append("")
+            is_blank = [f.startswith("__BLANK__") for f in filenames[:actual_b]]
+
+            if randomize == "Images and Nulls":
+                # Shuffle all slots — images AND null panels move around
+                indices = list(range(actual_b))
+                random.shuffle(indices)
+                grid_items = grid_items[indices]
+
+            elif randomize == "Only Images":
+                # Shuffle only real images; null panels stay in their positions
+                non_blank_pos = [i for i, blank in enumerate(is_blank) if not blank]
+                shuffled_pos   = non_blank_pos[:]
+                random.shuffle(shuffled_pos)
+                result = grid_items.clone()
+                for dest, src in zip(non_blank_pos, shuffled_pos):
+                    result[dest] = grid_items[src]
+                grid_items = result
+        
+        # Pad to fill the full grid if fewer images than cells
         if actual_b < max_images:
             padding = torch.zeros((max_images - actual_b, H, W, C), dtype=batch.dtype, device=batch.device)
-            batch = torch.cat([batch, padding], dim=0)
+            grid_items = torch.cat([grid_items, padding], dim=0)
             
-        # batch represents items in visually row-major order: row 1 (left to right), row 2, etc.
-        # we want to reshape it into a single image.
-        batch = batch.view(rows, cols, H, W, C)
-        # Permute to (rows, H, cols, W, C)
-        batch = batch.permute(0, 2, 1, 3, 4)
-        # Reshape to (rows*H, cols*W, C)
-        grid = batch.reshape(1, rows * H, cols * W, C)
+        # Assemble: row-major order → (rows, cols, H, W, C) → single image
+        grid_items = grid_items.view(rows, cols, H, W, C)
+        grid_items = grid_items.permute(0, 2, 1, 3, 4)   # (rows, H, cols, W, C)
+        grid = grid_items.reshape(1, rows * H, cols * W, C)
         return grid
 
 NODE_CLASS_MAPPINGS = {
