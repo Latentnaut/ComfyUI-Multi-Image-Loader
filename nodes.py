@@ -309,7 +309,7 @@ def _compute_canvas_dims(aspect_ratio: str, megapixels: float, first_img_size=No
     When aspect_ratio is 'none', returns first_img_size unchanged.
     When set, computes dimensions whose product ≈ megapixels * 1 000 000.
     """
-    if aspect_ratio == "none" or not aspect_ratio:
+    if aspect_ratio in ("Starred image", "Image Input", "none") or not aspect_ratio:
         return first_img_size  # may be None if not yet known
     aw, ah = map(int, aspect_ratio.split(":"))
     total_px = max(1, megapixels * 1_000_000)
@@ -734,8 +734,8 @@ class MultiImageLoader:
                 "fit_mode":     (["letterbox", "crop"],),
                 "bg_color":     (["gray", "black", "white", "red"],
                                  {"default": "gray"}),
-                "aspect_ratio": (["none", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
-                                 {"default": "none"}),
+                "aspect_ratio": (["Starred image", "Image Input", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+                                 {"default": "Starred image"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
                 "thumb_size":   (["full", "large", "medium", "small"], {"default": "medium"}), # KEEP FOR BACKWARDS COMPATIBILITY
                 "double_click": (["Edit Image", "Edit Pixel", "Mask"], {"default": "Edit Image"}),
@@ -755,7 +755,7 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         if randomize != "None":
             return float("NaN")
         # Include images shape in the hash so re-execution triggers when it changes
@@ -764,7 +764,7 @@ class MultiImageLoader:
             master_hash = f"{images.shape}"
         return hashlib.md5((image_list + crop_data + selected_items + reference_image + aspect_ratio + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
 
-    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="none", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -831,22 +831,30 @@ class MultiImageLoader:
                     print(f"[MultiImageLoader] Failed to open badge reference: {e}")
 
         # Step 2: If no badge, try upstream images input
+        # Also forced when aspect_ratio == "Image Input"
         if not badge_resolved and images is not None:
             m_h = images.shape[1]
             m_w = images.shape[2]
             orig_ref_w = m_w
             orig_ref_h = m_h
-            total_px = max(1, megapixels * 1_000_000)
-            ratio = m_w / m_h
-            c_w = max(1, round(math.sqrt(total_px * ratio)))
-            c_h = max(1, round(math.sqrt(total_px / ratio)))
-            master_canvas = (c_w, c_h)
-            ref_w, ref_h = master_canvas
-            fixed_canvas = True
-            print(f"[MultiImageLoader] images input: {m_w}x{m_h} -> canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP)")
+            if aspect_ratio == "Image Input":
+                # In Image Input mode: use exact pixel dims from tensor, no megapixel scaling
+                ref_w, ref_h = m_w, m_h
+                orig_ref_w, orig_ref_h = m_w, m_h
+                fixed_canvas = True
+                print(f"[MultiImageLoader] Image Input mode: using exact tensor dims {m_w}x{m_h}")
+            else:
+                total_px = max(1, megapixels * 1_000_000)
+                ratio = m_w / m_h
+                c_w = max(1, round(math.sqrt(total_px * ratio)))
+                c_h = max(1, round(math.sqrt(total_px / ratio)))
+                master_canvas = (c_w, c_h)
+                ref_w, ref_h = master_canvas
+                fixed_canvas = True
+                print(f"[MultiImageLoader] images input: {m_w}x{m_h} -> canvas {c_w}x{c_h} ({c_w*c_h/1e6:.2f} MP)")
 
         # Step 3: If no badge and no upstream, try aspect_ratio
-        elif not badge_resolved and aspect_ratio != "none" and bool(aspect_ratio):
+        elif not badge_resolved and aspect_ratio not in ("Starred image", "Image Input", "none") and bool(aspect_ratio):
             fixed_canvas = True
             ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
             print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")

@@ -283,7 +283,7 @@ function createWidget(node) {
     <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
     <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
     <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
-    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using first image as canvas reference</div>
+    <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fixed aspect ratio or driven by the ⭐ Starred Image</div>
   `;
 
   dropZone.addEventListener("mouseenter", () => {
@@ -374,20 +374,45 @@ function createWidget(node) {
     const count = items.length;
     const selCount = selectedIndices.size;
     
+    function getLine1(arVal, w, h) {
+      if (arVal === "Starred image") {
+        if (count === 0) return "⭐ = Output Aspect Ratio";
+        let refIdx = items.findIndex(it => it.filename === referenceImage);
+        if (refIdx === -1) refIdx = 0;
+        
+        let ratioText = "";
+        if (w && h) {
+          const r = (w / h).toFixed(2).replace(/\.00$/, "");
+          ratioText = ` is ${r}:1`;
+        }
+        return `⭐ Image ${refIdx + 1} Aspect Ratio${ratioText}`;
+      }
+      if (arVal === "Image Input") {
+        if (w && h) return `📷 Image Input  ${w} × ${h}`;
+        return "📷 Image Input Dimensions";
+      }
+      return `Aspect Ratio ${arVal}`;
+    }
+
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
+    const line1 = getLine1(ar);
+    
     if (count === 0) {
-      setStatusText("");
+      setStatusText(line1);
       return;
     }
     
-    setStatusText(`${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`);
+    setStatusText(`${line1}\n${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder`);
     
     (async () => {
       try {
         const { refW, refH } = await computeRefDims();
         const masterActive = isMasterConnected() && getMasterImageDims();
-        const ar = getAspectRatioWidget()?.value ?? "none";
-        const arLabel = masterActive ? " · upstream" : (ar !== "none" ? ` · ${ar}` : "");
-        const baseText = `${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${arLabel}`;
+        const arActual = getAspectRatioWidget()?.value ?? "Starred image";
+        const line1Actual = getLine1(arActual, refW, refH);
+        
+        const extraLabel = masterActive ? " · upstream" : "";
+        const baseText = `${line1Actual}\n${count} image${count !== 1 ? "s" : ""} queued · Drag to reorder · ${refW} x ${refH}${extraLabel}`;
         
         if (selCount > 0) {
           setStatusText(`${baseText}\n${selCount} image${selCount !== 1 ? "s" : ""} selected for the output batch`);
@@ -395,7 +420,7 @@ function createWidget(node) {
           setStatusText(baseText);
         }
       } catch(e) {
-        // ignore error, keep default text
+        // ignore error
       }
     })();
   }
@@ -405,7 +430,7 @@ function createWidget(node) {
   btnGroup.style.cssText = `display:flex;gap:4px;align-items:center;justify-content:center;flex-shrink:0;white-space:nowrap;width:100%;`;
 
   const clearBtn = document.createElement("button");
-  clearBtn.textContent = "\u2715 Clear all";
+  clearBtn.textContent = "\u2715 Clear";
   clearBtn.className = "mil-btn";
   clearBtn.style.cssText = `
     background: #3a2020;
@@ -427,21 +452,21 @@ function createWidget(node) {
   });
 
   const addBlankBtn = document.createElement("button");
-  addBlankBtn.textContent = "+ Add Null";
+  addBlankBtn.textContent = "+ Solid";
   addBlankBtn.className = "mil-btn";
   addBlankBtn.style.cssText = `
-    background: #004400; border: 1px solid #006600;
-    color: #44ff44; border-radius: 4px; padding: 3px 10px;
+    background: #2a2a2a; border: 1px solid #555;
+    color: #aaa; border-radius: 4px; padding: 3px 10px;
     font-size: 10px; cursor: pointer;
   `;
-  addBlankBtn.title = "Add a blank/null panel to the payload queue.";
+  addBlankBtn.title = "Insert a solid color panel at the selected position (or at the end).";
   addBlankBtn.addEventListener("mouseenter", () => {
-    addBlankBtn.style.background  = "#006600";
-    addBlankBtn.style.borderColor = "#44ff44";
+    addBlankBtn.style.background  = "#3a3a3a";
+    addBlankBtn.style.borderColor = "#888";
   });
   addBlankBtn.addEventListener("mouseleave", () => {
-    addBlankBtn.style.background  = "#004400";
-    addBlankBtn.style.borderColor = "#006600";
+    addBlankBtn.style.background  = "#2a2a2a";
+    addBlankBtn.style.borderColor = "#555";
   });
   
   const undoBtn = document.createElement("button");
@@ -503,6 +528,7 @@ function createWidget(node) {
   let items  = [];
   let thumbH = THUMB_W;  // updated from reference image's aspect ratio
   let referenceImage = "";
+  let lastReferenceImage = "";
   
   // ── Undo stack ────────────────────────────────────────────────────────────
   const undoStack = [];
@@ -927,7 +953,63 @@ function createWidget(node) {
     });
   }
 
-  // ── helpers ───────────────────────────────────────────────────────────────
+  // ── _fetchUpstreamDimsOnly ──────────────────────────────────────────────────
+  // Like doRefreshImages but ONLY reads the upstream dimensions.
+  // Never imports images into the grid or touches `items`.
+  // After execution, srcNode.imgs will be populated so getMasterImageDims() works.
+  async function _fetchUpstreamDimsOnly() {
+    if (!node.inputs) return;
+    const masterInput = node.inputs.find(inp => inp.name === "images");
+    if (!masterInput || masterInput.link == null) return;
+    const linkInfo = app.graph.links[masterInput.link];
+    if (!linkInfo) return;
+    const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+    if (!srcNode) return;
+
+    flashStatusMessage("\uD83D\uDCF7 Image Input: reading upstream dimensions\u2026", 6000);
+
+    let imgUrls = null;
+    try {
+      imgUrls = await _execSourceSubgraph(srcNode, linkInfo.origin_slot);
+    } catch (e) {
+      console.warn("[MIL ImageInput] Subgraph execution failed:", e);
+    }
+
+    if (!imgUrls || imgUrls.length === 0) {
+      flashStatusMessage("\uD83D\uDCF7 Image Input: no output from upstream node", 4000);
+      return;
+    }
+
+    // Load first image just to get natural dimensions (don't add to items)
+    try {
+      const probe = new Image();
+      probe.crossOrigin = "anonymous";
+      await new Promise((res, rej) => { probe.onload = res; probe.onerror = rej; probe.src = imgUrls[0]; });
+      const w = probe.naturalWidth;
+      const h = probe.naturalHeight;
+
+      // Inject dims into srcNode.imgs so getMasterImageDims() can read them
+      if (!srcNode.imgs) srcNode.imgs = [];
+      if (!srcNode.imgs[0] || srcNode.imgs[0].naturalWidth === 0) {
+        srcNode.imgs[0] = probe;
+      }
+
+      // Now redraw thumbnails/previews at the new canvas size
+      await updateThumbHFromFirst();
+      items.forEach(it => delete it.previewSrc);
+      previewActive = false;
+      render();
+      resizeNode();
+      await renderFitPreviews();
+      await renderCropPreviews();
+
+      flashStatusMessage(`\uD83D\uDCF7 Image Input: ${w}\u00D7${h} canvas applied`);
+    } catch (e) {
+      console.warn("[MIL ImageInput] Failed to probe upstream dims:", e);
+      flashStatusMessage("\uD83D\uDCF7 Image Input: could not read image dimensions", 4000);
+    }
+  }
+
 
   function getImageListWidget() {
     return node.widgets?.find((w) => w.name === "image_list");
@@ -1033,20 +1115,17 @@ function createWidget(node) {
   // Draws each image through the same canvas transform as the editor.
   async function computeRefDims() {
     const mp = node.widgets?.find(w => w.name === "megapixels")?.value ?? 1.0;
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
 
-    // Priority 1: master_image connection
-    const masterDims = getMasterImageDims();
-    if (masterDims) {
-      const ratio = masterDims.w / masterDims.h;
-      const totalPx = Math.max(1, mp * 1_000_000);
-      const refW = Math.max(1, Math.round(Math.sqrt(totalPx * ratio)));
-      const refH = Math.max(1, Math.round(Math.sqrt(totalPx / ratio)));
-      return { refW, refH };
+    // Priority 1: "Image Input" mode — use exact dims from the upstream tensor
+    if (ar === "Image Input") {
+      const masterDims = getMasterImageDims();
+      if (masterDims) return { refW: masterDims.w, refH: masterDims.h };
+      // Upstream not yet executed — fall through to first-image dims
     }
 
-    // Priority 2: aspect_ratio widget
-    const ar = getAspectRatioWidget()?.value ?? "none";
-    if (ar !== "none") {
+    // Priority 2: fixed aspect ratio widget (e.g. "1:1", "16:9")
+    if (ar !== "Starred image" && ar !== "Image Input") {
       const [aw, ah] = ar.split(":").map(Number);
       const totalPx = Math.max(1, mp * 1_000_000);
       const refW = Math.max(1, Math.round(Math.sqrt(totalPx * aw / ah)));
@@ -1150,7 +1229,7 @@ function createWidget(node) {
         <div style="font-size:18px;margin-bottom:2px;">🖼️</div>
         <div><strong>Drop images here</strong> or <strong>click to browse</strong></div>
         <div style="opacity:0.6;margin-top:4px;font-size:10px;">PNG · JPG · WebP · BMP</div>
-        <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fit mode applied using selected reference image (⭐) or first image</div>
+        <div style="opacity:0.5;margin-top:6px;font-size:9px;">Fixed aspect ratio or driven by the ⭐ Starred Image</div>
       `;
     }
   }
@@ -1197,12 +1276,9 @@ function createWidget(node) {
       img.src = item.previewSrc || item.src;
       const fit = item.previewSrc ? "cover" : "contain";
       const imgH = "100%";
-      if (isBlank) {
-        // For blank panels: show a subtle null icon, hide the 1x1 transparent img
-        img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:none;pointer-events:none;`;
-      } else {
-        img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
-      }
+      // Solid panels and regular images both use display:block; the bg color
+      // is filled by the Worker preview render (renderFitPreviews).
+      img.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${imgH};object-fit:${fit};display:block;pointer-events:none;`;
       img.title = item.filename;
 
       // ── mask overlay canvas (maskViewMode) ──
@@ -1282,25 +1358,34 @@ function createWidget(node) {
 
       // ── reference badge/placa de autoridad (top-left) ──
       const refBtn = document.createElement("button");
-      const isRef = referenceImage !== "" ? (referenceImage === item.filename) : (idx === 0);
+      const ar = getAspectRatioWidget()?.value ?? "Starred image";
+      const imageInputMode = (ar === "Image Input");
+      const isRef = !imageInputMode && (ar === "Starred image") && (referenceImage !== "" ? (referenceImage === item.filename) : (idx === 0));
       refBtn.textContent = isRef ? "⭐" : "☆";
-      refBtn.title = isRef ? "Reference Image" : "Set as Reference Image";
+      refBtn.title = imageInputMode ? "Disabled in Image Input mode" : (isRef ? "Reference Image" : "Set as Reference Image");
       refBtn.style.cssText = `
         position:absolute;top:2px;left:2px;
         background:${isRef ? "rgba(40,40,40,0.85)" : "rgba(40,40,40,0.65)"};
         color:${isRef ? "#ffd700" : "#eee"};
         border:none;border-radius:3px;
         width:16px;height:14px;font-size:10px;
-        cursor:pointer;padding:0;line-height:14px;text-align:center;
+        cursor:${imageInputMode ? "not-allowed" : "pointer"};padding:0;line-height:14px;text-align:center;
         opacity:${isRef ? "1" : "0"};transition:opacity 0.15s;
         z-index:2;
+        ${imageInputMode ? "display:none;" : ""}
       `;
       refBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
+        const arNow = getAspectRatioWidget()?.value ?? "Starred image";
+        if (arNow === "Image Input") return; // blocked in this mode
         if (referenceImage === item.filename) {
           return; // Prevent unsetting
         } else {
           referenceImage = item.filename; // set
+          const arw = getAspectRatioWidget();
+          if (arw && arw.value !== "Starred image") {
+            arw.value = "Starred image";
+          }
         }
         await updateThumbHFromFirst();
         persist();
@@ -1308,6 +1393,7 @@ function createWidget(node) {
         await renderFitPreviews();
         await renderCropPreviews();
       });
+
 
       // ── remove button (top-right, shown on hover) ─────────────────────────
       const removeBtn = document.createElement("button");
@@ -1409,13 +1495,13 @@ function createWidget(node) {
         removeBtn.style.opacity = "1";
         panelBtn.style.opacity   = "1";
         copyBtn.style.opacity   = "1";
-        refBtn.style.opacity    = "1";
+        if (!imageInputMode) refBtn.style.opacity = "1";
       });
       wrapper.addEventListener("mouseleave", () => {
         removeBtn.style.opacity = "0";
         panelBtn.style.opacity   = "0";
         copyBtn.style.opacity   = "0";
-        refBtn.style.opacity    = isRef ? "1" : "0";
+        if (!imageInputMode) refBtn.style.opacity = isRef ? "1" : "0";
       });
       wrapper.addEventListener("click", (e) => {
         // Only toggle selection if clicking the thumbnail directly (not its buttons)
@@ -1817,27 +1903,30 @@ function createWidget(node) {
     }
   }
 
-  // Update thumbH: respects master_image > aspect_ratio > first image
+  // Update thumbH: "Image Input" mode > fixed aspect_ratio > first/reference image
   async function updateThumbHFromFirst() {
-    if (items.length === 0 && !isMasterConnected()) { thumbH = THUMB_W; return; }
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
 
-    // Priority 1: master_image connection
-    const masterDims = getMasterImageDims();
-    if (masterDims) {
-      thumbH = Math.max(20, Math.round(THUMB_W * masterDims.h / masterDims.w));
-      return;
+    // Priority 1: "Image Input" mode — use upstream tensor dims
+    if (ar === "Image Input") {
+      const masterDims = getMasterImageDims();
+      if (masterDims) {
+        thumbH = Math.max(20, Math.round(THUMB_W * masterDims.h / masterDims.w));
+        return;
+      }
+      // Upstream not yet executed — fall through to first-image dims
     }
 
-    // Priority 2: aspect_ratio widget
-    const ar = getAspectRatioWidget()?.value ?? "none";
-    if (ar !== "none") {
+    if (items.length === 0) { thumbH = THUMB_W; return; }
+
+    // Priority 2: fixed aspect ratio widget (e.g. "1:1", "16:9")
+    if (ar !== "Starred image" && ar !== "Image Input") {
       const [aw, ah] = ar.split(":").map(Number);
       thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
       return;
     }
 
     // Priority 3: reference image (if set) OR first image natural dims
-    if (items.length === 0) { thumbH = THUMB_W; return; }
     try {
       let refSrc = items[0].src;
       if (referenceImage) {
@@ -1873,9 +1962,9 @@ function createWidget(node) {
    * When aspect_ratio is set or master_image is connected, even idx=0 is fitted to the fixed canvas.
    */
   async function renderItemToDataUrl(item, idx) {
-    const ar = getAspectRatioWidget()?.value ?? "none";
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
     const t = cropMap[item.filename];
-    if (idx === 0 && ar === "none" && !isMasterConnected()) {
+    if (idx === 0 && ar === "Starred image" && !isMasterConnected()) {
       const hasPixelEdits = t && t.imageEditsDataUrl;
       const hasLassoOps = t && ((t.lassoOps && t.lassoOps.length > 0) || t.lassoInverted);
       if (!hasPixelEdits && !hasLassoOps) {
@@ -2010,11 +2099,11 @@ function createWidget(node) {
     if (items.length < 1) return;
 
     const mode = getFitModeWidget()?.value ?? "letterbox";
-    const ar = getAspectRatioWidget()?.value ?? "none";
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
 
     try {
       const { refW: targetW, refH: targetH } = await computeRefDims();
-      const startIdx = (isMasterConnected() || ar !== "none") ? 0 : 1;
+      const startIdx = (isMasterConnected() || ar !== "Starred image") ? 0 : 1;
 
       const jobs = [];
       for (let i = startIdx; i < items.length; i++) {
@@ -2022,9 +2111,10 @@ function createWidget(node) {
         if (hasCrop(items[i].filename)) continue;
 
         const itemBg = cropMap[items[i].filename]?.bg;
-        const bgColor = (mode === "letterbox")
+        const isBlank = items[i].is_blank;
+        const bgColor = (mode === "letterbox" || isBlank)
           ? ((itemBg && /^#[0-9a-fA-F]{6}$/.test(itemBg)) ? itemBg : getEffectiveBgColor())
-          : "#000000"; // crop mode doesn't use bg
+          : "#000000"; // crop mode doesn't use bg (except for blanks)
         jobs.push(
           workerRender("fitPreview", items[i].src, {
             targetW, targetH, mode, bgColor
@@ -2106,7 +2196,13 @@ function createWidget(node) {
     }
     if (!filenames?.length) return;
 
-    items = filenames.map((fn) => ({ filename: fn, src: viewURL(fn) }));
+    items = filenames.map((fn) => {
+      const isBlank = fn.startsWith("__BLANK__");
+      const src = isBlank 
+        ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        : viewURL(fn);
+      return { filename: fn, src: src, is_blank: isBlank };
+    });
 
     // Restore crop transforms
     const cw = getCropDataWidget();
@@ -2288,19 +2384,31 @@ function createWidget(node) {
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
   
-  addBlankBtn.addEventListener("click", () => {
+  addBlankBtn.addEventListener("click", async () => {
     if (items.length >= 256) {
       if (typeof flashStatusMessage === "function") flashStatusMessage("Max 256 items limit reached");
       return;
     }
+    pushUndoState();
     const blankObj = {
       filename: "__BLANK__" + Date.now() + ".png",
       src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
       is_blank: true
     };
-    items.push(blankObj);
-    serializeImages();
+    // Insert after selected item if one exists, otherwise append at end
+    if (selectedIdx !== null && selectedIdx >= 0 && selectedIdx < items.length) {
+      items.splice(selectedIdx + 1, 0, blankObj);
+      selectedIdx = selectedIdx + 1;
+      selectedIndices.clear();
+      selectedIndices.add(selectedIdx);
+    } else {
+      items.push(blankObj);
+    }
+    persist();
     render();
+    await updateThumbHFromFirst();
+    await renderFitPreviews();
+    await renderCropPreviews();
   });
 
   clearBtn.addEventListener("click", () => {
@@ -2473,7 +2581,38 @@ function createWidget(node) {
     render();
     if (items.length > 0) snapNodeToIdealH();
   };
-  root._onAspectRatioChange = async () => {
+  root._fetchUpstreamDimsOnly = _fetchUpstreamDimsOnly;
+  root._onAspectRatioChange = async (wName) => {
+    if (wName === "aspect_ratio") {
+        const ar = getAspectRatioWidget()?.value ?? "Starred image";
+        if (ar === "Image Input") {
+            // Image Input mode: clear star badge
+            if (referenceImage) {
+                lastReferenceImage = referenceImage;
+                referenceImage = "";
+            }
+            if (isMasterConnected()) {
+                // Silently execute upstream subgraph to read its dims — never adds to items
+                _fetchUpstreamDimsOnly(); // async, handles its own render cycle
+                return;
+            } else {
+                flashStatusMessage("📷 Image Input: connect an upstream image to set canvas dimensions", 4000);
+            }
+        } else if (ar !== "Starred image") {
+            if (referenceImage) {
+                lastReferenceImage = referenceImage;
+                referenceImage = "";
+            }
+        } else {
+            if (!referenceImage) {
+                if (lastReferenceImage && items.some(it => it.filename === lastReferenceImage)) {
+                    referenceImage = lastReferenceImage;
+                } else if (items.length > 0) {
+                    referenceImage = items[0].filename;
+                }
+            }
+        }
+    }
     // Called whenever aspect_ratio, fit_mode, or megapixels changes.
     // Re-renders all thumbnails and resizes node to reflect the new canvas shape.
     if (items.length === 0) { render(); return; }
@@ -2506,6 +2645,7 @@ function createWidget(node) {
     let edInpaintPreview = null, edInpaintDirty = true, edReqHandle = null;
     const edPreviewCache = new Map();
     let frameW = 300, frameH = 300, frameCX = 0, frameCY = 0, bFit = 1;
+    let edViewZoom = 1.0, edViewPanX = 0, edViewPanY = 0;
     let rafId = null, panSt = null;
     // Snap guide state — which guides are active (drawn during pan)
     let _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
@@ -2701,6 +2841,55 @@ function createWidget(node) {
       return b;
     }
     const spacer = document.createElement("div"); spacer.style.flex = "1";
+    // ── shared slider-row factory ─────────────────────────────────────────────
+    // Returns { row, slider, valEl }. Layout: Label | clickable-badge | slider
+    // opts: { min, max, step, value, suffix, accentColor, onInput }
+    function mkSliderRow(label, opts = {}) {
+      const { min=0, max=100, step=1, value=50, suffix="", accentColor="#40a0ff", onInput } = opts;
+      const row = document.createElement("div");
+      row.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
+      // Label
+      const lbl = document.createElement("span");
+      lbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
+      lbl.textContent = label;
+      // Clickable value badge
+      const valEl = document.createElement("div");
+      valEl.style.cssText = `background:#1e1e1e;color:#ccc;border:1px solid #333;border-radius:3px;font-size:${_fs10};width:${Math.round(38*uiScale)}px;text-align:center;cursor:text;user-select:none;flex-shrink:0;padding:2px 0;box-sizing:border-box;`;
+      const _fmt = v => v + suffix;
+      valEl.textContent = _fmt(value);
+      // Range slider
+      const slider = document.createElement("input");
+      slider.type = "range"; slider.min = String(min); slider.max = String(max);
+      slider.step = String(step); slider.value = String(value);
+      slider.style.cssText = `flex:1;accent-color:${accentColor};min-width:0;cursor:pointer;`;
+      slider.addEventListener("input", () => {
+        valEl.textContent = _fmt(parseFloat(slider.value));
+        if (onInput) onInput(parseFloat(slider.value));
+      });
+      // Click badge → inline number input
+      valEl.addEventListener("click", () => {
+        const inp = document.createElement("input");
+        inp.type = "number"; inp.min = String(min); inp.max = String(max); inp.step = String(step);
+        inp.value = slider.value;
+        inp.style.cssText = `width:100%;height:100%;box-sizing:border-box;background:transparent;color:#ccc;border:none;outline:none;font-size:${_fs10};text-align:center;`;
+        valEl.innerHTML = ""; valEl.appendChild(inp);
+        inp.focus(); inp.select();
+        function commit() {
+          const v = Math.max(min, Math.min(max, parseFloat(inp.value) || min));
+          const rounded = step < 1 ? v : Math.round(v);
+          slider.value = String(rounded);
+          valEl.textContent = _fmt(rounded);
+          if (onInput) onInput(rounded);
+        }
+        inp.addEventListener("blur", commit);
+        inp.addEventListener("keydown", e => {
+          if (e.key === "Enter") { commit(); }
+          if (e.key === "Escape") { valEl.textContent = _fmt(parseFloat(slider.value)); }
+        });
+      });
+      row.appendChild(lbl); row.appendChild(valEl); row.appendChild(slider);
+      return { row, slider, valEl };
+    }
     const applyB = document.createElement("button");
     applyB.textContent = "\u2713 Apply Edit";
     applyB.style.cssText = `background:#1a3a28;color:#44cc88;border:1px solid #336644;border-radius:${_r6};padding:${_btnPadW};font-size:${_fs12};font-weight:600;cursor:pointer;width:100%;`;
@@ -2733,6 +2922,7 @@ function createWidget(node) {
       setTabActive(tabPixels, mode === "pixels");
       secEdit.style.display = mode === "edit" ? "flex" : "none";
       secPixels.style.display = mode === "pixels" ? "flex" : "none";
+      if (mode !== "pixels") { edViewZoom = 1.0; edViewPanX = 0; edViewPanY = 0; }
       // Deactivate pixel tools when switching out
       if (mode !== "pixels" && edPixelTool) {
         edPixelTool = null; _syncPixelToolUI();
@@ -3238,42 +3428,16 @@ function createWidget(node) {
     secEdit.appendChild(mkSec("Rotate", () => {
       edRotate=0; syncRotUI();
     }, "Reset Rotation"));
-    // slider + click-to-type angle
-    const rotRow = document.createElement("div");
-    rotRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
-    
-    const rotValEl = document.createElement("div");
-    rotValEl.style.cssText=`background:#1e1e1e;color:#ccc;border:1px solid #333;border-radius:3px;font-size:${_fs10};width:${Math.round(44*uiScale)}px;text-align:center;cursor:text;user-select:none;flex-shrink:0;padding:2px 0;box-sizing:border-box;`;
-    rotValEl.textContent="0\u00b0";
-
-    const rotSlider = document.createElement("input");
-    rotSlider.type="range"; rotSlider.min=-180; rotSlider.max=180; rotSlider.step=1; rotSlider.value=0;
-    rotSlider.style.cssText="flex:1;accent-color:#5a7abf;cursor:pointer;";
-    
-    function syncRotUI(){
+    const _rotSR = mkSliderRow("Rotate", { min:-180, max:180, step:1, value:0, suffix:"°", accentColor:"#5a7abf",
+      onInput: v => { edRotate = v; updLbl(); redraw(); requestInpaintPreview(); }
+    });
+    const rotSlider = _rotSR.slider;
+    const rotValEl  = _rotSR.valEl;
+    function syncRotUI() {
       rotSlider.value = edRotate;
-      rotValEl.textContent = edRotate + "\u00b0";
+      rotValEl.textContent = edRotate + "°";
     }
-    rotValEl.addEventListener("click", () => {
-      const inp = document.createElement("input");
-      inp.type="number"; inp.min=-180; inp.max=180; inp.value=edRotate;
-      inp.style.cssText=`width:100%;height:100%;box-sizing:border-box;background:transparent;color:#ccc;border:none;outline:none;font-size:${_fs10};text-align:center;`;
-      rotValEl.innerHTML=""; rotValEl.appendChild(inp);
-      inp.focus(); inp.select();
-      function commit(){
-        const v = Math.max(-180,Math.min(180,parseInt(inp.value)||0));
-        edRotate=v; rotSlider.value=v; rotValEl.textContent=v+"\u00b0";
-        updLbl(); redraw(); requestInpaintPreview();
-      }
-      inp.addEventListener("blur", commit);
-      inp.addEventListener("keydown", e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") rotValEl.textContent=edRotate+"\u00b0"; });
-    });
-    rotSlider.addEventListener("input", () => {
-      edRotate=parseInt(rotSlider.value); rotValEl.textContent=edRotate+"\u00b0"; updLbl(); redraw();
-      requestInpaintPreview();
-    });
-    rotRow.appendChild(rotValEl); rotRow.appendChild(rotSlider);
-    secEdit.appendChild(rotRow);
+    secEdit.appendChild(_rotSR.row);
 
     // Background fill elements (created here, appended later — after Remove BG)
     const bgSelect = document.createElement("select");
@@ -3476,7 +3640,8 @@ function createWidget(node) {
     secPixels.appendChild(mkSec("Lasso Selection", () => {
       edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false; edLassoIsPaint = false;
       edLassoInverted = false; _lassoCursorNorm = null; _lassoChanged();
-      stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl(); redraw();
+      stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      redraw();
     }, "Clear lasso selection"));
 
     const pxLassoToolRow = document.createElement("div");
@@ -3611,35 +3776,21 @@ function createWidget(node) {
     const ptColorRow = ptColorWrapper; // alias for compatibility
 
     // Smudge strength slider
-    const ptSmudgeRow = document.createElement("div");
-    ptSmudgeRow.style.cssText = `display:none;gap:${_gap5};align-items:center;margin-top:2px;`;
-    const ptSmLbl = document.createElement("span");
-    ptSmLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
-    ptSmLbl.textContent = "Strength";
-    const ptSmSlider = document.createElement("input");
-    ptSmSlider.type = "range"; ptSmSlider.min = "5"; ptSmSlider.max = "100"; ptSmSlider.value = "50";
-    ptSmSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    const ptSmVal = document.createElement("span");
-    ptSmVal.style.cssText = `color:#888;font-size:${_fs10};min-width:36px;padding-right:4px;text-align:right;box-sizing:border-box;`;
-    ptSmVal.textContent = "50%";
-    ptSmSlider.addEventListener("input", () => { _edSmudgeStr = parseInt(ptSmSlider.value)/100; ptSmVal.textContent = ptSmSlider.value+"%"; });
-    ptSmudgeRow.appendChild(ptSmLbl); ptSmudgeRow.appendChild(ptSmSlider); ptSmudgeRow.appendChild(ptSmVal);
+    const _ptSmSR = mkSliderRow("Strength", { min:5, max:100, step:1, value:50, suffix:"%",
+      onInput: v => { _edSmudgeStr = v / 100; }
+    });
+    const ptSmSlider = _ptSmSR.slider;
+    const ptSmudgeRow = _ptSmSR.row;
+    ptSmudgeRow.style.display = "none"; // hidden until smudge tool
     secPixels.appendChild(ptSmudgeRow);
 
-    // Dedicated brush size row: Size | value badge | slider
-    const ptBrushRow = document.createElement("div");
-    ptBrushRow.style.cssText = `display:none;gap:${_gap5};align-items:center;`;
-    const ptBrLbl = document.createElement("span");
-    ptBrLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
-    ptBrLbl.textContent = "Size";
-    const ptBrVal = document.createElement("span");
-    ptBrVal.style.cssText = `color:#ccc;font-size:${_fs10};font-weight:600;min-width:28px;text-align:right;flex-shrink:0;`;
-    ptBrVal.textContent = "30";
-    const ptBrSlider = document.createElement("input");
-    ptBrSlider.type = "range"; ptBrSlider.min = "4"; ptBrSlider.max = "150"; ptBrSlider.value = "30";
-    ptBrSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    ptBrSlider.addEventListener("input", () => { ptBrVal.textContent = ptBrSlider.value; redraw(); });
-    ptBrushRow.appendChild(ptBrLbl); ptBrushRow.appendChild(ptBrVal); ptBrushRow.appendChild(ptBrSlider);
+    // Brush size row: Size | clickable badge | slider
+    const _ptBrSR = mkSliderRow("Size", { min:4, max:150, step:1, value:30, suffix:"",
+      onInput: () => redraw()
+    });
+    const ptBrSlider = _ptBrSR.slider;
+    const ptBrushRow = _ptBrSR.row;
+    ptBrushRow.style.display = "none"; // hidden until tool that needs size
     secPixels.appendChild(ptBrushRow);
 
     // Undo / Redo row
@@ -4205,13 +4356,20 @@ function createWidget(node) {
         syncCvs();
         const ctx = cvs.getContext("2d");
         const cw=cvs.width, ch=cvs.height;
-        const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
-        // full-canvas checkerboard
+        // full-canvas checkerboard MUST be drawn prior to any scaling/translation
+        // so it fills the physical canvas and doesn't get scaled or left un-cleared.
         const T=14;
         for(let r=0;r<Math.ceil(ch/T);r++) for(let c=0;c<Math.ceil(cw/T);c++) {
           ctx.fillStyle=(r+c)%2===0?"#1a1a1a":"#141414";
           ctx.fillRect(c*T,r*T,T,T);
         }
+        ctx.save();
+        if (edPanelMode === "pixels") {
+          ctx.translate(cw/2 + edViewPanX, ch/2 + edViewPanY);
+          ctx.scale(edViewZoom, edViewZoom);
+          ctx.translate(-cw/2, -ch/2);
+        }
+        const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
         // background fill inside frame — uses per-image edBg (initialized from node bg_color, overridable per-image)
         const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
         ctx.fillStyle=bgC; ctx.fillRect(fx,fy,frameW,frameH);
@@ -4368,6 +4526,7 @@ function createWidget(node) {
         drawCropOverlay(ctx);
         // lasso overlay
         drawLassoOverlay(ctx);
+        ctx.restore();
       });
     }
 
@@ -4444,7 +4603,12 @@ function createWidget(node) {
       // ── pixel tool drag ──
       if (edPixelTool && _edBrushDrawing) {
         const r = cvs.getBoundingClientRect();
-        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        let cx = e.clientX - r.left, cy = e.clientY - r.top;
+        if (edPanelMode === "pixels") {
+          const cw2 = cvs.width/2, ch2 = cvs.height/2;
+          cx = (cx - cw2 - edViewPanX) / edViewZoom + cw2;
+          cy = (cy - ch2 - edViewPanY) / edViewZoom + ch2;
+        }
         _edBrushPos = { cx, cy };
         const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
         const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
@@ -4511,7 +4675,13 @@ function createWidget(node) {
       // ── pixel tool cursor tracking (not drawing) ──
       if (edPixelTool && !_edBrushDrawing) {
         const r = cvs.getBoundingClientRect();
-        _edBrushPos = { cx: e.clientX - r.left, cy: e.clientY - r.top };
+        let cx = e.clientX - r.left, cy = e.clientY - r.top;
+        if (edPanelMode === "pixels") {
+          const cw2 = cvs.width/2, ch2 = cvs.height/2;
+          cx = (cx - cw2 - edViewPanX) / edViewZoom + cw2;
+          cy = (cy - ch2 - edViewPanY) / edViewZoom + ch2;
+        }
+        _edBrushPos = { cx, cy };
         redraw();
       }
       // ── lasso draw / track ──
@@ -4629,6 +4799,11 @@ function createWidget(node) {
       }
       // ── pan drag with snap-to-edges ──
       if (!panSt) return;
+      if (edPanelMode === "pixels" && panSt.vpx !== undefined) {
+         edViewPanX = panSt.vpx + (e.clientX - panSt.x) / edViewZoom;
+         edViewPanY = panSt.vpy + (e.clientY - panSt.y) / edViewZoom;
+         redraw(); return;
+      }
       dOX = panSt.ox + (e.clientX - panSt.x);
       dOY = panSt.oy + (e.clientY - panSt.y);
 
@@ -4720,6 +4895,12 @@ function createWidget(node) {
       }
     }
     cvs.addEventListener("mousedown", e=>{
+      if (edPanelMode === "pixels" && (e.button === 1 || (e.button === 0 && e.shiftKey && (e.ctrlKey||e.metaKey)))) {
+          e.preventDefault();
+          panSt = { x: e.clientX, y: e.clientY, vpx: edViewPanX, vpy: edViewPanY };
+          ca.style.cursor = "grabbing";
+          return;
+      }
       if (e.button!==0) return;
       // ── pixel tool start ──
       if (edPixelTool) {
@@ -4813,7 +4994,13 @@ function createWidget(node) {
       // Pixel tool cursor tracking on canvas
       if (edPixelTool) {
         const r = cvs.getBoundingClientRect();
-        _edBrushPos = { cx: e.clientX - r.left, cy: e.clientY - r.top };
+        let cx = e.clientX - r.left, cy = e.clientY - r.top;
+        if (edPanelMode === "pixels") {
+          const cw2 = cvs.width/2, ch2 = cvs.height/2;
+          cx = (cx - cw2 - edViewPanX) / edViewZoom + cw2;
+          cy = (cy - ch2 - edViewPanY) / edViewZoom + ch2;
+        }
+        _edBrushPos = { cx, cy };
         ca.style.cursor = "none";
         redraw(); return;
       }
@@ -4842,11 +5029,13 @@ function createWidget(node) {
     cvs.addEventListener("wheel", e=>{
       e.preventDefault();
       const f=e.deltaY<0?1.12:0.89;
-      const r=cvs.getBoundingClientRect();
-      const mx=e.clientX-r.left-frameCX, my=e.clientY-r.top-frameCY;
-      dOX=(dOX-mx)*f+mx; dOY=(dOY-my)*f+my;
-      edScale=Math.max(0.05,Math.min(20,edScale*f)); updLbl(); redraw();
-      requestInpaintPreview();
+      if (edPanelMode === "pixels") {
+         edViewZoom = Math.max(0.25, Math.min(20, edViewZoom * f));
+         redraw();
+      } else {
+         edScale=Math.max(0.05,Math.min(20,edScale*f)); updLbl(); redraw();
+         requestInpaintPreview();
+      }
     },{passive:false});
     const ro=new ResizeObserver(()=>redraw()); ro.observe(ca);
     function onKey(e) {
@@ -5162,6 +5351,50 @@ function createWidget(node) {
       b.textContent = t; b.style.cssText = `background:${active?"#1e3a1e":"#1e1e1e"};color:${active?"#7fff7f":"#aaa"};border:1px solid ${active?"#3a6a3a":"#333"};border-radius:${_r5};padding:${_r(5)}px ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;transition:background .12s,border-color .12s;`;
       return b;
     }
+    // ── Slider-row factory (Label | clickable badge | slider) ──
+    function mkMSliderRow(label, opts = {}) {
+      const { min=0, max=100, step=1, value=50, suffix="", onInput } = opts;
+      const fs = _fs11;
+      const row = document.createElement("div");
+      row.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
+      const lbl = document.createElement("span");
+      lbl.style.cssText = `color:#888;font-size:${fs};flex-shrink:0;`;
+      lbl.textContent = label;
+      const valEl = document.createElement("div");
+      valEl.style.cssText = `background:#1e1e1e;color:#ccc;border:1px solid #333;border-radius:3px;font-size:${fs};width:${_r(38)}px;text-align:center;cursor:text;user-select:none;flex-shrink:0;padding:2px 0;box-sizing:border-box;`;
+      const _fmt = v => v + suffix;
+      valEl.textContent = _fmt(value);
+      const slider = document.createElement("input");
+      slider.type = "range"; slider.min = String(min); slider.max = String(max);
+      slider.step = String(step); slider.value = String(value);
+      slider.style.cssText = `flex:1;accent-color:#40a0ff;min-width:0;cursor:pointer;`;
+      slider.addEventListener("input", () => {
+        valEl.textContent = _fmt(parseFloat(slider.value));
+        if (onInput) onInput(parseFloat(slider.value));
+      });
+      valEl.addEventListener("click", () => {
+        const inp = document.createElement("input");
+        inp.type = "number"; inp.min = String(min); inp.max = String(max); inp.step = String(step);
+        inp.value = slider.value;
+        inp.style.cssText = `width:100%;height:100%;box-sizing:border-box;background:transparent;color:#ccc;border:none;outline:none;font-size:${fs};text-align:center;`;
+        valEl.innerHTML = ""; valEl.appendChild(inp);
+        inp.focus(); inp.select();
+        function commit() {
+          const v = Math.max(min, Math.min(max, parseFloat(inp.value) || min));
+          const rounded = step < 1 ? v : Math.round(v);
+          slider.value = String(rounded);
+          valEl.textContent = _fmt(rounded);
+          if (onInput) onInput(rounded);
+        }
+        inp.addEventListener("blur", commit);
+        inp.addEventListener("keydown", e => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") valEl.textContent = _fmt(parseFloat(slider.value));
+        });
+      });
+      row.appendChild(lbl); row.appendChild(valEl); row.appendChild(slider);
+      return { row, slider, valEl };
+    }
 
     // ── Tool section ──
     pnlBody.appendChild(mkSec("MASK TOOLS"));
@@ -5191,35 +5424,22 @@ function createWidget(node) {
     pnlBody.appendChild(imgToolRow);
 
     // ── Smudge strength slider (hidden until smudge tool selected) ──
-    const smudgeRow = document.createElement("div");
-    smudgeRow.style.cssText = `display:none;gap:${_r(6)}px;align-items:center;margin-top:${_r(2)}px;`;
-    const smudgeLbl = document.createElement("span");
-    smudgeLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
-    smudgeLbl.textContent = "Strength";
-    const smudgeSlider = document.createElement("input");
-    smudgeSlider.type = "range"; smudgeSlider.min = "5"; smudgeSlider.max = "100"; smudgeSlider.value = "50";
-    smudgeSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    const smudgeValEl = document.createElement("span");
-    smudgeValEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
-    smudgeValEl.textContent = "50%";
+    const _mSmSR = mkMSliderRow("Strength", { min:5, max:100, step:1, value:50, suffix:"%",
+      onInput: v => { mSmudgeStr = v / 100; }
+    });
     let mSmudgeStr = 0.5;
-    smudgeSlider.addEventListener("input", () => { mSmudgeStr = parseInt(smudgeSlider.value) / 100; smudgeValEl.textContent = smudgeSlider.value + "%"; });
-    smudgeRow.appendChild(smudgeLbl); smudgeRow.appendChild(smudgeSlider); smudgeRow.appendChild(smudgeValEl);
+    const smudgeSlider = _mSmSR.slider;
+    const smudgeRow = _mSmSR.row;
+    smudgeRow.style.display = "none";
     pnlBody.appendChild(smudgeRow);
 
     // ── Brush size ──
     pnlBody.appendChild(mkSec("BRUSH SIZE"));
-    const brushRow = document.createElement("div");
-    brushRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
-    const brushSlider = document.createElement("input");
-    brushSlider.type = "range"; brushSlider.min = "4"; brushSlider.max = "150"; brushSlider.value = "30";
-    brushSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    const brushSizeEl = document.createElement("span");
-    brushSizeEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
-    brushSizeEl.textContent = "30px";
-    brushSlider.addEventListener("input", () => { brushSizeEl.textContent = brushSlider.value+"px"; mRedraw(); });
-    brushRow.appendChild(brushSlider); brushRow.appendChild(brushSizeEl);
-    pnlBody.appendChild(brushRow);
+    const _mBrSR = mkMSliderRow("Size", { min:4, max:150, step:1, value:30, suffix:"px",
+      onInput: () => mRedraw()
+    });
+    const brushSlider = _mBrSR.slider;
+    pnlBody.appendChild(_mBrSR.row);
 
     // ── Mode hint ──
     pnlBody.appendChild(mkSec("SELECTION MODE"));
@@ -5247,27 +5467,17 @@ function createWidget(node) {
     pnlBody.appendChild(colorRow);
 
     // Mask transparency slider
-    const alphaRow = document.createElement("div");
-    alphaRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
-    const alphaLbl = document.createElement("span");
-    alphaLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
-    alphaLbl.textContent = "Opacity";
-    const alphaSlider = document.createElement("input");
     const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "55");
-    alphaSlider.type = "range"; alphaSlider.min = "10"; alphaSlider.max = "95"; alphaSlider.value = String(_savedAlpha);
-    alphaSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
-    const alphaValEl = document.createElement("span");
-    alphaValEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
-    alphaValEl.textContent = _savedAlpha + "%";
     let mMaskAlpha = _savedAlpha / 100;
-    alphaSlider.addEventListener("input", () => {
-      mMaskAlpha = parseInt(alphaSlider.value) / 100;
-      alphaValEl.textContent = alphaSlider.value + "%";
-      localStorage.setItem("mil_mask_alpha", alphaSlider.value);
-      _dirtyMask = true; mRedraw();
+    const _mAlSR = mkMSliderRow("Opacity", { min:10, max:95, step:1, value:_savedAlpha, suffix:"%",
+      onInput: v => {
+        mMaskAlpha = v / 100;
+        localStorage.setItem("mil_mask_alpha", String(v));
+        _dirtyMask = true; mRedraw();
+      }
     });
-    alphaRow.appendChild(alphaLbl); alphaRow.appendChild(alphaSlider); alphaRow.appendChild(alphaValEl);
-    pnlBody.appendChild(alphaRow);
+    const alphaSlider = _mAlSR.slider;
+    pnlBody.appendChild(_mAlSR.row);
 
     // ── Mask ops ──
     pnlBody.appendChild(mkSec("MASK"));
@@ -6121,16 +6331,8 @@ function createWidget(node) {
     // ── Mouse wheel zoom ──
     ca.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const r = ca.getBoundingClientRect();
-      const cx = e.clientX - r.left, cy = e.clientY - r.top;
-      const oldZ = mZoom;
       const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
       mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
-      // Zoom centered on cursor position
-      const cw2 = cvsBase.width / 2, ch2 = cvsBase.height / 2;
-      const ratio = mZoom / oldZ;
-      mPanX = (cx - cw2) - ratio * ((cx - cw2) - mPanX);
-      mPanY = (cy - ch2) - ratio * ((cy - ch2) - mPanY);
       _dirtyBase = true; _dirtyMask = true; mRedraw();
     }, { passive: false });
 
@@ -6637,7 +6839,7 @@ app.registerExtension({
             const origCb = w.callback;
             w.callback = function (...args) {
               origCb?.apply(this, args);
-              node._milDomWidget?.element?._onAspectRatioChange?.();
+              node._milDomWidget?.element?._onAspectRatioChange?.(wName);
             };
           }
         });
@@ -6673,14 +6875,22 @@ app.registerExtension({
         });
       };
 
-      // Re-render thumbnails when master_image is connected/disconnected
+      // Re-render thumbnails when "images" input is connected/disconnected
       node.onConnectionsChange = function (type, index, connected, linkInfo) {
         // type 1 = input, type 2 = output
         if (type === 1) {
           const inp = node.inputs?.[index];
-          if (inp && inp.name === "master_image") {
-            // Trigger the same flow as aspect_ratio change
-            node._milDomWidget?.element?._onAspectRatioChange?.();
+          if (inp && (inp.name === "images" || inp.name === "master_image")) {
+            const el = node._milDomWidget?.element;
+            if (!el) return;
+            // If "Image Input" mode is active and a cable was just connected,
+            // silently execute upstream to read its dims (no grid import).
+            const arVal = node.widgets?.find(w => w.name === "aspect_ratio")?.value ?? "Starred image";
+            if (arVal === "Image Input" && connected) {
+              el._fetchUpstreamDimsOnly?.();
+            } else {
+              el._onAspectRatioChange?.();
+            }
           }
         }
       };
