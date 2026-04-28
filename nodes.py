@@ -113,6 +113,10 @@ async def preview_transform_handler(request):
         transform = data.get("transform", {})
         ref_w     = max(32, int(data.get("refW", 512)))
         ref_h     = max(32, int(data.get("refH", 512)))
+        global_scale = float(data.get("globalScale", 1.0))
+        fit_mode  = data.get("fitMode", "letterbox")
+        if fit_mode not in ("letterbox", "crop"):
+            fit_mode = "letterbox"
 
         if not filename:
             return web.Response(status=400, text="Missing filename")
@@ -134,7 +138,7 @@ async def preview_transform_handler(request):
                 p_ref_w, p_ref_h = max(32, int(ref_w * s)), max(32, int(ref_h * s))
             else:
                 p_ref_w, p_ref_h = ref_w, ref_h
-            return _apply_crop_transform(img, transform, p_ref_w, p_ref_h)
+            return _apply_crop_transform(img, transform, p_ref_w, p_ref_h, fit_mode=fit_mode, global_scale=global_scale)
 
         result = await loop.run_in_executor(None, _run)
 
@@ -335,48 +339,46 @@ def _parse_bg_color_word(word: str) -> tuple:
     return mapping.get(word.strip().lower(), (128, 128, 128))
 
 
-def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_color: tuple = (128, 128, 128)) -> Image.Image:
+def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_color: tuple = (128, 128, 128), global_scale: float = 1.0) -> Image.Image:
     """
     Resize `img` to (target_w, target_h) using the requested fit strategy.
-
-    letterbox – Preserve aspect ratio; pad with black to fill the canvas.
-    crop      – Preserve aspect ratio; scale to fill, then center-crop.
-    fill      – Stretch/squish to exact dimensions (no padding, no crop).
+    If global_scale is used, the post-fit resulting canvas is scaled down and centered inside the final bounds.
     """
-    if img.size == (target_w, target_h):
-        return img
+    canvas = Image.new("RGB", (target_w, target_h), bg_color)
+    src_w, src_h = img.size
 
     if mode == "fill":
-        return img.resize((target_w, target_h), Image.LANCZOS)
-
-    src_w, src_h = img.size
-    scale_w = target_w / src_w
-    scale_h = target_h / src_h
-
-    if mode == "letterbox":
-        # Scale down to fit inside the canvas (never upscale beyond target)
-        scale = min(scale_w, scale_h)
-        new_w = round(src_w * scale)
-        new_h = round(src_h * scale)
+        resized = img.resize((target_w, target_h), Image.LANCZOS)
+        canvas.paste(resized, (0, 0))
+    else:
+        scale_w = target_w / src_w
+        scale_h = target_h / src_h
+        scale = min(scale_w, scale_h) if mode == "letterbox" else max(scale_w, scale_h)
+        
+        new_w = max(1, round(src_w * scale))
+        new_h = max(1, round(src_h * scale))
         resized = img.resize((new_w, new_h), Image.LANCZOS)
-        canvas = Image.new("RGB", (target_w, target_h), bg_color)
-        offset_x = (target_w - new_w) // 2
-        offset_y = (target_h - new_h) // 2
-        canvas.paste(resized, (offset_x, offset_y))
-        return canvas
+        
+        if mode == "crop" and (new_w > target_w or new_h > target_h):
+            left = (new_w - target_w) // 2
+            top  = (new_h - target_h) // 2
+            cropped = resized.crop((left, top, left + target_w, top + target_h))
+            canvas.paste(cropped, (0, 0))
+        else:
+            offset_x = (target_w - new_w) // 2
+            offset_y = (target_h - new_h) // 2
+            canvas.paste(resized, (offset_x, offset_y))
+            
+    # Apply global_scale strictly upon the resolved canvas
+    if global_scale != 1.0:
+        scaled_w = max(1, round(target_w * global_scale))
+        scaled_h = max(1, round(target_h * global_scale))
+        shrunk = canvas.resize((scaled_w, scaled_h), Image.LANCZOS)
+        final_canvas = Image.new("RGB", (target_w, target_h), bg_color)
+        final_canvas.paste(shrunk, ((target_w - scaled_w) // 2, (target_h - scaled_h) // 2))
+        return final_canvas
 
-    if mode == "crop":
-        # Scale up to fill the canvas, then center-crop
-        scale = max(scale_w, scale_h)
-        new_w = round(src_w * scale)
-        new_h = round(src_h * scale)
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
-        left = (new_w - target_w) // 2
-        top  = (new_h - target_h) // 2
-        return resized.crop((left, top, left + target_w, top + target_h))
-
-    # Fallback – should not happen
-    return img.resize((target_w, target_h), Image.LANCZOS)
+    return canvas
 
 
 
@@ -398,7 +400,7 @@ def _apply_crop_region(img: Image.Image, transform: dict) -> Image.Image:
     return img.crop((left, top, right, bottom))
 
 
-def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int, fit_mode: str = "letterbox", node_bg_color: tuple = (128, 128, 128)) -> Image.Image:
+def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canvas_h: int, fit_mode: str = "letterbox", node_bg_color: tuple = (128, 128, 128), global_scale: float = 1.0) -> Image.Image:
     """
     Apply a user-defined pan/zoom/flip/rotate transform and crop to canvas_w × canvas_h.
     transform keys:
@@ -533,7 +535,16 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
             img_bgr = cv2.inpaint(img_bgr, inpaint_mask, inpaintRadius=3, flags=method)
             img_np  = img_bgr[:, :, ::-1]
 
-        return Image.fromarray(img_np.astype(np.uint8))
+        final_img = Image.fromarray(img_np.astype(np.uint8))
+        
+        if global_scale != 1.0:
+            scaled_w = max(1, round(canvas_w * global_scale))
+            scaled_h = max(1, round(canvas_h * global_scale))
+            shrunk = final_img.resize((scaled_w, scaled_h), Image.LANCZOS)
+            final_img = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
+            final_img.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
+
+        return final_img
 
     # ══════════════════════════════════════════════════════════════════════════
     # SOLID-FILL PATH — flip → rotate → scale → pan → paste onto bg canvas
@@ -562,6 +573,15 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     canvas_bg = node_bg_color if fit_mode == "letterbox" else bg_color
     canvas = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
     canvas.paste(resized, (paste_x, paste_y))
+    
+    if global_scale != 1.0:
+        scaled_w = max(1, round(canvas_w * global_scale))
+        scaled_h = max(1, round(canvas_h * global_scale))
+        shrunk = canvas.resize((scaled_w, scaled_h), Image.LANCZOS)
+        final_canvas = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
+        final_canvas.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
+        return final_canvas
+
     return canvas
 
 
@@ -729,14 +749,17 @@ class MultiImageLoader:
             "optional": {
                 # Optional upstream images whose proportions define the output tensor canvas.
                 "images": ("IMAGE",),
+                # Optional upstream aspect_ratio string from another MultiImageLoader node.
+                "aspect_ratio_in": ("STRING", {"forceInput": True}),
                 # JSON list of filenames persisted in the workflow JSON.
                 "image_list":   ("STRING", {"default": "[]"}),
                 "fit_mode":     (["letterbox", "crop"],),
                 "bg_color":     (["gray", "black", "white", "red"],
                                  {"default": "gray"}),
-                "aspect_ratio": (["Starred image", "Image Input", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
+                "aspect_ratio": (["Starred image", "Image Input", "Aspect Ratio Input", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
                                  {"default": "Starred image"}),
                 "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
+
                 "thumb_size":   (["full", "large", "medium", "small"], {"default": "medium"}), # KEEP FOR BACKWARDS COMPATIBILITY
                 "double_click": (["Edit Image", "Edit Pixel", "Mask"], {"default": "Edit Image"}),
                 "crop_data":    ("STRING", {"default": "{}"}),  # UI-only: per-image pan/zoom JSON
@@ -744,27 +767,39 @@ class MultiImageLoader:
                 "reference_image": ("STRING", {"default": ""}),  # UI-only: selected reference image for canvas sizing
                 "grid_columns": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
                 "grid_rows":    ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
-                "randomize":    (["None", "Only Images", "Images and Nulls"], {"default": "None"}),
+                "randomize":    (["None", "Images", "Selected Images", "Images and Solids", "Selected Images and Solids"], {"default": "None"}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE",)
-    RETURN_NAMES = ("image_batch", "mask_batch", "image_original", "grid_image", "grid_hires",)
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE", "STRING",)
+    RETURN_NAMES = ("image_batch", "mask_batch", "image_original", "grid_image", "grid_hires", "aspect_ratio_out",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def IS_CHANGED(cls, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         if randomize != "None":
             return float("NaN")
         # Include images shape in the hash so re-execution triggers when it changes
         master_hash = ""
         if images is not None:
             master_hash = f"{images.shape}"
-        return hashlib.md5((image_list + crop_data + selected_items + reference_image + aspect_ratio + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
+        ar_in_hash = aspect_ratio_in or ""
+        return hashlib.md5((image_list + crop_data + selected_items + reference_image + aspect_ratio + ar_in_hash + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
 
-    def load_images(self, images=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def load_images(self, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+        # ── Resolve aspect_ratio from upstream input if requested ──────────────
+        if aspect_ratio == "Aspect Ratio Input":
+            if aspect_ratio_in and isinstance(aspect_ratio_in, str) and ":" in aspect_ratio_in:
+                aspect_ratio = aspect_ratio_in.strip()
+                print(f"[MultiImageLoader] Aspect Ratio Input: using upstream AR '{aspect_ratio}'")
+            else:
+                # No valid upstream connected — fall back to Starred image
+                aspect_ratio = "Starred image"
+                print("[MultiImageLoader] Aspect Ratio Input: no valid upstream AR, falling back to Starred image")
+        # The resolved aspect_ratio is what gets emitted on the output connector
+        resolved_ar = aspect_ratio
         try:
             filenames = json.loads(image_list)
         except Exception:
@@ -929,9 +964,9 @@ class MultiImageLoader:
                 img_orig = img.copy()
                 t_orig = transforms.get(fname)
                 if t_orig:
-                    img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color))
+                    img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color), global_scale=1.0)
                 elif img_orig.size != (orig_ref_w, orig_ref_h):
-                    img_orig = _fit_image(img_orig, orig_ref_w, orig_ref_h, fit_mode, bg_color=_parse_bg_color_word(bg_color))
+                    img_orig = _fit_image(img_orig, orig_ref_w, orig_ref_h, fit_mode, bg_color=_parse_bg_color_word(bg_color), global_scale=1.0)
                 orig_arr = np.array(img_orig).astype(np.float32) / 255.0
                 orig_tensors.append(torch.from_numpy(orig_arr).unsqueeze(0))
 
@@ -944,9 +979,9 @@ class MultiImageLoader:
                 _bg_rgb = _parse_bg_color_word(bg_color)
 
                 if t:
-                    img = _apply_crop_transform(img, t, ref_w, ref_h, fit_mode=fit_mode, node_bg_color=_bg_rgb)
+                    img = _apply_crop_transform(img, t, ref_w, ref_h, fit_mode=fit_mode, node_bg_color=_bg_rgb, global_scale=1.0)
                 elif img.size != (ref_w, ref_h):
-                    img = _fit_image(img, ref_w, ref_h, fit_mode, bg_color=_bg_rgb)
+                    img = _fit_image(img, ref_w, ref_h, fit_mode, bg_color=_bg_rgb, global_scale=1.0)
 
                 arr = np.array(img).astype(np.float32) / 255.0
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))
@@ -969,58 +1004,96 @@ class MultiImageLoader:
                 continue
 
         if not tensors:
-            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img)
+            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img, resolved_ar)
 
         batch      = torch.cat(tensors, dim=0)
         mask_batch = torch.cat(mask_tensors, dim=0)
         orig_batch = torch.cat(orig_tensors, dim=0) if orig_tensors else placeholder_img
         
-        grid_image = self._make_grid(batch, grid_rows, grid_columns, randomize, image_list)
-        grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns, randomize, image_list)
+        grid_image = self._make_grid(batch, grid_rows, grid_columns, randomize, image_list, selected_items)
+        grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns, randomize, image_list, selected_items)
         
-        return (batch, mask_batch, orig_batch, grid_image, grid_hires)
+        return (batch, mask_batch, orig_batch, grid_image, grid_hires, resolved_ar)
 
-    def _make_grid(self, batch, rows, cols, randomize="None", image_list="[]"):
+    def _make_grid(self, batch, rows, cols, randomize="None", image_list="[]", selected_items="[]"):
         import torch, random, json
         B, H, W, C = batch.shape
         max_images = rows * cols
-        
+
         # Slice to grid capacity
         grid_items = batch[:max_images]
         actual_b = grid_items.shape[0]
-        
+
         if randomize != "None" and actual_b > 1:
-            # Parse filenames to identify blank (Null Image) positions
+            # Parse filenames to identify blank/selected positions
             try:
                 filenames = json.loads(image_list)[:max_images]
             except Exception:
                 filenames = []
+            try:
+                selected = set(json.loads(selected_items)) if selected_items else set()
+            except Exception:
+                selected = set()
+
             # Pad filename list to match actual batch length
             while len(filenames) < actual_b:
                 filenames.append("")
-            is_blank = [f.startswith("__BLANK__") for f in filenames[:actual_b]]
+            filenames = filenames[:actual_b]
 
-            if randomize == "Images and Nulls":
-                # Shuffle all slots — images AND null panels move around
+            is_blank    = [f.startswith("__BLANK__") for f in filenames]
+            is_selected = [(f in selected) for f in filenames]
+            # When no selection is active, treat every slot as selected
+            has_selection = bool(selected)
+
+            if randomize == "Images":
+                # Shuffle real (non-blank) images across all positions; blanks stay fixed
+                real_pos = [i for i, b in enumerate(is_blank) if not b]
+                shuffled = real_pos[:]
+                random.shuffle(shuffled)
+                result = grid_items.clone()
+                for dest, src in zip(real_pos, shuffled):
+                    result[dest] = grid_items[src]
+                grid_items = result
+
+            elif randomize == "Selected Images":
+                # Shuffle only real images that are in the selection; others stay fixed
+                # If nothing is selected, behave like "Images"
+                if has_selection:
+                    sel_real_pos = [i for i, (b, s) in enumerate(zip(is_blank, is_selected)) if not b and s]
+                else:
+                    sel_real_pos = [i for i, b in enumerate(is_blank) if not b]
+                shuffled = sel_real_pos[:]
+                random.shuffle(shuffled)
+                result = grid_items.clone()
+                for dest, src in zip(sel_real_pos, shuffled):
+                    result[dest] = grid_items[src]
+                grid_items = result
+
+            elif randomize == "Images and Solids":
+                # Shuffle every slot — real images AND blank/solid panels all move
                 indices = list(range(actual_b))
                 random.shuffle(indices)
                 grid_items = grid_items[indices]
 
-            elif randomize == "Only Images":
-                # Shuffle only real images; null panels stay in their positions
-                non_blank_pos = [i for i, blank in enumerate(is_blank) if not blank]
-                shuffled_pos   = non_blank_pos[:]
-                random.shuffle(shuffled_pos)
+            elif randomize == "Selected Images and Solids":
+                # Shuffle all selected slots (images + blanks); unselected slots stay fixed
+                # If nothing is selected, behave like "Images and Solids"
+                if has_selection:
+                    sel_pos = [i for i, s in enumerate(is_selected) if s]
+                else:
+                    sel_pos = list(range(actual_b))
+                shuffled = sel_pos[:]
+                random.shuffle(shuffled)
                 result = grid_items.clone()
-                for dest, src in zip(non_blank_pos, shuffled_pos):
+                for dest, src in zip(sel_pos, shuffled):
                     result[dest] = grid_items[src]
                 grid_items = result
-        
+
         # Pad to fill the full grid if fewer images than cells
         if actual_b < max_images:
             padding = torch.zeros((max_images - actual_b, H, W, C), dtype=batch.dtype, device=batch.device)
             grid_items = torch.cat([grid_items, padding], dim=0)
-            
+
         # Assemble: row-major order → (rows, cols, H, W, C) → single image
         grid_items = grid_items.view(rows, cols, H, W, C)
         grid_items = grid_items.permute(0, 2, 1, 3, 4)   # (rows, H, cols, W, C)
@@ -1056,14 +1129,134 @@ class LoadImagesInGrid(MultiImageLoader):
         return (grid_image, grid_hires)
 
 
+# ─── Scale Control Node ───────────────────────────────────────────────────────
+
+class ScaleControl:
+    """
+    Downstream scale control for image batches and grids produced by MultiImageLoader.
+    Applies a uniform scale factor, shrinking (or enlarging) each image/panel and
+    centering it within its original canvas bounds with a solid background fill.
+
+    When image_grid is provided, the grid is decomposed into individual panels
+    using grid_columns × grid_rows, each panel is independently scaled and centered
+    within its cell, then the grid is reassembled.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 10.0, "step": 0.01, "display": "number"}),
+            },
+            "optional": {
+                "image_batch": ("IMAGE",),
+                "image_grid":  ("IMAGE",),
+                "bg_color":    (["gray", "black", "white", "red"], {"default": "gray"}),
+                "grid_columns": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
+                "grid_rows":    ("INT", {"default": 3, "min": 1, "max": 10, "step": 1, "display": "number"}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE",)
+    RETURN_NAMES = ("image_batch", "image_grid",)
+    FUNCTION = "apply_scale"
+    CATEGORY = "image/transform"
+    OUTPUT_NODE = False
+
+    @classmethod
+    def IS_CHANGED(cls, scale=1.0, image_batch=None, image_grid=None, bg_color="gray", grid_columns=3, grid_rows=3):
+        parts = [str(scale), bg_color, str(grid_columns), str(grid_rows)]
+        if image_batch is not None:
+            parts.append(f"b{image_batch.shape}")
+        if image_grid is not None:
+            parts.append(f"g{image_grid.shape}")
+        return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+    def apply_scale(self, scale=1.0, image_batch=None, image_grid=None, bg_color="gray", grid_columns=3, grid_rows=3):
+        bg_rgb = _parse_bg_color_word(bg_color)
+        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+
+        # ── Process image_batch ───────────────────────────────────────────────
+        if image_batch is not None and scale != 1.0:
+            scaled_batch = self._scale_batch(image_batch, scale, bg_rgb)
+        else:
+            scaled_batch = image_batch if image_batch is not None else placeholder
+
+        # ── Process image_grid ────────────────────────────────────────────────
+        if image_grid is not None and scale != 1.0:
+            scaled_grid = self._scale_grid(image_grid, scale, bg_rgb, grid_columns, grid_rows)
+        else:
+            scaled_grid = image_grid if image_grid is not None else placeholder
+
+        return (scaled_batch, scaled_grid)
+
+    def _scale_batch(self, batch: torch.Tensor, scale: float, bg_rgb: tuple) -> torch.Tensor:
+        """Scale each image in the batch individually, centering within original canvas."""
+        B, H, W, C = batch.shape
+        results = []
+        for i in range(B):
+            img_np = (batch[i].cpu().numpy() * 255).astype(np.uint8)
+            img_pil = Image.fromarray(img_np)
+            scaled = self._scale_single(img_pil, scale, bg_rgb)
+            arr = np.array(scaled).astype(np.float32) / 255.0
+            results.append(torch.from_numpy(arr).unsqueeze(0))
+        return torch.cat(results, dim=0)
+
+    def _scale_grid(self, grid: torch.Tensor, scale: float, bg_rgb: tuple, cols: int, rows: int) -> torch.Tensor:
+        """Decompose grid into panels, scale each individually, reassemble."""
+        # grid shape: [1, total_H, total_W, C]
+        if grid.shape[0] != 1:
+            # If somehow multiple grids, just treat first
+            grid = grid[0:1]
+        total_H = grid.shape[1]
+        total_W = grid.shape[2]
+        panel_W = total_W // cols
+        panel_H = total_H // rows
+
+        if panel_W < 1 or panel_H < 1:
+            return grid
+
+        grid_np = (grid[0].cpu().numpy() * 255).astype(np.uint8)
+        grid_pil = Image.fromarray(grid_np)
+        result = Image.new("RGB", (total_W, total_H), bg_rgb)
+
+        for r in range(rows):
+            for c in range(cols):
+                x0 = c * panel_W
+                y0 = r * panel_H
+                x1 = x0 + panel_W
+                y1 = y0 + panel_H
+                panel = grid_pil.crop((x0, y0, x1, y1))
+                scaled_panel = self._scale_single(panel, scale, bg_rgb)
+                result.paste(scaled_panel, (x0, y0))
+
+        arr = np.array(result).astype(np.float32) / 255.0
+        return torch.from_numpy(arr).unsqueeze(0)
+
+    @staticmethod
+    def _scale_single(img: Image.Image, scale: float, bg_rgb: tuple) -> Image.Image:
+        """Scale an image by `scale` factor and center within original bounds."""
+        w, h = img.size
+        new_w = max(1, round(w * scale))
+        new_h = max(1, round(h * scale))
+        shrunk = img.resize((new_w, new_h), Image.LANCZOS)
+        canvas = Image.new("RGB", (w, h), bg_rgb)
+        paste_x = (w - new_w) // 2
+        paste_y = (h - new_h) // 2
+        canvas.paste(shrunk, (paste_x, paste_y))
+        return canvas
+
+
 # ─── Registrations ────────────────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS = {
     "MultiImageLoader": MultiImageLoader,
     "LoadImagesInGrid": LoadImagesInGrid,
+    "ScaleControl": ScaleControl,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MultiImageLoader": "Load Multiple Images 🖼️",
     "LoadImagesInGrid": "Load Images in Grid (Deprecated) 🖼️",
+    "ScaleControl": "Scale Control 🔍",
 }

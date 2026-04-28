@@ -114,6 +114,7 @@ async function handleCropTransform(bitmap, p) {
   const rH = srcW * sinA + srcH * cosA;
 
   // Base fit scale (letterbox vs crop mode)
+  const globalScale = p.globalScale ?? 1.0;
   const bf = fitMode === "crop"
     ? Math.max(refW / rW, refH / rH)
     : Math.min(refW / rW, refH / rH);
@@ -121,6 +122,17 @@ async function handleCropTransform(bitmap, p) {
   const dw = srcW * eff, dh = srcH * eff;
 
   ctx.save();
+  if (globalScale !== 1.0) {
+    ctx.translate(refW / 2, refH / 2);
+    ctx.scale(globalScale, globalScale);
+    ctx.translate(-refW / 2, -refH / 2);
+    
+    // Explicit clip guarantees any image parts brought 'inside' the frame by scaling are cropped
+    ctx.beginPath();
+    ctx.rect(0, 0, refW, refH);
+    ctx.clip();
+  }
+
   ctx.translate(refW / 2 + ox * refW, refH / 2 + oy * refH);
   ctx.rotate(rot);
   ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
@@ -152,20 +164,33 @@ async function handleFitPreview(bitmap, p) {
   const cvs = new OffscreenCanvas(targetW, targetH);
   const ctx = cvs.getContext("2d");
 
-  if (mode === "letterbox") {
-    ctx.fillStyle = bgColor;
-    ctx.fillRect(0, 0, targetW, targetH);
-    const scale = Math.min(targetW / bitmap.width, targetH / bitmap.height);
-    const dw = bitmap.width * scale, dh = bitmap.height * scale;
-    const dx = (targetW - dw) / 2, dy = (targetH - dh) / 2;
-    ctx.drawImage(bitmap, dx, dy, dw, dh);
-  } else {
-    // crop (center-crop)
-    const scale = Math.max(targetW / bitmap.width, targetH / bitmap.height);
-    const sw = targetW / scale, sh = targetH / scale;
-    const sx = (bitmap.width - sw) / 2, sy = (bitmap.height - sh) / 2;
-    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, targetW, targetH);
+  // Always fill bg first – critical for blank/solid panels in any fit mode
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, targetW, targetH);
+
+  const globalScale = p.globalScale ?? 1.0;
+  
+  ctx.save();
+  if (globalScale !== 1.0) {
+    ctx.translate(targetW / 2, targetH / 2);
+    ctx.scale(globalScale, globalScale);
+    ctx.translate(-targetW / 2, -targetH / 2);
+    
+    ctx.beginPath();
+    ctx.rect(0, 0, targetW, targetH);
+    ctx.clip();
   }
+
+  const baseScale = mode === "letterbox" 
+    ? Math.min(targetW / bitmap.width, targetH / bitmap.height)
+    : Math.max(targetW / bitmap.width, targetH / bitmap.height);
+  
+  const dw = bitmap.width * baseScale, dh = bitmap.height * baseScale;
+  const dx = (targetW - dw) / 2, dy = (targetH - dh) / 2;
+  
+  ctx.drawImage(bitmap, dx, dy, dw, dh);
+
+  ctx.restore();
 
   // Convert to data URL via blob
   const blob = await cvs.convertToBlob({ type: "image/jpeg", quality: 0.92 });
