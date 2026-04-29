@@ -1375,12 +1375,12 @@ function createWidget(node) {
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
       badge.style.cssText = `
-        position:absolute;top:3px;left:3px;
+        position:absolute;top:5px;left:5px;
         background:rgba(0,0,0,0.55);color:rgba(255,255,255,0.9);
         font-size:8px;font-family:'Inter','SF Mono',ui-monospace,monospace;
         font-weight:500;letter-spacing:0.02em;
         padding:1px 4px;border-radius:2px;
-        pointer-events:none;z-index:2;
+        pointer-events:none;z-index:3;
         line-height:1.3;
       `;
 
@@ -1389,17 +1389,20 @@ function createWidget(node) {
       const ar = getAspectRatioWidget()?.value ?? "Starred image";
       const imageInputMode = (ar === "Image Input");
       const isRef = !imageInputMode && (ar === "Starred image") && (referenceImage !== "" ? (referenceImage === item.filename) : (idx === 0));
-      refBtn.textContent = isRef ? "⭐" : "☆";
+      // Consistent pointy 5-point star SVG for both states
+      const _starFilled = `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" style="display:block;"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" fill="#ffd700" stroke="#e6b800" stroke-width="1" stroke-linejoin="round"/></svg>`;
+      const _starEmpty  = `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" style="display:block;"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" fill="none" stroke="rgba(200,200,200,0.70)" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+      refBtn.innerHTML = isRef ? _starFilled : _starEmpty;
       refBtn.title = imageInputMode ? "Disabled in Image Input mode" : (isRef ? "Reference Image" : "Set as Reference Image");
       refBtn.style.cssText = `
-        position:absolute;bottom:2px;left:2px;
-        background:${isRef ? "rgba(40,40,40,0.85)" : "rgba(20,20,20,0.60)"};
-        color:${isRef ? "#ffd700" : "rgba(220,220,220,0.75)"};
+        position:absolute;bottom:5px;left:5px;
+        background:${isRef ? "rgba(30,30,30,0.80)" : "rgba(15,15,15,0.55)"};
         border:none;border-radius:3px;
-        width:16px;height:14px;font-size:10px;
-        cursor:${imageInputMode ? "not-allowed" : "pointer"};padding:0;line-height:14px;text-align:center;
+        width:16px;height:16px;
+        cursor:${imageInputMode ? "not-allowed" : "pointer"};padding:0;
+        display:flex;align-items:center;justify-content:center;
         opacity:${isRef ? "1" : "0"};transition:opacity 0.15s;
-        z-index:2;
+        z-index:3;
         ${imageInputMode ? "display:none;" : ""}
       `;
       refBtn.addEventListener("click", async (e) => {
@@ -1481,37 +1484,37 @@ function createWidget(node) {
       // ── copy button (top-right, next to remove btn) ─────────────────────────
       const copyBtn = document.createElement("button");
       copyBtn.title = "Copy image";
-      // Clean SVG clipboard icon
       copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
       </svg>`;
       copyBtn.style.cssText = `
-        position:absolute;top:2px;right:18px;
+        position:absolute;top:5px;right:21px;
         background:rgba(30,30,30,0.80);
         color:#ccc;
         border:none;border-radius:3px;
-        width:14px;height:14px;font-size:8px;
+        width:14px;height:14px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:0;transition:opacity 0.15s, color 0.15s;
-        z-index:2;
+        z-index:3;
       `;
 
       // ── select checkbox (bottom-right) ────────────────────────────────────────
+      // unchecked: white fill + dark border  |  checked: dark fill + white tick
+      const _chkUnchecked = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" style="display:block;"><rect x="0.75" y="0.75" width="14.5" height="14.5" rx="2.5" fill="rgba(255,255,255,0.92)" stroke="rgba(60,60,60,0.85)" stroke-width="1.5"/></svg>`;
+      const _chkChecked  = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" style="display:block;"><rect x="0.75" y="0.75" width="14.5" height="14.5" rx="2.5" fill="rgba(50,50,50,0.95)" stroke="rgba(60,60,60,0.85)" stroke-width="1.5"/><polyline points="3.5,8.5 6.5,11.5 12.5,4.5" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       const selectBtn = document.createElement("button");
       const isSelected = selectedIndices.has(idx);
       selectBtn.title = "Select image (or Ctrl/Shift+click thumbnail)";
-      selectBtn.innerHTML = isSelected
-        ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
-        : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+      selectBtn.innerHTML = isSelected ? _chkChecked : _chkUnchecked;
       selectBtn.style.cssText = `
-        position:absolute;bottom:2px;right:2px;
+        position:absolute;bottom:5px;right:5px;
         background:transparent;
         border:none;border-radius:3px;
-        width:14px;height:14px;
+        width:13px;height:13px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:${isSelected ? "1" : "0"};transition:opacity 0.15s;
-        z-index:2;
+        z-index:3;
       `;
       selectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1541,9 +1544,7 @@ function createWidget(node) {
           const sb = w.querySelector(".mil-select-btn");
           if (!sb) return;
           const sel = selectedIndices.has(i);
-          sb.innerHTML = sel
-            ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
-            : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+          sb.innerHTML = sel ? _chkChecked : _chkUnchecked;
           sb.style.opacity = sel ? "1" : "0";
         });
         if (selectedIdx !== null) precacheSelectedBlob();
@@ -1599,9 +1600,9 @@ function createWidget(node) {
           const sb = w.querySelector(".mil-select-btn");
           if (!sb) return;
           const sel = selectedIndices.has(i);
-          sb.innerHTML = sel
-            ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
-            : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+          const _ckU = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" style="display:block;"><rect x="0.75" y="0.75" width="14.5" height="14.5" rx="2.5" fill="rgba(255,255,255,0.92)" stroke="rgba(60,60,60,0.85)" stroke-width="1.5"/></svg>`;
+          const _ckC = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" style="display:block;"><rect x="0.75" y="0.75" width="14.5" height="14.5" rx="2.5" fill="rgba(50,50,50,0.95)" stroke="rgba(60,60,60,0.85)" stroke-width="1.5"/><polyline points="3.5,8.5 6.5,11.5 12.5,4.5" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+          sb.innerHTML = sel ? _ckC : _ckU;
           sb.style.opacity = sel ? "1" : "0";
         });
         if (selectedIdx !== null) precacheSelectedBlob();
