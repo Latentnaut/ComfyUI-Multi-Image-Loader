@@ -7510,15 +7510,18 @@ app.registerExtension({
               healed = true;
             }
           }
-          // Number widgets: fix NaN or undefined
-          if ((w.type === "number" || w.type === "slider") &&
-              (w.value === undefined || w.value === null ||
-               (typeof w.value === "number" && isNaN(w.value)) ||
-               w.value === "NaN")) {
-            const def = w.options?.default ?? w.options?.min ?? 0;
-            console.warn(`[MIL] Healing NaN widget "${w.name}" → ${def}`);
-            w.value = def;
-            healed = true;
+          // Number widgets: fix NaN or undefined or string values
+          if (w.type === "number" || w.type === "slider") {
+            if (w.value === undefined || w.value === null || w.value === "" || isNaN(w.value)) {
+              const def = w.options?.default ?? w.options?.min ?? 0;
+              console.warn(`[MIL] Healing corrupted number widget "${w.name}": "${w.value}" → ${def}`);
+              w.value = def;
+              healed = true;
+            } else if (typeof w.value === "string") {
+              // Cast valid numeric strings back to actual numbers
+              w.value = Number(w.value);
+              healed = true;
+            }
           }
         });
         if (healed) {
