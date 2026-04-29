@@ -7489,6 +7489,43 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function (data) {
       origOnConfigure?.call(this, data);
       const node = this;
+
+      // ── Self-healing: fix corrupted widget values ─────────────────────
+      // LiteGraph serializes widgets_values as a positional array.
+      // If the array ever gets misaligned (e.g. converted-widget count mismatch),
+      // combo widgets may hold values from a completely different widget.
+      // We detect and fix this by validating each widget against its options.
+      try {
+        let healed = false;
+        node.widgets?.forEach(w => {
+          // Combo widgets: check if value is in the valid options list
+          if (w.type === "combo" && w.options?.values?.length) {
+            if (!w.options.values.includes(w.value)) {
+              const def = w.options.default ?? w.options.values[0];
+              console.warn(`[MIL] Healing corrupted widget "${w.name}": "${w.value}" → "${def}"`);
+              w.value = def;
+              healed = true;
+            }
+          }
+          // Number widgets: fix NaN or undefined
+          if ((w.type === "number" || w.type === "slider") &&
+              (w.value === undefined || w.value === null ||
+               (typeof w.value === "number" && isNaN(w.value)) ||
+               w.value === "NaN")) {
+            const def = w.options?.default ?? w.options?.min ?? 0;
+            console.warn(`[MIL] Healing NaN widget "${w.name}" → ${def}`);
+            w.value = def;
+            healed = true;
+          }
+        });
+        if (healed) {
+          console.log("[MIL] Widget values healed. Save the workflow (Ctrl+S) to persist the fix.");
+          node.setDirtyCanvas(true, true);
+        }
+      } catch(e) {
+        console.error("[MIL] Widget healing error:", e);
+      }
+
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           node._milDomWidget?.element?._restore?.();
