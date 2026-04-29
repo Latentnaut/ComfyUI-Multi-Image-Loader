@@ -1215,39 +1215,10 @@ function createWidget(node) {
     return Math.max(20, Math.round(tw * thumbH / THUMB_W));
   }
 
-  function resizeNode() {
-    if (items.length === 0) return;
-    const cols  = getThumbCols();
-    const rows  = Math.ceil(items.length / cols);
-    const vis   = Math.min(rows, MAX_GRID_ROWS);
-    const thumb = grid.querySelector('.mil-thumb');
-    if (!thumb || thumb.offsetHeight === 0) return;
-    
-    let idealGridH = vis > 0 ? vis * (thumb.offsetHeight + THUMB_GAP) - THUMB_GAP + 4 : 0;
-    
-    const diff = idealGridH - grid.clientHeight;
-    // Only grow
-    if (diff > 0) node.setSize([node.size[0], node.size[1] + diff]);
-  }
-
-  function snapNodeToIdealH() {
-    if (items.length === 0) {
-      const snapH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + DROPZONE_H + GAP + 8;
-      node.setSize([node.size[0], snapH]);
-      return;
-    }
-    const cols  = getThumbCols();
-    const rows  = Math.ceil(items.length / cols);
-    const vis   = Math.min(rows, MAX_GRID_ROWS);
-    const thumb = grid.querySelector('.mil-thumb');
-    if (!thumb || thumb.offsetHeight === 0) return;
-
-    let idealGridH = vis > 0 ? vis * (thumb.offsetHeight + THUMB_GAP) - THUMB_GAP + 4 : 0;
-    
-    const diff = idealGridH - grid.clientHeight;
-    // Shrink AND grow
-    if (diff !== 0) node.setSize([node.size[0], node.size[1] + diff]);
-  }
+  // resizeNode / snapNodeToIdealH are intentional no-ops.
+  // Node dimensions are fixed by the user and never changed automatically.
+  function resizeNode() { /* intentional no-op — user controls node size */ }
+  function snapNodeToIdealH() { /* intentional no-op — user controls node size */ }
 
   function updateScrollFade() {
     const hasOverflow = grid.scrollHeight > grid.clientHeight + 2;
@@ -7371,8 +7342,14 @@ app.registerExtension({
       origOnCreated?.apply(this, arguments);
 
       const node = this;
-      const initH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + DROPZONE_H + GAP + 8;
-      node.setSize([300, initH]);
+      // Default size on first creation: 450px wide, height for ~2 rows of thumbnails.
+      // After this, the node is NEVER resized automatically — the user controls it freely.
+      const _defaultThumbH = THUMB_W;  // square thumbs for initial estimate
+      const _2rowGridH = 2 * (_defaultThumbH + THUMB_GAP) - THUMB_GAP + 4;
+      const _toolbar   = 28;  // approximate toolbar strip height
+      const _status    = 22;  // status bar
+      const initH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + COMPACT_DROPZONE_H + GAP + _toolbar + _status + _2rowGridH + 16 + 300;
+      if (!node.size || node.size[0] < 310) node.setSize([450, initH]);
 
       const domWidget = node.addDOMWidget(
         "mil_uploader",
@@ -7382,6 +7359,8 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
+            // Give the widget all space that the node currently has, minus chrome.
+            // We do NOT call setSize here — the node height is owned by the user.
             return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 4 - NODE_PADDING_V)];
           },
         }
