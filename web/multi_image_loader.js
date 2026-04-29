@@ -18,7 +18,7 @@
  *
  * Changes in v1.9:
  *  - Double-click on any thumbnail now opens the crop/edit modal panel directly,
- *    as an alternative to hovering and clicking the ✂ button.
+ *    as an alternative to the crop panel button.
  *  - Fixed: aspect_ratio / fit_mode / megapixels now update thumbnails live;
  *    dead previewBtn references that threw a silent TypeError were removed.
  *
@@ -1680,18 +1680,7 @@ function createWidget(node) {
       });
 
       // ── crop-active badge (bottom-right, always visible) ──────────────────
-      if (cropActive) {
-        const cropBadge = document.createElement("span");
-        cropBadge.textContent = "✂";
-        cropBadge.title = "Custom crop active";
-        cropBadge.style.cssText = `
-          position:absolute;bottom:2px;right:2px;
-          background:rgba(110,110,110,0.85);color:#eee;
-          font-size:8px;padding:0 2px;border-radius:2px;
-          pointer-events:none;z-index:1;
-        `;
-        wrapper.appendChild(cropBadge);
-      }
+      // (Removed as requested)
 
       // ── mask-active badge ──
       if (maskActive) {
