@@ -7393,7 +7393,10 @@ app.registerExtension({
         const hiddenNames = ["image_list", "crop_data", "selected_items", "reference_image", "thumb_size"];
         node.widgets?.forEach((w) => {
           if (hiddenNames.includes(w.name)) {
-            w.type = "converted-widget";
+            // NOTE: Do NOT set w.type = "converted-widget" here!
+            // LiteGraph excludes converted-widget from widgets_values on serialize,
+            // but includes all widgets on deserialize (before this setTimeout fires),
+            // causing a positional shift that corrupts numeric fields.
             w.computeSize = () => [0, -4];
             w.draw = function() {};  // prevent LiteGraph from drawing it
             if (w.inputEl) {
@@ -7427,10 +7430,10 @@ app.registerExtension({
         });
 
         // Hide internal-only widgets from user
+        // (same note: do NOT set type = "converted-widget" — see above)
         ["image_list", "crop_data", "selected_items", "reference_image", "custom_bg_hex"].forEach(name => {
           const hw = node.widgets?.find(ww => ww.name === name);
           if (hw) {
-            hw.type = "converted-widget";
             hw.computeSize = () => [0, -4];
             hw.draw = function() {};
             if (hw.inputEl) { hw.inputEl.style.display = "none"; hw.inputEl.type = "hidden"; }
