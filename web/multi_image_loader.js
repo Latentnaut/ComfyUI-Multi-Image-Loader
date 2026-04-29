@@ -1397,7 +1397,7 @@ function createWidget(node) {
       refBtn.style.cssText = `
         position:absolute;bottom:5px;left:5px;
         background:${isRef ? "rgba(30,30,30,0.80)" : "rgba(15,15,15,0.55)"};
-        border:none;border-radius:3px;
+        border:none;border-radius:2px;
         width:16px;height:16px;
         cursor:${imageInputMode ? "not-allowed" : "pointer"};padding:0;
         display:flex;align-items:center;justify-content:center;
@@ -1433,8 +1433,8 @@ function createWidget(node) {
       removeBtn.style.cssText = `
         position:absolute;top:5px;right:5px;
         background:rgba(180,30,30,0.88);color:#fff;
-        border:none;border-radius:3px;
-        width:14px;height:14px;
+        border:none;border-radius:2px;
+        width:16px;height:16px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:0;transition:opacity 0.15s;
         z-index:3;
@@ -1489,11 +1489,11 @@ function createWidget(node) {
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
       </svg>`;
       copyBtn.style.cssText = `
-        position:absolute;top:5px;right:21px;
+        position:absolute;top:5px;right:23px;
         background:rgba(30,30,30,0.80);
         color:#ccc;
-        border:none;border-radius:3px;
-        width:14px;height:14px;
+        border:none;border-radius:2px;
+        width:16px;height:16px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:0;transition:opacity 0.15s, color 0.15s;
         z-index:3;
@@ -1510,7 +1510,7 @@ function createWidget(node) {
       selectBtn.style.cssText = `
         position:absolute;bottom:5px;right:5px;
         background:transparent;
-        border:none;border-radius:3px;
+        border:none;border-radius:2px;
         width:16px;height:16px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:${isSelected ? "1" : "0"};transition:opacity 0.15s;
