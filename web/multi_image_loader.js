@@ -1547,6 +1547,8 @@ function createWidget(node) {
           sb.innerHTML = sel ? _chkChecked : _chkUnchecked;
           sb.style.opacity = sel ? "1" : "0";
         });
+        // Mouse is still over the clicked item — keep its checkbox visible
+        selectBtn.style.opacity = selectedIndices.has(idx) ? "1" : "0.7";
         if (selectedIdx !== null) precacheSelectedBlob();
         persist();
         updateStatusBarText();
