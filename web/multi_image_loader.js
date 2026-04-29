@@ -1070,11 +1070,11 @@ function createWidget(node) {
     persistCropData();
     node.setDirtyCanvas(true, true);
 
-    // Trigger ComfyUI's graph.onchange → localStorage auto-save
-    try { node.graph?.change?.(); } catch(_) {}
-
-    // Secondary backup: save directly to localStorage keyed by node.id
-    // so a browser F5 without prior Ctrl+S can still recover images.
+    // Backup directly to localStorage keyed by node.id (named keys, not positional)
+    // so browser F5 without prior Ctrl+S can still recover images.
+    // NOTE: We intentionally do NOT call node.graph.change() here — that triggers
+    // LiteGraph's positional widgets_values serialization which breaks when
+    // converted-widget types alter the widget count between save and load.
     try {
       const backup = {
         image_list:      getImageListWidget()?.value      ?? "[]",
