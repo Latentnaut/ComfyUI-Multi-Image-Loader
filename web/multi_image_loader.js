@@ -1069,6 +1069,21 @@ function createWidget(node) {
     
     persistCropData();
     node.setDirtyCanvas(true, true);
+
+    // Trigger ComfyUI's graph.onchange → localStorage auto-save
+    try { node.graph?.change?.(); } catch(_) {}
+
+    // Secondary backup: save directly to localStorage keyed by node.id
+    // so a browser F5 without prior Ctrl+S can still recover images.
+    try {
+      const backup = {
+        image_list:      getImageListWidget()?.value      ?? "[]",
+        crop_data:       getCropDataWidget()?.value       ?? "{}",
+        selected_items:  getSelectedItemsWidget()?.value  ?? "[]",
+        reference_image: getReferenceImageWidget()?.value ?? "",
+      };
+      localStorage.setItem(`mil_backup_${node.id}`, JSON.stringify(backup));
+    } catch(_) {}
   }
 
   function getCropDataWidget() {
@@ -2268,6 +2283,27 @@ function createWidget(node) {
     } catch {
       filenames = [];
     }
+
+    // Fallback: recover from localStorage backup if widget is empty
+    // (happens after F5 without prior Ctrl+S save)
+    if (!filenames?.length && node.id != null) {
+      try {
+        const raw = localStorage.getItem(`mil_backup_${node.id}`);
+        if (raw) {
+          const backup = JSON.parse(raw);
+          const backupFilenames = JSON.parse(backup.image_list || "[]");
+          if (backupFilenames.length) {
+            // Restore widget values from backup so the rest of restore() works normally
+            const ww  = getImageListWidget();     if (ww  && backup.image_list)      ww.value  = backup.image_list;
+            const cw  = getCropDataWidget();      if (cw  && backup.crop_data)       cw.value  = backup.crop_data;
+            const sw  = getSelectedItemsWidget(); if (sw  && backup.selected_items)  sw.value  = backup.selected_items;
+            const rw2 = getReferenceImageWidget();if (rw2 && backup.reference_image) rw2.value = backup.reference_image;
+            filenames = backupFilenames;
+          }
+        }
+      } catch(_) {}
+    }
+
     if (!filenames?.length) return;
 
     items = filenames.map((fn) => {
