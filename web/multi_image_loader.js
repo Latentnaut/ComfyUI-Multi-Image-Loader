@@ -7493,15 +7493,56 @@ app.registerExtension({
       origOnConfigure?.call(this, data);
       const node = this;
 
-      // ── Self-healing: fix corrupted widget values ─────────────────────
-      // LiteGraph serializes widgets_values as a positional array.
-      // If the array ever gets misaligned (e.g. converted-widget count mismatch),
-      // combo widgets may hold values from a completely different widget.
-      // We detect and fix this by validating each widget against its options.
+      // ── Fix positional shift in widgets_values ───────────────────────
+      // LiteGraph's configure() already applied widgets_values positionally
+      // BEFORE this callback fires. ComfyUI excludes "image_list" from the
+      // serialized array, but the widget still exists at index 0, causing
+      // every subsequent widget to receive the NEXT widget's value.
+      //
+      // We detect this by checking the original serialized array: if sv[0]
+      // is a valid fit_mode option (not a JSON array), the shift happened.
+      // We then RE-APPLY the correct values directly by widget name.
+      try {
+        const sv = data?.widgets_values;
+        if (sv && node.widgets) {
+          const fmW = node.widgets.find(w => w.name === "fit_mode");
+          const fmOpts = fmW?.options?.values || ["letterbox", "crop"];
+
+          if (fmOpts.includes(sv[0])) {
+            // Shift confirmed: sv starts at fit_mode, image_list was excluded.
+            // Map serialized values to widget names (excluding image_list).
+            const nameOrder = [
+              "fit_mode", "bg_color", "aspect_ratio", "megapixels",
+              "thumb_size", "double_click", "crop_data", "selected_items",
+              "reference_image", "grid_columns", "grid_rows", "randomize"
+            ];
+
+            for (let i = 0; i < nameOrder.length && i < sv.length; i++) {
+              const w = node.widgets.find(ww => ww.name === nameOrder[i]);
+              if (w) w.value = sv[i];
+            }
+
+            // Restore image_list from localStorage backup
+            try {
+              const raw = localStorage.getItem(`mil_backup_${node.id}`);
+              if (raw) {
+                const bk = JSON.parse(raw);
+                const ilW = node.widgets.find(w => w.name === "image_list");
+                if (ilW && bk.image_list) ilW.value = bk.image_list;
+              }
+            } catch(_) {}
+
+            console.log("[MIL] Fixed positional shift: re-mapped", nameOrder.length, "widgets by name");
+          }
+        }
+      } catch(e) {
+        console.error("[MIL] widgets_values realignment error:", e);
+      }
+
+      // ── Self-healing: validate widget values ──────────────────────────
       try {
         let healed = false;
         node.widgets?.forEach(w => {
-          // Combo widgets: check if value is in the valid options list
           if (w.type === "combo" && w.options?.values?.length) {
             if (!w.options.values.includes(w.value)) {
               const def = w.options.default ?? w.options.values[0];
@@ -7510,7 +7551,6 @@ app.registerExtension({
               healed = true;
             }
           }
-          // Number widgets: fix NaN or undefined or string values
           if (w.type === "number" || w.type === "slider") {
             if (w.value === undefined || w.value === null || w.value === "" || isNaN(w.value)) {
               const def = w.options?.default ?? w.options?.min ?? 0;
@@ -7518,14 +7558,13 @@ app.registerExtension({
               w.value = def;
               healed = true;
             } else if (typeof w.value === "string") {
-              // Cast valid numeric strings back to actual numbers
               w.value = Number(w.value);
               healed = true;
             }
           }
         });
         if (healed) {
-          console.log("[MIL] Widget values healed. Save the workflow (Ctrl+S) to persist the fix.");
+          console.log("[MIL] Widget values healed.");
           node.setDirtyCanvas(true, true);
         }
       } catch(e) {
