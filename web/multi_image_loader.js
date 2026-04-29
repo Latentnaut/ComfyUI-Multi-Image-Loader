@@ -1511,7 +1511,7 @@ function createWidget(node) {
         position:absolute;bottom:5px;right:5px;
         background:transparent;
         border:none;border-radius:3px;
-        width:13px;height:13px;
+        width:16px;height:16px;
         cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:${isSelected ? "1" : "0"};transition:opacity 0.15s;
         z-index:3;
