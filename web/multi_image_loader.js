@@ -1371,18 +1371,20 @@ function createWidget(node) {
         requestAnimationFrame(drawOnCanvas);
       }
 
-      // ── numeric badge (bottom-left, clear of ✕ button) ───────────────────
+      // ── numeric badge (top-left, minimal) ──────────────────────────────────
       const badge = document.createElement("span");
       badge.textContent = idx + 1;
       badge.style.cssText = `
-        position:absolute;bottom:2px;left:3px;
-        background:rgba(0,0,0,0.65);color:#fff;
-        font-size:9px;font-family:sans-serif;
-        padding:0 3px;border-radius:3px;
-        pointer-events:none;z-index:1;
+        position:absolute;top:3px;left:3px;
+        background:rgba(0,0,0,0.55);color:rgba(255,255,255,0.9);
+        font-size:8px;font-family:'Inter','SF Mono',ui-monospace,monospace;
+        font-weight:500;letter-spacing:0.02em;
+        padding:1px 4px;border-radius:2px;
+        pointer-events:none;z-index:2;
+        line-height:1.3;
       `;
 
-      // ── reference badge/placa de autoridad (top-left) ──
+      // ── reference/star button (bottom-left) ──────────────────────────────────
       const refBtn = document.createElement("button");
       const ar = getAspectRatioWidget()?.value ?? "Starred image";
       const imageInputMode = (ar === "Image Input");
@@ -1390,9 +1392,9 @@ function createWidget(node) {
       refBtn.textContent = isRef ? "⭐" : "☆";
       refBtn.title = imageInputMode ? "Disabled in Image Input mode" : (isRef ? "Reference Image" : "Set as Reference Image");
       refBtn.style.cssText = `
-        position:absolute;top:2px;left:2px;
-        background:${isRef ? "rgba(40,40,40,0.85)" : "rgba(40,40,40,0.65)"};
-        color:${isRef ? "#ffd700" : "#eee"};
+        position:absolute;bottom:2px;left:2px;
+        background:${isRef ? "rgba(40,40,40,0.85)" : "rgba(20,20,20,0.60)"};
+        color:${isRef ? "#ffd700" : "rgba(220,220,220,0.75)"};
         border:none;border-radius:3px;
         width:16px;height:14px;font-size:10px;
         cursor:${imageInputMode ? "not-allowed" : "pointer"};padding:0;line-height:14px;text-align:center;
@@ -1473,94 +1475,135 @@ function createWidget(node) {
         clearInsertIndicator();
       });
 
-      // ── panel button (top-right, next to remove btn) ──────────────────────
-      const panelBtn = document.createElement("button");
-      panelBtn.textContent = "⛶";
-      panelBtn.title = "Open Panel";
       const cropActive = hasCrop(item.filename);
       const maskActive = hasMask(item.filename);
-      panelBtn.style.cssText = `
-        position:absolute;top:2px;right:18px;
-        background:${(cropActive || maskActive) ? "rgba(110,110,110,0.9)" : "rgba(40,40,40,0.82)"};
-        color:#eee;
-        border:none;border-radius:3px;
-        width:14px;height:14px;font-size:8px;
-        cursor:pointer;padding:0;line-height:14px;text-align:center;
-        opacity:0;transition:opacity 0.15s;
-        z-index:2;
-      `;
-      panelBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const dcWidget = node.widgets?.find(w => w.name === "double_click");
-        const action = dcWidget ? dcWidget.value : "Edit Image";
-        
-        if (action === "Edit Pixel") {
-          openCropEditor(idx, false, "pixels");
-        } else if (action === "Mask") {
-          openMaskEditor(idx);
-        } else {
-          openCropEditor(idx, false, "edit");
-        }
-      });
 
-      // ── copy button (top-right, next to panel btn) ──────────────────────
+      // ── copy button (top-right, next to remove btn) ─────────────────────────
       const copyBtn = document.createElement("button");
-      copyBtn.textContent = "⎘";
       copyBtn.title = "Copy image";
+      // Clean SVG clipboard icon
+      copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>`;
       copyBtn.style.cssText = `
-        position:absolute;top:2px;right:34px;
-        background:rgba(40,40,40,0.82);
-        color:#eee;
+        position:absolute;top:2px;right:18px;
+        background:rgba(30,30,30,0.80);
+        color:#ccc;
         border:none;border-radius:3px;
         width:14px;height:14px;font-size:8px;
-        cursor:pointer;padding:0;line-height:14px;text-align:center;
+        cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
         opacity:0;transition:opacity 0.15s, color 0.15s;
         z-index:2;
       `;
-      wrapper.addEventListener("mouseenter", () => {
-        removeBtn.style.opacity = "1";
-        panelBtn.style.opacity   = "1";
-        copyBtn.style.opacity   = "1";
-        if (!imageInputMode) refBtn.style.opacity = "1";
-      });
-      wrapper.addEventListener("mouseleave", () => {
-        removeBtn.style.opacity = "0";
-        panelBtn.style.opacity   = "0";
-        copyBtn.style.opacity   = "0";
-        if (!imageInputMode) refBtn.style.opacity = isRef ? "1" : "0";
-      });
-      wrapper.addEventListener("click", (e) => {
-        // Only toggle selection if clicking the thumbnail directly (not its buttons)
-        if (e.target.closest("button")) return;
-        
+
+      // ── select checkbox (bottom-right) ────────────────────────────────────────
+      const selectBtn = document.createElement("button");
+      const isSelected = selectedIndices.has(idx);
+      selectBtn.title = "Select image (or Ctrl/Shift+click thumbnail)";
+      selectBtn.innerHTML = isSelected
+        ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
+        : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+      selectBtn.style.cssText = `
+        position:absolute;bottom:2px;right:2px;
+        background:transparent;
+        border:none;border-radius:3px;
+        width:14px;height:14px;
+        cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center;
+        opacity:${isSelected ? "1" : "0"};transition:opacity 0.15s;
+        z-index:2;
+      `;
+      selectBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // Toggle selection — Shift extends range, plain click toggles
         if (e.shiftKey && anchorIdx !== null) {
           selectedIndices.clear();
           const start = Math.min(anchorIdx, idx);
-          const end = Math.max(anchorIdx, idx);
+          const end   = Math.max(anchorIdx, idx);
           for (let i = start; i <= end; i++) selectedIndices.add(i);
           selectedIdx = idx;
         } else {
           if (selectedIndices.has(idx)) {
             selectedIndices.delete(idx);
-            if (selectedIdx === idx) {
-              selectedIdx = selectedIndices.size > 0 ? Array.from(selectedIndices).pop() : null;
-            }
+            if (selectedIdx === idx) selectedIdx = selectedIndices.size > 0 ? Array.from(selectedIndices).pop() : null;
+          } else {
+            selectedIndices.add(idx);
+            selectedIdx = idx;
+            anchorIdx   = idx;
+          }
+        }
+        _cachedCopyBlob = null; _cachedCopyIdx = null;
+        try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(_){}
+        const allWrappers = grid.querySelectorAll(".mil-thumb");
+        selectedIndices.forEach(i => { if (allWrappers[i]) allWrappers[i].classList.add("mil-selected"); });
+        // Update selectBtn icons in all rendered thumbnails
+        allWrappers.forEach((w, i) => {
+          const sb = w.querySelector(".mil-select-btn");
+          if (!sb) return;
+          const sel = selectedIndices.has(i);
+          sb.innerHTML = sel
+            ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
+            : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+          sb.style.opacity = sel ? "1" : "0";
+        });
+        if (selectedIdx !== null) precacheSelectedBlob();
+        persist();
+        updateStatusBarText();
+      });
+      selectBtn.classList.add("mil-select-btn");
+
+      wrapper.addEventListener("mouseenter", () => {
+        removeBtn.style.opacity = "1";
+        copyBtn.style.opacity   = "1";
+        selectBtn.style.opacity = selectedIndices.has(idx) ? "1" : "0.7";
+        if (!imageInputMode) refBtn.style.opacity = "1";
+      });
+      wrapper.addEventListener("mouseleave", () => {
+        removeBtn.style.opacity = "0";
+        copyBtn.style.opacity   = "0";
+        selectBtn.style.opacity = selectedIndices.has(idx) ? "1" : "0";
+        if (!imageInputMode) refBtn.style.opacity = isRef ? "1" : "0";
+      });
+      wrapper.addEventListener("click", (e) => {
+        // Plain click: no selection (use checkbox / Ctrl / Shift)
+        if (e.target.closest("button")) return;
+
+        // Ctrl+click — toggle single item
+        if (e.ctrlKey || e.metaKey) {
+          if (selectedIndices.has(idx)) {
+            selectedIndices.delete(idx);
+            if (selectedIdx === idx) selectedIdx = selectedIndices.size > 0 ? Array.from(selectedIndices).pop() : null;
           } else {
             selectedIndices.add(idx);
             selectedIdx = idx;
             anchorIdx = idx;
           }
+        } else if (e.shiftKey && anchorIdx !== null) {
+          // Shift+click — range selection
+          selectedIndices.clear();
+          const start = Math.min(anchorIdx, idx);
+          const end   = Math.max(anchorIdx, idx);
+          for (let i = start; i <= end; i++) selectedIndices.add(i);
+          selectedIdx = idx;
+        } else {
+          // Plain click: no change to selection
+          return;
         }
 
-        _cachedCopyBlob = null;
-        _cachedCopyIdx = null;
-        
+        _cachedCopyBlob = null; _cachedCopyIdx = null;
         try { root.querySelectorAll(".mil-selected").forEach(el => el.classList.remove("mil-selected")); } catch(err){}
         const allWrappers = grid.querySelectorAll(".mil-thumb");
-        selectedIndices.forEach(i => {
-           if (allWrappers[i]) allWrappers[i].classList.add("mil-selected");
+        selectedIndices.forEach(i => { if (allWrappers[i]) allWrappers[i].classList.add("mil-selected"); });
+        // Sync selectBtn icons
+        allWrappers.forEach((w, i) => {
+          const sb = w.querySelector(".mil-select-btn");
+          if (!sb) return;
+          const sel = selectedIndices.has(i);
+          sb.innerHTML = sel
+            ? `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(80,130,255,0.9)" stroke="#7ab0ff"/><polyline points="3.5,8 6.5,11 12.5,5" stroke="#fff" stroke-width="2"/></svg>`
+            : `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="14" height="14" rx="2" fill="rgba(0,0,0,0.4)" stroke="rgba(200,200,200,0.55)"/></svg>`;
+          sb.style.opacity = sel ? "1" : "0";
         });
-
         if (selectedIdx !== null) precacheSelectedBlob();
         persist();
         updateStatusBarText();
@@ -1593,7 +1636,7 @@ function createWidget(node) {
         persist();
         updateStatusBarText();
 
-        copyBtn.textContent = "⏳";
+        copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
         (async () => {
           try {
             const dataUrl = await renderItemToDataUrl(item, idx);
@@ -1641,8 +1684,8 @@ function createWidget(node) {
             flashStatusMessage("Copy failed");
           } finally {
             if (ok) flashStatusMessage("Image copied");
-            copyBtn.textContent = "⎘";
-            setTimeout(() => { copyBtn.style.color = "#eee"; }, 800);
+            copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+            setTimeout(() => { copyBtn.style.color = "#ccc"; }, 800);
           }
         })();
       });
@@ -1679,9 +1722,9 @@ function createWidget(node) {
       if (maskOvEl) wrapper.appendChild(maskOvEl);
       wrapper.appendChild(badge);
       wrapper.appendChild(copyBtn);
-      wrapper.appendChild(panelBtn);
       wrapper.appendChild(removeBtn);
       wrapper.appendChild(refBtn);
+      wrapper.appendChild(selectBtn);
       grid.appendChild(wrapper);
     });
 
