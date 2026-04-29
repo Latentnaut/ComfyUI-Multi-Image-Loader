@@ -3802,7 +3802,9 @@ function createWidget(node) {
     let _edCafillLoading = false;
     let _edAltEyedrop = false; // Alt held while brush — temp eyedropper
     let _edBrushErasing = false; // right-click brush = erase mode
-
+    let _edCloneSourceInit = null;
+    let _edCloneOffset = null;
+    let _edCloneBuffer = null;
     // Image dims in pixels panel (mirrors secEdit dims)
     const pxDimLbl = document.createElement("div");
     pxDimLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;`;
@@ -3888,7 +3890,7 @@ function createWidget(node) {
     const ptToolRow = document.createElement("div");
     ptToolRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
     const ptBtns = {};
-    [["brush","🖌️ Brush"], ["blur","💧 Blur"],["smudge","👆 Smudge"]].forEach(([k,lbl]) => {
+    [["brush","🖌️ Brush"], ["blur","💧 Blur"],["smudge","👆 Smudge"],["clone","🪠 Clone"]].forEach(([k,lbl]) => {
       const b = document.createElement("button");
       b.textContent = lbl;
       b.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
@@ -4046,7 +4048,7 @@ function createWidget(node) {
         b.style.borderColor = on ? "#445599" : "#3a3a3a";
       });
       ptSmudgeRow.style.display = edPixelTool === "smudge" ? "flex" : "none";
-      const needsSize = ["blur", "smudge", "brush"].includes(edPixelTool);
+      const needsSize = ["blur", "smudge", "brush", "clone"].includes(edPixelTool);
       ptBrushRow.style.display = needsSize ? "flex" : "none";
       // ptColorWrapper is always visible — no display toggle needed
       // Update cursor
@@ -4271,6 +4273,46 @@ function createWidget(node) {
       ctx.putImageData(imgData, bx, by);
     }
 
+    // ── Clone Stamp on image: copy from offset buffer ────────
+    function _edCloneStamp(cx, cy, r) {
+      if (!_edCvsEditsPx || !_edCloneBuffer || !_edCloneOffset) return;
+      
+      const ctx = _edCvsEditsPx.getContext("2d");
+      const srcX = cx + _edCloneOffset.dx;
+      const srcY = cy + _edCloneOffset.dy;
+      const d = Math.ceil(r) * 2;
+      if (d <= 0) return;
+      
+      const stampCvs = document.createElement("canvas");
+      stampCvs.width = d; stampCvs.height = d;
+      const sCtx = stampCvs.getContext("2d");
+      
+      // Soft brush mask
+      const grad = sCtx.createRadialGradient(r, r, 0, r, r, r);
+      grad.addColorStop(0, `rgba(0,0,0,${edBrushAlpha})`);
+      grad.addColorStop(0.5, `rgba(0,0,0,${edBrushAlpha})`);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      
+      sCtx.fillStyle = grad;
+      sCtx.fillRect(0, 0, d, d);
+      
+      // Mask with the source image pixels from the clone buffer
+      sCtx.globalCompositeOperation = "source-in";
+      sCtx.drawImage(_edCloneBuffer, 
+        Math.round(srcX - r), Math.round(srcY - r), d, d,
+        0, 0, d, d);
+        
+      // If there's an active lasso selection, mask it down
+      if (edLassoOps.length > 0) {
+        sCtx.globalCompositeOperation = "destination-in";
+        const lMsk = buildLassoMaskCanvas(_edCvsEditsPx.width, _edCvsEditsPx.height);
+        sCtx.drawImage(lMsk, Math.round(cx - r), Math.round(cy - r), d, d, 0, 0, d, d);
+      }
+      
+      ctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(stampCvs, Math.round(cx - r), Math.round(cy - r));
+    }
+
     // ── Smudge on image: true pixel-drag (sample → stamp) ────────
     // _edSmudgeBuf holds the "paint" being dragged between steps.
     function _edApplySmudge(lastPos, currPos, r) {
@@ -4438,7 +4480,7 @@ function createWidget(node) {
       // Reset pixel edits
       edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
       _edOpsUndoStack = []; _edOpsRedoStack = [];
-      _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+      _edSmudgeBuf = null; _edCloneBuffer = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
       _syncPixelToolUI();
       // Reset bg
       edBg=getEffectiveBgColor();
@@ -4826,7 +4868,7 @@ function createWidget(node) {
           
           if (drawBrushCursor) {
             ctx.save();
-            ctx.strokeStyle = edPixelTool === "blur" ? "rgba(100,180,255,0.7)" : (edPixelTool === "smudge" ? "rgba(255,180,100,0.7)" : "rgba(255,255,255,0.8)");
+            ctx.strokeStyle = edPixelTool === "blur" ? "rgba(100,180,255,0.7)" : (edPixelTool === "smudge" ? "rgba(255,180,100,0.7)" : (edPixelTool === "clone" ? "rgba(200,100,255,0.7)" : "rgba(255,255,255,0.8)"));
             ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
             ctx.beginPath(); ctx.arc(_edBrushPos.cx, _edBrushPos.cy, rPx, 0, Math.PI*2); ctx.stroke();
             ctx.setLineDash([]);
@@ -4834,6 +4876,16 @@ function createWidget(node) {
             ctx.beginPath(); ctx.moveTo(_edBrushPos.cx-6,_edBrushPos.cy); ctx.lineTo(_edBrushPos.cx+6,_edBrushPos.cy); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(_edBrushPos.cx,_edBrushPos.cy-6); ctx.lineTo(_edBrushPos.cx,_edBrushPos.cy+6); ctx.stroke();
             ctx.restore();
+            if (edPixelTool === "clone" && _edCloneSourceInit) {
+              const srcCx = ca.width/2 + (_edCloneSourceInit.x - panSt.vpx)*edViewZoom;
+              const srcCy = ca.height/2 + (_edCloneSourceInit.y - panSt.vpy)*edViewZoom;
+              ctx.save();
+              ctx.strokeStyle = "rgba(200,100,255,0.9)"; ctx.lineWidth = 1;
+              ctx.beginPath(); ctx.moveTo(srcCx - 8, srcCy); ctx.lineTo(srcCx + 8, srcCy);
+              ctx.moveTo(srcCx, srcCy - 8); ctx.lineTo(srcCx, srcCy + 8);
+              ctx.stroke();
+              ctx.restore();
+            }
           } else {
             ctx.save();
             ctx.strokeStyle = "rgba(0,0,0,0.8)"; ctx.lineWidth = 1;
@@ -4997,7 +5049,7 @@ function createWidget(node) {
           edImg=el; edNatW=el.naturalWidth; edNatH=el.naturalHeight;
           // Reset pixel tool state on image switch
           edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
-          _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+          _edSmudgeBuf = null; _edCloneBuffer = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
           _syncPixelToolUI();
           const t=ses[items[idx].filename];
           // Restore applied crop BEFORE syncCvs so bFit uses effective dims
@@ -5149,6 +5201,8 @@ function createWidget(node) {
           if (prevPt) _edApplySmudge(prevPt, { x: epx, y: epy }, rPx);
         } else if (edPixelTool === "eyedropper") {
            _edApplyEyedropper(epx, epy);
+        } else if (edPixelTool === "clone") {
+           _edCloneStamp(epx, epy, rPx);
         }
         _edBrushPts.push({ x: epx, y: epy });
         redraw(); return;
@@ -5406,6 +5460,7 @@ function createWidget(node) {
         _edEnsureEditsPx(); _edSaveUndo();
         _edBrushDrawing = true;
         _edSmudgeBuf = null; // reset smudge buffer so each stroke samples fresh pixels
+        _edCloneBuffer = null;
         const r = cvs.getBoundingClientRect();
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
         _edBrushPos = { cx, cy };
@@ -5450,6 +5505,21 @@ function createWidget(node) {
           redraw();
         } else if (edPixelTool === "eyedropper") {
           _edApplyEyedropper(startX, startY);
+        } else if (edPixelTool === "clone") {
+          if (e.altKey) {
+            _edCloneSourceInit = { x: startX, y: startY };
+            _edCloneOffset = null;
+            _edBrushDrawing = false;
+          } else if (_edCloneSourceInit) {
+            if (!_edCloneOffset) {
+              _edCloneOffset = { dx: _edCloneSourceInit.x - startX, dy: _edCloneSourceInit.y - startY };
+            }
+            _edCloneBuffer = document.createElement("canvas");
+            _edCloneBuffer.width = _edCvsEditsPx.width;
+            _edCloneBuffer.height = _edCvsEditsPx.height;
+            _edCloneBuffer.getContext("2d").drawImage(_edCvsEditsPx, 0, 0);
+            _edCloneStamp(startX, startY, parseFloat(ptBrSlider.value) * pxScale);
+          }
         }
         return;
       }
@@ -5629,6 +5699,10 @@ function createWidget(node) {
           ptBtns["eyedropper"].style.borderColor = "#445599";
         }
         return;
+      } else if (e.key === "Alt" && edPixelTool === "clone") {
+        e.preventDefault();
+        ca.style.cursor = "crosshair";
+        return;
       }
     }
     function onKeyUp(e) {
@@ -5641,6 +5715,9 @@ function createWidget(node) {
             ptBtns["eyedropper"].style.color = "#aaa";
             ptBtns["eyedropper"].style.borderColor = "#3a3a3a";
           }
+          redraw();
+        } else if (edPixelTool === "clone") {
+          ca.style.cursor = "none";
           redraw();
         }
       }
@@ -7350,6 +7427,11 @@ app.registerExtension({
       const _status    = 22;  // status bar
       const initH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + COMPACT_DROPZONE_H + GAP + _toolbar + _status + _2rowGridH + 16 + 300;
       if (!node.size || node.size[0] < 310) node.setSize([450, initH]);
+
+      // Force computeSize to always return the current size, preventing ComfyUI from auto-resizing the node
+      node.computeSize = function() {
+        return [this.size[0], this.size[1]];
+      };
 
       const domWidget = node.addDOMWidget(
         "mil_uploader",
