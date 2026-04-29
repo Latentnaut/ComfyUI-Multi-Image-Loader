@@ -1429,7 +1429,7 @@ function createWidget(node) {
       // ── remove button (top-right, shown on hover) ─────────────────────────
       const removeBtn = document.createElement("button");
       removeBtn.title = "Remove";
-      removeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" style="display:block;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+      removeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" style="display:block;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
       removeBtn.style.cssText = `
         position:absolute;top:5px;right:5px;
         background:rgba(180,30,30,0.88);color:#fff;
