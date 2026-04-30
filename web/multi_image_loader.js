@@ -662,8 +662,8 @@ function createWidget(node) {
 
   // ── refresh button ─────────────────────────────────────────────────────────
   const refreshBtn = document.createElement("button");
-  refreshBtn.textContent = "↻ Cache Images";
-  refreshBtn.title = "Refresh Images · Pull connected images as first thumbnails";
+  refreshBtn.textContent = "↻ Refresh UI";
+  refreshBtn.title = "Refresh UI · Re-render thumbnails and force UI update";
   refreshBtn.className = "mil-btn";
   refreshBtn.style.cssText = `
     background: #252525;
@@ -684,9 +684,15 @@ function createWidget(node) {
     refreshBtn.style.background = "#252525";
     refreshBtn.style.borderColor = "#444";
   });
-  refreshBtn.addEventListener("click", () => {
-    doRefreshImages();
-    flashStatusMessage("Images refreshed");
+  refreshBtn.addEventListener("click", async () => {
+    // Only re-render the UI, do not import images.
+    statusLabel.textContent = "Refreshing UI…";
+    statusLabel.style.color = "#ffcc66";
+    render();
+    await renderFitPreviews();
+    await renderCropPreviews();
+    statusLabel.textContent = "";
+    flashStatusMessage("UI Refreshed");
   });
   btnGroup.appendChild(refreshBtn);
 
@@ -1081,6 +1087,7 @@ function createWidget(node) {
         crop_data:       getCropDataWidget()?.value       ?? "{}",
         selected_items:  getSelectedItemsWidget()?.value  ?? "[]",
         reference_image: getReferenceImageWidget()?.value ?? "",
+        resolved_aspect_ratio: node._resolvedAspectRatio  ?? "",
       };
       localStorage.setItem(`mil_backup_${node.id}`, JSON.stringify(backup));
     } catch(_) {}
@@ -1134,6 +1141,47 @@ function createWidget(node) {
     return !!(masterInput && masterInput.link != null);
   }
 
+  /**
+   * Read the upstream AR string from the aspect_ratio_in input link.
+   * Checks (in order):
+   *  1) The upstream node's output slot name "aspect_ratio_out" widget value
+   *  2) The upstream node's "aspect_ratio" widget value
+   *  3) Any widget whose value matches the pattern "N:M"
+   * Returns a string like "3:4" or null if unavailable.
+   */
+  function resolveUpstreamAspectRatio() {
+    if (!node.inputs) return null;
+    const arInput = node.inputs.find(inp => inp.name === "aspect_ratio_in");
+    if (!arInput || arInput.link == null) return null;
+    const linkInfo = app.graph.links[arInput.link];
+    if (!linkInfo) return null;
+    const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+    if (!srcNode) return null;
+
+    // Try the source node's outputs — the linked output slot might have last exec value
+    // In LiteGraph, output slots can cache their last value in some setups
+    const originSlot = linkInfo.origin_slot;
+    if (srcNode.outputs?.[originSlot]?._value) {
+      const v = srcNode.outputs[originSlot]._value;
+      if (typeof v === "string" && v.includes(":")) return v;
+    }
+
+    // Try the source node's "aspect_ratio" widget (common pattern)
+    if (srcNode.widgets) {
+      const arW = srcNode.widgets.find(w => w.name === "aspect_ratio");
+      if (arW) {
+        const v = arW.value;
+        if (typeof v === "string" && /^\d+:\d+$/.test(v)) return v;
+      }
+      // Fallback: any widget with a ratio-like value
+      for (const w of srcNode.widgets) {
+        if (typeof w.value === "string" && /^\d+:\d+$/.test(w.value)) return w.value;
+      }
+    }
+
+    return null;
+  }
+
   // Auto-update thumbnails after crop editor Apply.
   // Draws each image through the same canvas transform as the editor.
   async function computeRefDims() {
@@ -1149,13 +1197,13 @@ function createWidget(node) {
 
     // Priority 1b: "Aspect Ratio Input" — resolve AR string from upstream link
     if (ar === "Aspect Ratio Input") {
-      // Try to read the resolved AR from the node's aspect_ratio_in input link.
-      // ComfyUI doesn't expose live link values in JS, so we attempt to detect
-      // a cached value stored on the node object by the backend after execution.
-      const linkedAr = node._resolvedAspectRatio;
+      // Try cached value first (set after execution), then resolve from graph link
+      const linkedAr = node._resolvedAspectRatio || resolveUpstreamAspectRatio();
       if (linkedAr && linkedAr.includes(":")) {
         const [aw, ah] = linkedAr.split(":").map(Number);
         if (aw > 0 && ah > 0) {
+          // Cache it for subsequent calls
+          if (!node._resolvedAspectRatio) node._resolvedAspectRatio = linkedAr;
           const totalPx = Math.max(1, mp * 1_000_000);
           const refW = Math.max(1, Math.round(Math.sqrt(totalPx * aw / ah)));
           const refH = Math.max(1, Math.round(Math.sqrt(totalPx * ah / aw)));
@@ -1651,8 +1699,9 @@ function createWidget(node) {
             if (!ok) {
               const url = URL.createObjectURL(blob);
               const fi = document.createElement("img");
+              const loadProm = new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
               fi.src = url;
-              await new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
+              await loadProm;
               const wrap = document.createElement("div");
               wrap.contentEditable = "true";
               wrap.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;";
@@ -1964,10 +2013,23 @@ function createWidget(node) {
       // Upstream not yet executed — fall through to first-image dims
     }
 
+    // Priority 1b: "Aspect Ratio Input" — use resolved AR from upstream link
+    if (ar === "Aspect Ratio Input") {
+      const linkedAr = node._resolvedAspectRatio || resolveUpstreamAspectRatio();
+      if (linkedAr && linkedAr.includes(":")) {
+        const [aw, ah] = linkedAr.split(":").map(Number);
+        if (aw > 0 && ah > 0) {
+          thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
+          return;
+        }
+      }
+      // No resolved AR yet — fall through to first-image dims
+    }
+
     if (items.length === 0) { thumbH = THUMB_W; return; }
 
     // Priority 2: fixed aspect ratio widget (e.g. "1:1", "16:9")
-    if (ar !== "Starred image" && ar !== "Image Input") {
+    if (ar !== "Starred image" && ar !== "Image Input" && ar !== "Aspect Ratio Input") {
       const [aw, ah] = ar.split(":").map(Number);
       thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
       return;
@@ -2234,24 +2296,31 @@ function createWidget(node) {
   // ── restore (called on page load / workflow reload) ───────────────────────
 
   async function restore() {
+    const nid = node.id ?? "?";
+    console.log(`[MIL:${nid}] restore() called. items.length =`, items.length);
     if (items.length > 0) return;
 
     const w = getImageListWidget();
+    console.log(`[MIL:${nid}] restore() image_list widget:`, w ? "found" : "NOT FOUND", "value =", w?.value?.substring?.(0, 120));
     let filenames;
     try {
       filenames = JSON.parse(w?.value || "[]");
     } catch {
       filenames = [];
     }
+    console.log(`[MIL:${nid}] restore() widget filenames:`, filenames?.length, filenames?.slice(0, 3));
 
     // Fallback: recover from localStorage backup if widget is empty
     // (happens after F5 without prior Ctrl+S save)
     if (!filenames?.length && node.id != null) {
+      const lsKey = `mil_backup_${node.id}`;
+      console.log(`[MIL:${nid}] Widget empty → trying localStorage key "${lsKey}"`);
       try {
-        const raw = localStorage.getItem(`mil_backup_${node.id}`);
+        const raw = localStorage.getItem(lsKey);
         if (raw) {
           const backup = JSON.parse(raw);
           const backupFilenames = JSON.parse(backup.image_list || "[]");
+          console.log(`[MIL:${nid}] localStorage backup found. images:`, backupFilenames.length, "AR:", backup.resolved_aspect_ratio || "(none)");
           if (backupFilenames.length) {
             // Restore widget values from backup so the rest of restore() works normally
             const ww  = getImageListWidget();     if (ww  && backup.image_list)      ww.value  = backup.image_list;
@@ -2260,10 +2329,41 @@ function createWidget(node) {
             const rw2 = getReferenceImageWidget();if (rw2 && backup.reference_image) rw2.value = backup.reference_image;
             filenames = backupFilenames;
           }
+          // Restore resolved AR from backup
+          if (backup.resolved_aspect_ratio) {
+            node._resolvedAspectRatio = backup.resolved_aspect_ratio;
+          }
+        } else {
+          console.warn(`[MIL:${nid}] NO localStorage backup found for key "${lsKey}"`);
+        }
+      } catch(e) {
+        console.error(`[MIL:${nid}] localStorage restore error:`, e);
+      }
+    }
+
+    // Try to resolve AR from upstream graph link (works even if backup didn't have it)
+    if (!node._resolvedAspectRatio) {
+      const upstreamAr = resolveUpstreamAspectRatio();
+      if (upstreamAr) node._resolvedAspectRatio = upstreamAr;
+    }
+
+    // Last resort: recover filenames from crop_data widget keys
+    // (crop_data IS included in widgets_values even when image_list is not)
+    if (!filenames?.length) {
+      try {
+        const cdW = getCropDataWidget();
+        if (cdW?.value && cdW.value !== "{}") {
+          const cd = JSON.parse(cdW.value);
+          const keys = Object.keys(cd);
+          if (keys.length) {
+            filenames = keys;
+            console.log(`[MIL:${nid}] Recovered ${keys.length} filename(s) from crop_data keys`);
+          }
         }
       } catch(_) {}
     }
 
+    console.log(`[MIL:${nid}] final filenames count:`, filenames?.length, "resolvedAR:", node._resolvedAspectRatio || "(none)");
     if (!filenames?.length) return;
 
     items = filenames.map((fn) => {
@@ -2576,8 +2676,9 @@ function createWidget(node) {
       try {
         const url = URL.createObjectURL(blob);
         const fi  = document.createElement("img");
+        const loadProm = new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
         fi.src = url;
-        await new Promise((res, rej) => { fi.onload = res; fi.onerror = rej; });
+        await loadProm;
 
         const wrap = document.createElement("div");
         wrap.contentEditable = "true";
@@ -2642,6 +2743,23 @@ function createWidget(node) {
     if (items.length > 0) snapNodeToIdealH();
   };
   root._fetchUpstreamDimsOnly = _fetchUpstreamDimsOnly;
+  root._resolveAndCacheAR = () => {
+    const ar = resolveUpstreamAspectRatio();
+    if (ar) {
+      node._resolvedAspectRatio = ar;
+      // Merge AR into existing backup WITHOUT overwriting image data.
+      // persist() would write items=[] if called before _restore() completes.
+      try {
+        const lsKey = `mil_backup_${node.id}`;
+        const raw = localStorage.getItem(lsKey);
+        if (raw) {
+          const backup = JSON.parse(raw);
+          backup.resolved_aspect_ratio = ar;
+          localStorage.setItem(lsKey, JSON.stringify(backup));
+        }
+      } catch(_) {}
+    }
+  };
   root._onAspectRatioChange = async (wName) => {
     if (wName === "aspect_ratio") {
         const ar = getAspectRatioWidget()?.value ?? "Starred image";
@@ -3781,6 +3899,9 @@ function createWidget(node) {
     let edColorBg = localStorage.getItem("mil_bg_color") || "#000000";
     let edBrushAlpha = parseFloat(localStorage.getItem("mil_brush_alpha") ?? "1");
     if (isNaN(edBrushAlpha) || edBrushAlpha < 0 || edBrushAlpha > 1) edBrushAlpha = 1;
+
+    let edBrushHardness = parseFloat(localStorage.getItem("mil_brush_hardness") ?? "0.5");
+    if (isNaN(edBrushHardness) || edBrushHardness < 0 || edBrushHardness > 1) edBrushHardness = 0.5;
     let _edCvsEditsPx = null;
     let _edEditsUndoStack = [];
     let _edSmudgeBuf = null;
@@ -4010,6 +4131,15 @@ function createWidget(node) {
     ptBrushRow.style.display = "none"; // hidden until tool that needs size
     secPixels.appendChild(ptBrushRow);
 
+    // Hardness row
+    const _ptHdSR = mkSliderRow("Hardness", { min:0, max:100, step:1, value:Math.round(edBrushHardness*100), suffix:"%",
+      onInput: v => { edBrushHardness = v / 100; localStorage.setItem("mil_brush_hardness", edBrushHardness); redraw(); }
+    });
+    const ptHdSlider = _ptHdSR.slider;
+    const ptHardnessRow = _ptHdSR.row;
+    ptHardnessRow.style.display = "none";
+    secPixels.appendChild(ptHardnessRow);
+
     // Undo / Redo row
     let _edEditsRedoStack = [];
     const ptUndoRedoRow = document.createElement("div");
@@ -4039,6 +4169,7 @@ function createWidget(node) {
       ptSmudgeRow.style.display = edPixelTool === "smudge" ? "flex" : "none";
       const needsSize = ["blur", "smudge", "brush", "clone"].includes(edPixelTool);
       ptBrushRow.style.display = needsSize ? "flex" : "none";
+      ptHardnessRow.style.display = ["smudge", "clone", "brush"].includes(edPixelTool) ? "flex" : "none";
       // ptColorWrapper is always visible — no display toggle needed
       // Update cursor
       if (edPixelTool) {
@@ -4277,9 +4408,11 @@ function createWidget(node) {
       const sCtx = stampCvs.getContext("2d");
       
       // Soft brush mask
+      // Soft brush mask
       const grad = sCtx.createRadialGradient(r, r, 0, r, r, r);
+      const solidStop = Math.max(0, Math.min(0.99, edBrushHardness));
       grad.addColorStop(0, `rgba(0,0,0,${edBrushAlpha})`);
-      grad.addColorStop(0.5, `rgba(0,0,0,${edBrushAlpha})`);
+      grad.addColorStop(solidStop, `rgba(0,0,0,${edBrushAlpha})`);
       grad.addColorStop(1, "rgba(0,0,0,0)");
       
       sCtx.fillStyle = grad;
@@ -4350,8 +4483,9 @@ function createWidget(node) {
       // Apply radial fade mask (full opacity at center, zero at edge)
       sCtx.globalCompositeOperation = "destination-in";
       const grad = sCtx.createRadialGradient(r, r, 0, r, r, r);
+      const solidStop = Math.max(0, Math.min(0.99, edBrushHardness));
       grad.addColorStop(0,   "rgba(0,0,0,1)");
-      grad.addColorStop(0.7, "rgba(0,0,0,0.85)");
+      grad.addColorStop(solidStop, "rgba(0,0,0,1)");
       grad.addColorStop(1,   "rgba(0,0,0,0)");
       sCtx.fillStyle = grad;
       sCtx.fillRect(0, 0, d, d);
@@ -4856,18 +4990,81 @@ function createWidget(node) {
           const drawBrushCursor = edPixelTool !== "eyedropper";
           
           if (drawBrushCursor) {
+            const hRatio = Math.max(0, Math.min(1, edBrushHardness));
+            
+            if (edPixelTool === "clone" && _edCloneSourceInit && _edCvsEditsPx) {
+              let srcX, srcY;
+              const { dw: pdw, dh: pdh } = _imgRenderDims();
+              const pImgCX = frameCX + dOX, pImgCY = frameCY + dOY;
+              const pPxScale = _edCvsEditsPx ? _edCvsEditsPx.width / pdw : 1;
+              
+              if (!_edCloneOffset) {
+                srcX = _edCloneSourceInit.x;
+                srcY = _edCloneSourceInit.y;
+              } else {
+                const currentX = (_edBrushPos.cx - (pImgCX - pdw/2)) * pPxScale;
+                const currentY = (_edBrushPos.cy - (pImgCY - pdh/2)) * pPxScale;
+                srcX = currentX + _edCloneOffset.dx;
+                srcY = currentY + _edCloneOffset.dy;
+              }
+              
+              const d = Math.ceil(rPx) * 2;
+              if (d > 0) {
+                const stampCvs = document.createElement("canvas");
+                stampCvs.width = d; stampCvs.height = d;
+                const sCtx = stampCvs.getContext("2d");
+                
+                sCtx.drawImage(_edCvsEditsPx, 0, 0, _edCvsEditsPx.width, _edCvsEditsPx.height,
+                               rPx - srcX / pPxScale,
+                               rPx - srcY / pPxScale,
+                               _edCvsEditsPx.width / pPxScale,
+                               _edCvsEditsPx.height / pPxScale);
+                
+                sCtx.globalCompositeOperation = "destination-in";
+                const grad = sCtx.createRadialGradient(rPx, rPx, 0, rPx, rPx, rPx);
+                const solidStop = Math.max(0, Math.min(0.99, edBrushHardness));
+                grad.addColorStop(0, "rgba(0,0,0,1)");
+                grad.addColorStop(solidStop, "rgba(0,0,0,1)");
+                grad.addColorStop(1, "rgba(0,0,0,0)");
+                sCtx.fillStyle = grad;
+                sCtx.fillRect(0, 0, d, d);
+                
+                ctx.save();
+                ctx.globalAlpha = 0.85;
+                ctx.drawImage(stampCvs, _edBrushPos.cx - rPx, _edBrushPos.cy - rPx);
+                ctx.restore();
+              }
+            }
+
             ctx.save();
             ctx.strokeStyle = edPixelTool === "blur" ? "rgba(100,180,255,0.7)" : (edPixelTool === "smudge" ? "rgba(255,180,100,0.7)" : (edPixelTool === "clone" ? "rgba(200,100,255,0.7)" : "rgba(255,255,255,0.8)"));
             ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
             ctx.beginPath(); ctx.arc(_edBrushPos.cx, _edBrushPos.cy, rPx, 0, Math.PI*2); ctx.stroke();
+            
+            if (hRatio < 0.95) {
+              ctx.lineWidth = 0.5;
+              ctx.beginPath(); ctx.arc(_edBrushPos.cx, _edBrushPos.cy, rPx * Math.max(0.01, hRatio), 0, Math.PI*2); ctx.stroke();
+            }
+            
             ctx.setLineDash([]);
             ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 0.5;
             ctx.beginPath(); ctx.moveTo(_edBrushPos.cx-6,_edBrushPos.cy); ctx.lineTo(_edBrushPos.cx+6,_edBrushPos.cy); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(_edBrushPos.cx,_edBrushPos.cy-6); ctx.lineTo(_edBrushPos.cx,_edBrushPos.cy+6); ctx.stroke();
             ctx.restore();
             if (edPixelTool === "clone" && _edCloneSourceInit) {
-              const srcCx = ca.width/2 + (_edCloneSourceInit.x - panSt.vpx)*edViewZoom;
-              const srcCy = ca.height/2 + (_edCloneSourceInit.y - panSt.vpy)*edViewZoom;
+              const { dw: pdw, dh: pdh } = _imgRenderDims();
+              const pPxScale = _edCvsEditsPx ? _edCvsEditsPx.width / pdw : 1;
+              const pImgCX = frameCX + dOX, pImgCY = frameCY + dOY;
+              
+              let srcCx, srcCy;
+              if (_edCloneOffset && _edBrushPos) {
+                 srcCx = _edBrushPos.cx + (_edCloneOffset.dx / pPxScale);
+                 srcCy = _edBrushPos.cy + (_edCloneOffset.dy / pPxScale);
+              } else {
+                 srcCx = (pImgCX - pdw/2) + (_edCloneSourceInit.x / pPxScale);
+                 srcCy = (pImgCY - pdh/2) + (_edCloneSourceInit.y / pPxScale);
+              }
+              
               ctx.save();
               ctx.strokeStyle = "rgba(200,100,255,0.9)"; ctx.lineWidth = 1;
               ctx.beginPath(); ctx.moveTo(srcCx - 8, srcCy); ctx.lineTo(srcCx + 8, srcCy);
@@ -5451,7 +5648,12 @@ function createWidget(node) {
         _edSmudgeBuf = null; // reset smudge buffer so each stroke samples fresh pixels
         _edCloneBuffer = null;
         const r = cvs.getBoundingClientRect();
-        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        let cx = e.clientX - r.left, cy = e.clientY - r.top;
+        if (edPanelMode === "pixels") {
+          const cw2 = cvs.width/2, ch2 = cvs.height/2;
+          cx = (cx - cw2 - edViewPanX) / edViewZoom + cw2;
+          cy = (cy - ch2 - edViewPanY) / edViewZoom + ch2;
+        }
         _edBrushPos = { cx, cy };
         const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
         const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
@@ -7417,9 +7619,10 @@ app.registerExtension({
       const initH = NODE_HEADER_H + NODE_SLOT_H * 3 + NODE_PADDING_V + COMPACT_DROPZONE_H + GAP + _toolbar + _status + _2rowGridH + 16 + 300;
       if (!node.size || node.size[0] < 310) node.setSize([450, initH]);
 
-      // Force computeSize to always return the current size, preventing ComfyUI from auto-resizing the node
+      // Return a fixed minimum size to allow the user to shrink the node freely,
+      // while preventing it from collapsing too much.
       node.computeSize = function() {
-        return [this.size[0], this.size[1]];
+        return [310, 350];
       };
 
       const domWidget = node.addDOMWidget(
@@ -7527,14 +7730,32 @@ app.registerExtension({
               el._onAspectRatioChange?.();
             }
           }
+          // Handle aspect_ratio_in connection changes
+          if (inp && inp.name === "aspect_ratio_in") {
+            const el = node._milDomWidget?.element;
+            if (connected) {
+              // Resolve AR from newly connected upstream node
+              el?._resolveAndCacheAR?.();
+            } else {
+              // Cable disconnected — clear cached AR
+              node._resolvedAspectRatio = null;
+            }
+            el?._onAspectRatioChange?.();
+          }
         }
       };
 
       // After execution, master_image source node will have updated imgs —
       // re-render thumbnails so they pick up the master's aspect ratio.
+      // Also resolve the upstream AR value for "Aspect Ratio Input" mode.
       const origOnExecuted = node.onExecuted;
       node.onExecuted = function (output) {
         origOnExecuted?.apply(this, arguments);
+        // Resolve AR from upstream link after execution
+        const el = node._milDomWidget?.element;
+        if (el?._resolveAndCacheAR) {
+          el._resolveAndCacheAR();
+        }
         node._milDomWidget?.element?._onAspectRatioChange?.();
       };
     };
@@ -7554,6 +7775,9 @@ app.registerExtension({
       // We then RE-APPLY the correct values directly by widget name.
       try {
         const sv = data?.widgets_values;
+        console.log(`[MIL:${node.id}] onConfigure: widgets_values =`, JSON.stringify(sv));
+        console.log(`[MIL:${node.id}] onConfigure: widget names =`, node.widgets?.map(w => w.name));
+        console.log(`[MIL:${node.id}] onConfigure: widget values =`, node.widgets?.map(w => ({name: w.name, value: typeof w.value === 'string' && w.value.length > 80 ? w.value.substring(0,80) + '...' : w.value})));
         if (sv && node.widgets) {
           const fmW = node.widgets.find(w => w.name === "fit_mode");
           const fmOpts = fmW?.options?.values || ["letterbox", "crop"];
@@ -7578,11 +7802,17 @@ app.registerExtension({
               if (raw) {
                 const bk = JSON.parse(raw);
                 const ilW = node.widgets.find(w => w.name === "image_list");
-                if (ilW && bk.image_list) ilW.value = bk.image_list;
+                const bkFiles = JSON.parse(bk.image_list || "[]");
+                console.log(`[MIL:${node.id}] onConfigure: localStorage backup has ${bkFiles.length} image(s)`);
+                if (ilW && bk.image_list && bkFiles.length > 0) ilW.value = bk.image_list;
+              } else {
+                console.log(`[MIL:${node.id}] onConfigure: NO localStorage backup found`);
               }
             } catch(_) {}
 
             console.log("[MIL] Fixed positional shift: re-mapped", nameOrder.length, "widgets by name");
+          } else {
+            console.log("[MIL] No positional shift detected. sv[0] =", typeof sv[0] === 'string' && sv[0].length > 80 ? sv[0].substring(0,80) + '...' : sv[0]);
           }
         }
       } catch(e) {
