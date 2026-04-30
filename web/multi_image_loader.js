@@ -1151,32 +1151,50 @@ function createWidget(node) {
    */
   function resolveUpstreamAspectRatio() {
     if (!node.inputs) return null;
-    const arInput = node.inputs.find(inp => inp.name === "aspect_ratio_in");
-    if (!arInput || arInput.link == null) return null;
-    const linkInfo = app.graph.links[arInput.link];
-    if (!linkInfo) return null;
-    const srcNode = app.graph.getNodeById(linkInfo.origin_id);
-    if (!srcNode) return null;
 
-    // Try the source node's outputs — the linked output slot might have last exec value
-    // In LiteGraph, output slots can cache their last value in some setups
-    const originSlot = linkInfo.origin_slot;
-    if (srcNode.outputs?.[originSlot]?._value) {
-      const v = srcNode.outputs[originSlot]._value;
-      if (typeof v === "string" && v.includes(":")) return v;
-    }
+    // Follow the chain of aspect_ratio_in links (with depth limit to avoid loops)
+    let currentNode = node;
+    const maxDepth = 10;
 
-    // Try the source node's "aspect_ratio" widget (common pattern)
-    if (srcNode.widgets) {
-      const arW = srcNode.widgets.find(w => w.name === "aspect_ratio");
-      if (arW) {
-        const v = arW.value;
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const arInput = currentNode.inputs?.find(inp => inp.name === "aspect_ratio_in");
+      if (!arInput || arInput.link == null) return null;
+      const linkInfo = app.graph.links[arInput.link];
+      if (!linkInfo) return null;
+      const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+      if (!srcNode) return null;
+
+      // 1) Check the upstream node's cached _resolvedAspectRatio (set by previous execution)
+      if (srcNode._resolvedAspectRatio && /^\d+:\d+$/.test(srcNode._resolvedAspectRatio)) {
+        return srcNode._resolvedAspectRatio;
+      }
+
+      // 2) Try the source node's output slot cached value
+      const originSlot = linkInfo.origin_slot;
+      if (srcNode.outputs?.[originSlot]?._value) {
+        const v = srcNode.outputs[originSlot]._value;
         if (typeof v === "string" && /^\d+:\d+$/.test(v)) return v;
       }
-      // Fallback: any widget with a ratio-like value
-      for (const w of srcNode.widgets) {
-        if (typeof w.value === "string" && /^\d+:\d+$/.test(w.value)) return w.value;
+
+      // 3) Try the source node's "aspect_ratio" widget
+      if (srcNode.widgets) {
+        const arW = srcNode.widgets.find(w => w.name === "aspect_ratio");
+        if (arW) {
+          const v = arW.value;
+          if (typeof v === "string" && /^\d+:\d+$/.test(v)) return v;
+          // If upstream is also in "Aspect Ratio Input" mode, follow the chain
+          if (v === "Aspect Ratio Input") {
+            currentNode = srcNode;
+            continue; // follow the chain one level deeper
+          }
+        }
+        // Fallback: any widget with a ratio-like value
+        for (const w of srcNode.widgets) {
+          if (typeof w.value === "string" && /^\d+:\d+$/.test(w.value)) return w.value;
+        }
       }
+
+      return null; // no further chain to follow
     }
 
     return null;
@@ -2804,7 +2822,31 @@ function createWidget(node) {
     await renderFitPreviews();
     // Regenerate crop previews for items that have a crop transform
     await renderCropPreviews();
+
+    // Propagate AR changes to downstream nodes connected to aspect_ratio_out
+    _propagateARToDownstream();
   };
+
+  /** Notify downstream nodes connected to this node's aspect_ratio_out output */
+  function _propagateARToDownstream() {
+    if (!node.outputs) return;
+    const arOutIdx = node.outputs.findIndex(o => o.name === "aspect_ratio_out");
+    if (arOutIdx < 0) return;
+    const outSlot = node.outputs[arOutIdx];
+    if (!outSlot?.links?.length) return;
+
+    for (const linkId of outSlot.links) {
+      const linkInfo = app.graph.links[linkId];
+      if (!linkInfo) continue;
+      const downNode = app.graph.getNodeById(linkInfo.target_id);
+      if (!downNode) continue;
+      const el = downNode._milDomWidget?.element;
+      if (el) {
+        el._resolveAndCacheAR?.();
+        el._onAspectRatioChange?.();
+      }
+    }
+  }
 
   // ── openCropEditor ───────────────────────────────────────────────────
   function openCropEditor(startIdx, skipAnim, initialMode) {
