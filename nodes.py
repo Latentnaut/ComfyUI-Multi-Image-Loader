@@ -304,7 +304,7 @@ def _scale_to_megapixels(img: Image.Image, megapixels: float) -> Image.Image:
     if w * h <= target_px:
         return img
     scale = (target_px / (w * h)) ** 0.5
-    return img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+    return img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.BICUBIC)
 
 
 def _compute_canvas_dims(aspect_ratio: str, megapixels: float, first_img_size=None):
@@ -348,7 +348,7 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
     src_w, src_h = img.size
 
     if mode == "fill":
-        resized = img.resize((target_w, target_h), Image.LANCZOS)
+        resized = img.resize((target_w, target_h), Image.BICUBIC)
         canvas.paste(resized, (0, 0))
     else:
         scale_w = target_w / src_w
@@ -357,7 +357,7 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
         
         new_w = max(1, round(src_w * scale))
         new_h = max(1, round(src_h * scale))
-        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        resized = img.resize((new_w, new_h), Image.BICUBIC)
         
         if mode == "crop" and (new_w > target_w or new_h > target_h):
             left = (new_w - target_w) // 2
@@ -373,7 +373,7 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
     if global_scale != 1.0:
         scaled_w = max(1, round(target_w * global_scale))
         scaled_h = max(1, round(target_h * global_scale))
-        shrunk = canvas.resize((scaled_w, scaled_h), Image.LANCZOS)
+        shrunk = canvas.resize((scaled_w, scaled_h), Image.BICUBIC)
         final_canvas = Image.new("RGB", (target_w, target_h), bg_color)
         final_canvas.paste(shrunk, ((target_w - scaled_w) // 2, (target_h - scaled_h) // 2))
         return final_canvas
@@ -432,7 +432,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
             edits_pil = Image.open(_io.BytesIO(base64.b64decode(edits_data_url))).convert("RGBA")
             # Resize edits to match current source size
             if edits_pil.size != img.size:
-                edits_pil = edits_pil.resize(img.size, Image.LANCZOS)
+                edits_pil = edits_pil.resize(img.size, Image.BICUBIC)
             img = img.convert("RGBA")
             img = Image.alpha_composite(img, edits_pil).convert("RGB")
         except Exception as e:
@@ -505,7 +505,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
         eff_scale    = base_scale * scale
         new_w        = max(1, round(src_w * eff_scale))
         new_h        = max(1, round(src_h * eff_scale))
-        resized      = rgba.resize((new_w, new_h), Image.LANCZOS)
+        resized      = rgba.resize((new_w, new_h), Image.BICUBIC)
 
         # Paste onto a fully-transparent RGBA canvas
         paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
@@ -540,7 +540,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
         if global_scale != 1.0:
             scaled_w = max(1, round(canvas_w * global_scale))
             scaled_h = max(1, round(canvas_h * global_scale))
-            shrunk = final_img.resize((scaled_w, scaled_h), Image.LANCZOS)
+            shrunk = final_img.resize((scaled_w, scaled_h), Image.BICUBIC)
             final_img = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
             final_img.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
 
@@ -553,7 +553,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     if flipV: img = ImageOps.flip(img)
 
     if rotate != 0:
-        img = img.rotate(-rotate, expand=True, resample=Image.LANCZOS,
+        img = img.rotate(-rotate, expand=True, resample=Image.BICUBIC,
                          fillcolor=bg_color)
 
     src_w, src_h = img.size
@@ -564,7 +564,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     eff_scale    = base_scale * scale
     new_w        = max(1, round(src_w * eff_scale))
     new_h        = max(1, round(src_h * eff_scale))
-    resized      = img.resize((new_w, new_h), Image.LANCZOS)
+    resized      = img.resize((new_w, new_h), Image.BICUBIC)
 
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
@@ -577,7 +577,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     if global_scale != 1.0:
         scaled_w = max(1, round(canvas_w * global_scale))
         scaled_h = max(1, round(canvas_h * global_scale))
-        shrunk = canvas.resize((scaled_w, scaled_h), Image.LANCZOS)
+        shrunk = canvas.resize((scaled_w, scaled_h), Image.BICUBIC)
         final_canvas = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
         final_canvas.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
         return final_canvas
@@ -646,14 +646,14 @@ def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int,
     if flipV: mask = ImageOps.flip(mask)
 
     if rotate != 0:
-        mask = mask.rotate(-rotate, expand=True, resample=Image.LANCZOS, fillcolor=0)
+        mask = mask.rotate(-rotate, expand=True, resample=Image.BICUBIC, fillcolor=0)
 
     src_w, src_h = mask.size
     base_scale   = min(canvas_w / src_w, canvas_h / src_h)
     eff_scale    = base_scale * scale
     new_w        = max(1, round(src_w * eff_scale))
     new_h        = max(1, round(src_h * eff_scale))
-    mask         = mask.resize((new_w, new_h), Image.LANCZOS)
+    mask         = mask.resize((new_w, new_h), Image.BICUBIC)
 
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
@@ -695,7 +695,7 @@ def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Imag
                 # But our mask convention is: white=selected/masked, black=unselected
                 # So we need to INVERT: fill canvas black(0) → mask white(255)
                 fill_img = ImageOps.invert(fill_img)
-                fill_img = fill_img.resize((ref_w, ref_h), Image.LANCZOS)
+                fill_img = fill_img.resize((ref_w, ref_h), Image.BICUBIC)
                 # Fill op is a complete mask snapshot — replace current mask
                 mask = fill_img
                 draw = ImageDraw.Draw(mask)
@@ -804,6 +804,7 @@ class MultiImageLoader:
             filenames = json.loads(image_list)
         except Exception:
             filenames = []
+        print(f"[MultiImageLoader] image_list received: {len(filenames)} file(s): {filenames}")
 
         try:
             transforms = json.loads(crop_data) if crop_data else {}
@@ -825,6 +826,7 @@ class MultiImageLoader:
         else:
             # Option A: fallback to all images if selection is empty
             filtered_filenames = filenames
+        print(f"[MultiImageLoader] selected: {len(selected_filenames)}, filtered: {len(filtered_filenames)}")
 
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
@@ -1239,7 +1241,7 @@ class ScaleControl:
         w, h = img.size
         new_w = max(1, round(w * scale))
         new_h = max(1, round(h * scale))
-        shrunk = img.resize((new_w, new_h), Image.LANCZOS)
+        shrunk = img.resize((new_w, new_h), Image.BICUBIC)
         canvas = Image.new("RGB", (w, h), bg_rgb)
         paste_x = (w - new_w) // 2
         paste_y = (h - new_h) // 2
