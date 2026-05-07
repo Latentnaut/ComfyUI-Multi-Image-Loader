@@ -2934,6 +2934,8 @@ function createWidget(node) {
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
         lassoIsPaint: edLassoIsPaint,
+        overlays: edOverlays.map(ov => ({ ...ov, imageCvs: ov.imageCvs })),
+        ovSelected: _ovSelected,
       });
       if (_edOpsUndoStack.length > 30) _edOpsUndoStack.shift();
       _edOpsRedoStack = [];
@@ -2948,6 +2950,8 @@ function createWidget(node) {
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
         lassoIsPaint: edLassoIsPaint,
+        overlays: edOverlays.map(ov => ({ ...ov, imageCvs: ov.imageCvs })),
+        ovSelected: _ovSelected,
       });
       const s = _edOpsUndoStack.pop();
       edAppliedCrop = s.crop; edRotate = s.rotate;
@@ -2956,12 +2960,15 @@ function createWidget(node) {
       edScaleX = s.scaleX ?? 1; edScaleY = s.scaleY ?? 1;
       _edCvsEditsPx = s.pixelCvs;
       edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
+      edOverlays = s.overlays ? s.overlays.map(ov => ({ ...ov, imageCvs: ov.imageCvs })) : [];
+      _ovSelected = s.ovSelected ?? -1;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
       _lassoChanged();
       if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
       syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI();
       syncLassoToggle();
       if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      if (typeof _syncOverlayList === 'function') _syncOverlayList();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
       syncCvs(); redraw(); requestInpaintPreview();
@@ -2976,6 +2983,8 @@ function createWidget(node) {
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
         lassoIsPaint: edLassoIsPaint,
+        overlays: edOverlays.map(ov => ({ ...ov, imageCvs: ov.imageCvs })),
+        ovSelected: _ovSelected,
       });
       const s = _edOpsRedoStack.pop();
       edAppliedCrop = s.crop; edRotate = s.rotate;
@@ -2984,15 +2993,50 @@ function createWidget(node) {
       edScaleX = s.scaleX ?? 1; edScaleY = s.scaleY ?? 1;
       _edCvsEditsPx = s.pixelCvs;
       edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
+      edOverlays = s.overlays ? s.overlays.map(ov => ({ ...ov, imageCvs: ov.imageCvs })) : [];
+      _ovSelected = s.ovSelected ?? -1;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
       _lassoChanged();
       if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
       syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI();
       syncLassoToggle();
       if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      if (typeof _syncOverlayList === 'function') _syncOverlayList();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
       syncCvs(); redraw(); requestInpaintPreview();
+    }
+
+    // ── Paste Overlays (lightweight layer system) ──────────────────
+    // Each overlay: { id, imageCvs, x, y, scale, selected }
+    //   x, y  = fractional offset from frame centre  (same convention as dOX, dOY)
+    //   scale = relative to frame (1 = fit within frame)
+    let edOverlays = [];
+    let _overlayIdCounter = 0;
+    let _ovDrag = null;         // { idx, startMX, startMY, startX, startY }
+    let _ovSelected = -1;       // index of selected overlay, -1 = none
+
+    function _ovHitTest(canvasX, canvasY) {
+      // Test overlays in reverse order (top-most first)
+      for (let i = edOverlays.length - 1; i >= 0; i--) {
+        const ov = edOverlays[i];
+        const { ox, oy, ow, oh } = _ovScreenRect(ov);
+        if (canvasX >= ox && canvasX <= ox + ow && canvasY >= oy && canvasY <= oy + oh) return i;
+      }
+      return -1;
+    }
+    function _ovScreenRect(ov) {
+      // Compute screen rect of an overlay given current frame geometry
+      const srcW = ov.imageCvs.width, srcH = ov.imageCvs.height;
+      const aspect = srcW / srcH;
+      // Base size: fit within frame while preserving aspect
+      let baseW, baseH;
+      if (aspect >= frameW / frameH) { baseW = frameW; baseH = frameW / aspect; }
+      else                            { baseH = frameH; baseW = frameH * aspect; }
+      const ow = baseW * ov.scale, oh = baseH * ov.scale;
+      const ox = frameCX + ov.x - ow / 2;
+      const oy = frameCY + ov.y - oh / 2;
+      return { ox, oy, ow, oh };
     }
 
     // Lasso state
@@ -4773,28 +4817,22 @@ function createWidget(node) {
     });
     pasteB.addEventListener("click", () => {
       if (!milClipboard?.imageCvs) return;
-      _edSaveEditOpsState(); // make paste undoable
-      // Reset all transforms — the pasted image is already baked
-      edAppliedCrop = null; edRotate = 0; edFlipH = false; edFlipV = false;
-      dOX = 0; dOY = 0; edScale = 1; edScaleX = 1; edScaleY = 1;
-      edLassoOps = []; edLassoInverted = false; edLassoIsPaint = false;
-      _lassoChanged(); stopLassoAnts();
-      // Build destination pixel canvas at destination image's native size
-      const eW = effNatW(), eH = effNatH();
-      const wpX = Math.min(eW, 2048);
-      const wpY = Math.round(eH * (wpX / eW));
-      const dst = document.createElement("canvas"); dst.width = wpX; dst.height = wpY;
-      const dctx = dst.getContext("2d");
-      dctx.imageSmoothingEnabled = true; dctx.imageSmoothingQuality = "high";
-      // Draw source image, scaled to destination
-      dctx.drawImage(milClipboard.imageCvs, 0, 0, wpX, wpY);
-      _edCvsEditsPx = dst;
-      // Sync all UI controls
-      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI(); syncLassoToggle();
-      if (typeof syncLassoInvertBtn !== "undefined") syncLassoInvertBtn();
-      updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
-      edInpaintPreview = null; edInpaintDirty = true;
-      syncCvs(); redraw(); requestInpaintPreview();
+      _edSaveEditOpsState(); // make paste undoable (captures overlays too)
+      // Clone the clipboard canvas
+      const src = milClipboard.imageCvs;
+      const clone = document.createElement("canvas");
+      clone.width = src.width; clone.height = src.height;
+      clone.getContext("2d").drawImage(src, 0, 0);
+      // Push new overlay, centered in frame
+      edOverlays.push({
+        id: ++_overlayIdCounter,
+        imageCvs: clone,
+        x: 0, y: 0,      // offset from frame centre
+        scale: 1.0,
+      });
+      _ovSelected = edOverlays.length - 1;
+      _syncOverlayList();
+      redraw();
       // Flash blue
       pasteB.style.background = "#1a2a3a"; pasteB.style.color = "#7ab0ff"; pasteB.style.borderColor = "#5a7abf";
       setTimeout(() => { pasteB.style.background="#1e1e1e"; _syncPasteBtn(); }, 600);
@@ -4802,6 +4840,81 @@ function createWidget(node) {
     copyPasteRow.appendChild(copyB); copyPasteRow.appendChild(pasteB);
     pnlFoot.appendChild(copyPasteRow);
     _syncPasteBtn(); // init state: dim if no clipboard yet
+
+    // ── Overlay list UI ──────────────────────────────────────────
+    const ovListWrap = document.createElement("div");
+    ovListWrap.style.cssText = `display:none;width:100%;border:1px solid #2a2a2a;border-radius:${_r5};padding:4px;box-sizing:border-box;`;
+    const ovListTitle = document.createElement("div");
+    ovListTitle.style.cssText = `font-size:${_fs10};color:#666;margin-bottom:3px;user-select:none;`;
+    ovListTitle.textContent = "Overlays";
+    ovListWrap.appendChild(ovListTitle);
+    const ovListBody = document.createElement("div");
+    ovListBody.style.cssText = "display:flex;flex-direction:column;gap:2px;";
+    ovListWrap.appendChild(ovListBody);
+    pnlFoot.appendChild(ovListWrap);
+
+    function _syncOverlayList() {
+      ovListBody.innerHTML = "";
+      if (edOverlays.length === 0) { ovListWrap.style.display = "none"; return; }
+      ovListWrap.style.display = "block";
+      edOverlays.forEach((ov, i) => {
+        const row = document.createElement("div");
+        const isSel = i === _ovSelected;
+        row.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:3px 6px;border-radius:3px;cursor:pointer;font-size:${_fs11};color:${isSel?"#7ab0ff":"#aaa"};background:${isSel?"#1a2a3a":"#1e1e1e"};border:1px solid ${isSel?"#3a5a8a":"#2a2a2a"};transition:background .12s;`;
+        row.addEventListener("mouseenter", () => { row.style.background = isSel ? "#223a55" : "#252525"; });
+        row.addEventListener("mouseleave", () => { row.style.background = isSel ? "#1a2a3a" : "#1e1e1e"; });
+        row.addEventListener("click", () => { _ovSelected = i; _syncOverlayList(); redraw(); });
+        const lbl = document.createElement("span");
+        lbl.textContent = `Layer ${i + 1}`;
+        lbl.style.cssText = "user-select:none;flex:1;";
+        row.appendChild(lbl);
+        const delB = document.createElement("span");
+        delB.textContent = "✕";
+        delB.title = "Remove this overlay";
+        delB.style.cssText = "cursor:pointer;color:#666;font-size:13px;padding:0 3px;";
+        delB.addEventListener("mouseenter", () => { delB.style.color = "#f66"; });
+        delB.addEventListener("mouseleave", () => { delB.style.color = "#666"; });
+        delB.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          _edSaveEditOpsState(); // undoable
+          edOverlays.splice(i, 1);
+          if (_ovSelected >= edOverlays.length) _ovSelected = edOverlays.length - 1;
+          _syncOverlayList(); redraw();
+        });
+        row.appendChild(delB);
+        ovListBody.appendChild(row);
+      });
+      // Flatten button
+      const flattenB = document.createElement("button");
+      flattenB.textContent = "⊞ Flatten";
+      flattenB.title = "Bake all overlays into the image (destructive)";
+      flattenB.style.cssText = `width:100%;margin-top:4px;padding:3px 0;border:1px solid #3a5a3a;border-radius:3px;background:#1a2a1a;color:#7aff7a;font-size:${_fs10};cursor:pointer;transition:background .12s;`;
+      flattenB.addEventListener("mouseenter", () => { flattenB.style.background = "#223a22"; });
+      flattenB.addEventListener("mouseleave", () => { flattenB.style.background = "#1a2a1a"; });
+      flattenB.addEventListener("click", () => {
+        if (edOverlays.length === 0) return;
+        _edSaveEditOpsState();
+        _edEnsureEditsPx();
+        const ctx = _edCvsEditsPx.getContext("2d");
+        const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
+        // Map screen-space overlays to pixel canvas space
+        for (const ov of edOverlays) {
+          const { ox, oy, ow, oh } = _ovScreenRect(ov);
+          // Convert from canvas (screen) coords to pixel canvas coords
+          const cw = cvs.width, ch = cvs.height;
+          const fx2 = (cw - frameW) / 2, fy2 = (ch - frameH) / 2;
+          // Normalise overlay rect to frame-relative 0..1 coords
+          const rx = (ox - fx2) / frameW;
+          const ry = (oy - fy2) / frameH;
+          const rw = ow / frameW;
+          const rh = oh / frameH;
+          ctx.drawImage(ov.imageCvs, rx * pxW, ry * pxH, rw * pxW, rh * pxH);
+        }
+        edOverlays = []; _ovSelected = -1;
+        _syncOverlayList(); redraw();
+      });
+      ovListBody.appendChild(flattenB);
+    }
     globalUndoRedoRow.appendChild(globalUndoB); globalUndoRedoRow.appendChild(globalRedoB);
     pnlFoot.appendChild(globalUndoRedoRow);
     pnlFoot.appendChild(resetAllB);
@@ -5233,6 +5346,30 @@ function createWidget(node) {
             ctx.textAlign="start"; ctx.textBaseline="alphabetic";
           }
         }
+        // ── Render paste overlays ──
+        for (let oi = 0; oi < edOverlays.length; oi++) {
+          const ov = edOverlays[oi];
+          const { ox, oy, ow, oh } = _ovScreenRect(ov);
+          ctx.save();
+          // Clip to frame so overlays don't bleed outside
+          ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.clip();
+          ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(ov.imageCvs, ox, oy, ow, oh);
+          // Selection border
+          if (oi === _ovSelected) {
+            ctx.strokeStyle = "#5a9aff"; ctx.lineWidth = 2; ctx.setLineDash([6, 3]);
+            ctx.strokeRect(ox, oy, ow, oh);
+            ctx.setLineDash([]);
+            // Corner handles
+            const hs = 6;
+            ctx.fillStyle = "#5a9aff";
+            ctx.fillRect(ox - hs/2, oy - hs/2, hs, hs);
+            ctx.fillRect(ox + ow - hs/2, oy - hs/2, hs, hs);
+            ctx.fillRect(ox - hs/2, oy + oh - hs/2, hs, hs);
+            ctx.fillRect(ox + ow - hs/2, oy + oh - hs/2, hs, hs);
+          }
+          ctx.restore();
+        }
         // dim outside frame
         ctx.fillStyle="rgba(0,0,0,0.58)";
         ctx.fillRect(0,0,cw,fy); ctx.fillRect(0,fy+frameH,cw,ch-fy-frameH);
@@ -5462,6 +5599,22 @@ function createWidget(node) {
     // ── image load ───────────────────────────────────────────
     function saveToSes() {
       const fn = items[curIdx]?.filename; if (!fn) return;
+      // Auto-flatten overlays before saving
+      if (edOverlays.length > 0) {
+        _edEnsureEditsPx();
+        const ctx = _edCvsEditsPx.getContext("2d");
+        const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
+        for (const ov of edOverlays) {
+          const { ox, oy, ow, oh } = _ovScreenRect(ov);
+          const cw2 = cvs.width, ch2 = cvs.height;
+          const fx2 = (cw2 - frameW) / 2, fy2 = (ch2 - frameH) / 2;
+          const rx = (ox - fx2) / frameW, ry = (oy - fy2) / frameH;
+          const rw = ow / frameW, rh = oh / frameH;
+          ctx.drawImage(ov.imageCvs, rx * pxW, ry * pxH, rw * pxW, rh * pxH);
+        }
+        edOverlays = []; _ovSelected = -1;
+        if (typeof _syncOverlayList === 'function') _syncOverlayList();
+      }
       const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
       const hasLasso = edLassoOps.length > 0 || edLassoInverted;
       const hasPixelEdits = !!_edCvsEditsPx;
@@ -5487,6 +5640,9 @@ function createWidget(node) {
       edLassoCurrentPts = []; edLassoDrawing = false; edLassoMode = false;
       _lassoCursorNorm = null;
       stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      // Reset overlays on image switch
+      edOverlays = []; _ovSelected = -1; _ovDrag = null;
+      if (typeof _syncOverlayList === 'function') _syncOverlayList();
       await new Promise(res=>{
         const el=new Image(); el.crossOrigin="anonymous";
         el.onload=()=>{
@@ -5775,6 +5931,12 @@ function createWidget(node) {
       redraw();
     }
     function onGlobalUp(e) {
+      // ── Overlay drag end ──
+      if (_ovDrag) {
+        _ovDrag = null;
+        ca.style.cursor = edLassoMode ? _lassoCursors.normal : "grab";
+        redraw(); return;
+      }
       // ── Free-transform handle drag end ──
       if (_fhDrag) {
         _fhDrag = null;
@@ -5838,6 +6000,23 @@ function createWidget(node) {
         _edBrushErasing = true;
       } else if (e.button !== 0) return;
       else _edBrushErasing = false;
+      // ── Overlay interaction (before pixel tools) ──
+      if (edOverlays.length > 0 && !edPixelTool && !edLassoMode && !edCropMode) {
+        const r = cvs.getBoundingClientRect();
+        const mx = e.clientX - r.left, my = e.clientY - r.top;
+        const hitIdx = _ovHitTest(mx, my);
+        if (hitIdx >= 0) {
+          _edSaveEditOpsState(); // undoable
+          _ovSelected = hitIdx;
+          _ovDrag = { idx: hitIdx, startMX: mx, startMY: my, startX: edOverlays[hitIdx].x, startY: edOverlays[hitIdx].y };
+          ca.style.cursor = "move";
+          _syncOverlayList(); redraw();
+          return;
+        } else if (_ovSelected >= 0) {
+          // Click on empty = deselect
+          _ovSelected = -1; _syncOverlayList(); redraw();
+        }
+      }
       // ── pixel tool start ──
       if (edPixelTool) {
         _edEnsureEditsPx(); _edSaveUndo();
@@ -5959,6 +6138,18 @@ function createWidget(node) {
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
     });
     cvs.addEventListener("mousemove", e=>{
+      // ── Overlay drag movement ──
+      if (_ovDrag) {
+        const r = cvs.getBoundingClientRect();
+        const mx = e.clientX - r.left, my = e.clientY - r.top;
+        const ov = edOverlays[_ovDrag.idx];
+        if (ov) {
+          ov.x = _ovDrag.startX + (mx - _ovDrag.startMX);
+          ov.y = _ovDrag.startY + (my - _ovDrag.startMY);
+          redraw();
+        }
+        return;
+      }
       // Pixel tool cursor tracking on canvas
       if (edPixelTool) {
         const r = cvs.getBoundingClientRect();
@@ -5999,6 +6190,12 @@ function createWidget(node) {
     cvs.addEventListener("wheel", e=>{
       e.preventDefault();
       const f=e.deltaY<0?1.12:0.89;
+      // ── Overlay resize (scroll on selected overlay) ──
+      if (_ovSelected >= 0 && edOverlays[_ovSelected] && !edPixelTool && !edLassoMode) {
+        const ov = edOverlays[_ovSelected];
+        ov.scale = Math.max(0.05, Math.min(10, ov.scale * f));
+        redraw(); return;
+      }
       if (edPanelMode === "pixels") {
          edViewZoom = Math.max(0.25, Math.min(20, edViewZoom * f));
          redraw();
@@ -6015,7 +6212,18 @@ function createWidget(node) {
       }
       if (e.key === "ArrowLeft"  && curIdx > 0)              { saveToSes(); loadIdx(curIdx-1); }
       if (e.key === "ArrowRight" && curIdx < items.length-1) { saveToSes(); loadIdx(curIdx+1); }
-      if (e.key === "Escape") doClose();
+      if (e.key === "Escape") {
+        if (_ovSelected >= 0) { _ovSelected = -1; _syncOverlayList(); redraw(); return; }
+        doClose();
+      }
+      // Delete/Backspace: remove selected overlay
+      if ((e.key === "Delete" || e.key === "Backspace") && _ovSelected >= 0 && edOverlays.length > 0) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        _edSaveEditOpsState();
+        edOverlays.splice(_ovSelected, 1);
+        if (_ovSelected >= edOverlays.length) _ovSelected = edOverlays.length - 1;
+        _syncOverlayList(); redraw(); return;
+      }
       // Ctrl+D: deselect
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         e.preventDefault(); e.stopImmediatePropagation();
