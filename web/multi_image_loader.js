@@ -4856,8 +4856,56 @@ function createWidget(node) {
       if (!src) return;
       const clone = document.createElement("canvas");
       clone.width = src.width; clone.height = src.height;
-      clone.getContext("2d").drawImage(src, 0, 0);
-      milClipboard = { imageCvs: clone };
+      const cctx = clone.getContext("2d");
+      cctx.drawImage(src, 0, 0);
+
+      // Apply lasso mask as alpha channel (areas outside selection → transparent)
+      const hasLasso = edLassoOps.length > 0 || edLassoInverted;
+      if (hasLasso) {
+        const mw = clone.width, mh = clone.height;
+        // Build mask canvas (white = inside selection)
+        const mc = document.createElement("canvas"); mc.width = mw; mc.height = mh;
+        const mx = mc.getContext("2d");
+        for (const op of edLassoOps) {
+          if (op.points.length < 3) continue;
+          mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+          mx.fillStyle = "white"; mx.beginPath();
+          mx.moveTo(op.points[0][0] * mw, op.points[0][1] * mh);
+          for (let k = 1; k < op.points.length; k++)
+            mx.lineTo(op.points[k][0] * mw, op.points[k][1] * mh);
+          mx.closePath(); mx.fill();
+        }
+        if (edLassoInverted) {
+          mx.globalCompositeOperation = "xor";
+          mx.fillStyle = "white"; mx.fillRect(0, 0, mw, mh);
+        }
+        mx.globalCompositeOperation = "source-over";
+        // Use destination-in to keep only the masked area
+        cctx.globalCompositeOperation = "destination-in";
+        cctx.drawImage(mc, 0, 0);
+        cctx.globalCompositeOperation = "source-over";
+
+        // Crop to mask bounding box to trim excess transparent pixels
+        const maskData = mx.getImageData(0, 0, mw, mh).data;
+        let minX = mw, minY = mh, maxX = 0, maxY = 0;
+        for (let y = 0; y < mh; y++) for (let x = 0; x < mw; x++) {
+          if (maskData[(y * mw + x) * 4 + 3] > 0) {
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+          }
+        }
+        if (maxX >= minX && maxY >= minY) {
+          const cw = maxX - minX + 1, ch = maxY - minY + 1;
+          const cropped = document.createElement("canvas");
+          cropped.width = cw; cropped.height = ch;
+          cropped.getContext("2d").drawImage(clone, minX, minY, cw, ch, 0, 0, cw, ch);
+          milClipboard = { imageCvs: cropped };
+        } else {
+          milClipboard = { imageCvs: clone };
+        }
+      } else {
+        milClipboard = { imageCvs: clone };
+      }
       _syncPasteBtn();
       // Flash green
       copyB.style.background = "#1a3a28"; copyB.style.color = "#44cc88"; copyB.style.borderColor = "#336644";
