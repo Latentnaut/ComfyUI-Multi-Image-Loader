@@ -3760,8 +3760,8 @@ function createWidget(node) {
       flipVBtn.style.color        = edFlipV ? "#7ab0ff" : "#aaa";
       flipVBtn.style.borderColor  = edFlipV ? "#5a7abf" : "#333";
     }
-    flipHBtn.addEventListener("click", () => { _edSaveEditOpsState(); edFlipH=!edFlipH; syncFlipUI(); redraw(); requestInpaintPreview(); });
-    flipVBtn.addEventListener("click", () => { _edSaveEditOpsState(); edFlipV=!edFlipV; syncFlipUI(); redraw(); requestInpaintPreview(); });
+    flipHBtn.addEventListener("click", () => { _edSaveEditOpsState(); edFlipH=!edFlipH; _recenterLassoBB(); syncFlipUI(); redraw(); requestInpaintPreview(); });
+    flipVBtn.addEventListener("click", () => { _edSaveEditOpsState(); edFlipV=!edFlipV; _recenterLassoBB(); syncFlipUI(); redraw(); requestInpaintPreview(); });
     flipRow.appendChild(flipHBtn);
     flipRow.appendChild(flipVBtn);
     secEdit.appendChild(flipRow);
@@ -4971,6 +4971,20 @@ function createWidget(node) {
       dOX = frameCX - landed.cx;
       dOY = frameCY - landed.cy;
       syncScaleUI(); updLbl();
+      return true;
+    }
+
+    /** Re-center the lasso BB at frameCX/frameCY without changing scale.
+     *  Returns true if recentered, false if no lasso. */
+    function _recenterLassoBB() {
+      const bb = _lassoBBox();
+      if (!bb) return false;
+      dOX = 0; dOY = 0;
+      const bbMidNx = (bb.x1 + bb.x2) / 2, bbMidNy = (bb.y1 + bb.y2) / 2;
+      const { dw, dh } = _imgRenderDims();
+      const landed = _normToCanvas(bbMidNx, bbMidNy, dw, dh);
+      dOX = frameCX - landed.cx;
+      dOY = frameCY - landed.cy;
       return true;
     }
 
