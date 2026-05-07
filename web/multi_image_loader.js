@@ -614,6 +614,8 @@ function createWidget(node) {
   let previewActive = false;
   // Per-image crop transforms: { filename → { ox, oy, scale } }
   let cropMap = {};
+  // Cross-image edit-ops clipboard (Copy / Paste between images)
+  let milClipboard = null;
 
   // ── OffscreenCanvas Worker ─────────────────────────────────────────────────
   // Lazily initialised shared worker for heavy pixel work (crop, fit, lasso).
@@ -4730,6 +4732,73 @@ function createWidget(node) {
     globalRedoB.addEventListener("click", () => {
       if (edPanelMode === "edit") _edRedoEditOps(); else _edRedoEdits();
     });
+    // ── Copy / Paste row ─────────────────────────────────────────
+    const copyPasteRow = document.createElement("div");
+    copyPasteRow.style.cssText = `display:flex;gap:${_gap5};width:100%;`;
+    const copyB = document.createElement("button");
+    copyB.title = "Copy all transforms, lasso and pixel edits of this image";
+    copyB.textContent = "\uD83D\uDCCB Copy";
+    copyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs11};cursor:pointer;transition:background .12s,border-color .12s,color .12s;`;
+    copyB.addEventListener("mouseenter", () => { copyB.style.background="#2a2a2a"; copyB.style.borderColor="#555"; });
+    copyB.addEventListener("mouseleave", () => { copyB.style.background="#1e1e1e"; copyB.style.borderColor="#3a3a3a"; });
+    const pasteB = document.createElement("button");
+    pasteB.title = "Paste copied transforms, lasso and pixel edits onto this image";
+    pasteB.textContent = "\uD83D\uDCCE Paste";
+    pasteB.style.cssText = `flex:1;background:#1e1e1e;color:#555;border:1px solid #2a2a2a;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs11};cursor:pointer;transition:background .12s,border-color .12s,color .12s;`;
+    function _syncPasteBtn() {
+      const has = milClipboard !== null;
+      pasteB.style.color       = has ? "#aaa"    : "#555";
+      pasteB.style.borderColor = has ? "#3a3a3a" : "#2a2a2a";
+      pasteB.style.cursor      = has ? "pointer" : "default";
+    }
+    pasteB.addEventListener("mouseenter", () => { if (milClipboard) { pasteB.style.background="#2a2a2a"; pasteB.style.borderColor="#555"; } });
+    pasteB.addEventListener("mouseleave", () => { pasteB.style.background="#1e1e1e"; _syncPasteBtn(); });
+    copyB.addEventListener("click", () => {
+      milClipboard = {
+        crop: edAppliedCrop ? {...edAppliedCrop} : null,
+        rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
+        dOX, dOY, scale: edScale, scaleX: edScaleX, scaleY: edScaleY,
+        pixelCvs: _edCvsEditsPx,           // canvas ref — paste deep-clones it
+        lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
+        lassoInverted: edLassoInverted,
+        lassoIsPaint: edLassoIsPaint,
+      };
+      _syncPasteBtn();
+      // Brief flash to confirm copy
+      copyB.style.background = "#1a3a28"; copyB.style.color = "#44cc88"; copyB.style.borderColor = "#336644";
+      setTimeout(() => { copyB.style.background="#1e1e1e"; copyB.style.color="#aaa"; copyB.style.borderColor="#3a3a3a"; }, 600);
+    });
+    pasteB.addEventListener("click", () => {
+      if (!milClipboard) return;
+      const cb = milClipboard;
+      _edSaveEditOpsState(); // make paste undoable
+      edAppliedCrop = cb.crop ? {...cb.crop} : null;
+      edRotate = cb.rotate; edFlipH = cb.flipH; edFlipV = cb.flipV; edBg = cb.bg;
+      dOX = cb.dOX; dOY = cb.dOY; edScale = cb.scale;
+      edScaleX = cb.scaleX ?? 1; edScaleY = cb.scaleY ?? 1;
+      // Deep-clone the pixel canvas
+      if (cb.pixelCvs) {
+        const src = cb.pixelCvs;
+        const dst = document.createElement("canvas"); dst.width = src.width; dst.height = src.height;
+        dst.getContext("2d").drawImage(src, 0, 0);
+        _edCvsEditsPx = dst;
+      } else { _edCvsEditsPx = null; }
+      edLassoOps = cb.lassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) }));
+      edLassoInverted = cb.lassoInverted; edLassoIsPaint = cb.lassoIsPaint;
+      _lassoChanged();
+      if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
+      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI(); syncLassoToggle();
+      if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
+      edInpaintPreview = null; edInpaintDirty = true;
+      syncCvs(); redraw(); requestInpaintPreview();
+      // Flash confirmation
+      pasteB.style.background = "#1a2a3a"; pasteB.style.color = "#7ab0ff"; pasteB.style.borderColor = "#5a7abf";
+      setTimeout(() => { pasteB.style.background="#1e1e1e"; _syncPasteBtn(); }, 600);
+    });
+    copyPasteRow.appendChild(copyB); copyPasteRow.appendChild(pasteB);
+    pnlFoot.appendChild(copyPasteRow);
+    _syncPasteBtn(); // init state: dim if no clipboard yet
     globalUndoRedoRow.appendChild(globalUndoB); globalUndoRedoRow.appendChild(globalRedoB);
     pnlFoot.appendChild(globalUndoRedoRow);
     pnlFoot.appendChild(resetAllB);
