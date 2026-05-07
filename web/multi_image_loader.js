@@ -3297,59 +3297,91 @@ function createWidget(node) {
     secEdit.appendChild(_rotSRTop.row);
     rotSliderTop.addEventListener("pointerdown", () => _edSaveEditOpsState(), { once: false });
 
-    // ── Crop Region (first step) ─────────────────────────────────
-    secEdit.appendChild(mkSec("Crop Region", () => {
+    // ══════════════════════════════════════════════════════════════════
+    // ── Selection Tools (unified: Marquee + Lasso + Polygonal) ─────
+    // ══════════════════════════════════════════════════════════════════
+    secEdit.appendChild(mkSec("Selection Tools", () => {
       edCropBox = null; edAppliedCrop = null; edCropMode = false;
       edLassoOps = []; edLassoInverted = false; _lassoChanged(); edLassoIsPaint = false;
+      edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
       dOX = 0; dOY = 0; edScale = 1.0;
-      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
-      syncCvs(); updLbl();
-    }, "Reset Crop Region"));
-    const cropToggleB = document.createElement("button");
-    cropToggleB.textContent = "\u2702 Enable Crop";
-    cropToggleB.style.cssText = `background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;transition:background 0.15s,border-color 0.15s,color 0.15s;`;
-    function syncCropToggle() {
-      if (edCropMode) {
-        cropToggleB.textContent = "\u2702 Crop ON";
-        cropToggleB.style.background = "#1a3a28"; cropToggleB.style.color = "#44cc88"; cropToggleB.style.borderColor = "#336644";
-        cropApplyB.style.background = "#1a3a28"; cropApplyB.style.color = "#44cc88"; cropApplyB.style.borderColor = "#336644";
-        ca.style.cursor = "crosshair";
-        hint.textContent = "Draw to crop \u00b7 Drag edges to resize \u00b7 Scroll to zoom";
-      } else {
-        cropToggleB.textContent = "\u2702 Enable Crop";
-        cropToggleB.style.background = "#1e1e1e"; cropToggleB.style.color = "#aaa"; cropToggleB.style.borderColor = "#333";
-        cropApplyB.style.background = "#2a2a2a"; cropApplyB.style.color = "#555"; cropApplyB.style.borderColor = "#333";
-        if (!edLassoMode) {
-          ca.style.cursor = "grab";
-          hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
-        }
-      }
-    }
+      stopLassoAnts();
+      syncSelToolRow(); syncLassoInvertBtn(); updateSelInfoLbl();
+      updateDimLabels(); syncCvs(); updLbl();
+    }, "Reset Selection Tools"));
+
+    // ── 3-tool radio row: Marquee | Lasso | Polygonal ──
+    const selToolRow = document.createElement("div");
+    selToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
+
+    const marqueeB = document.createElement("button");
+    marqueeB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>Marquee`;
+    marqueeB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
+
+    // Pixel-panel marquee button (declared late, referenced here via closure)
+    let pxMarqueeB = null;
+
+    const cropToggleB = marqueeB; // alias for backward compat in syncCropToggle refs
+
+    const lassoFreehandB = document.createElement("button");
+    lassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
+    lassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
+
+    const lassoPolyB = document.createElement("button");
+    lassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Poly`;
+    lassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+
     // Pixel-panel lasso buttons (declared late, referenced here via closure)
     let pxLassoFreehandB = null, pxLassoPolyB = null;
 
-    function syncLassoToggle() {
-      // OFF state for both buttons
+    let syncSelToolRow = function() {
       const offS = {bg:'#1e1e1e',col:'#aaa',bc:'#333'};
+      const onMarq = {bg:'#1a3a28',col:'#44cc88',bc:'#336644'};
       const onFree = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
       const onPoly = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
       const applyStyle = (btn, s) => { if (!btn) return; btn.style.background=s.bg; btn.style.color=s.col; btn.style.borderColor=s.bc; };
+
+      // Marquee
+      applyStyle(marqueeB, edCropMode ? onMarq : offS);
+      applyStyle(pxMarqueeB, edCropMode ? onMarq : offS);
+
+      // Lasso / Poly
       if (edLassoMode) {
-        const f = edLassoTool==="freehand" ? onFree : offS;
-        const p = edLassoTool==="polygonal" ? onPoly : offS;
-        applyStyle(lassoFreehandB, f); applyStyle(lassoPolyB, p);
-        applyStyle(pxLassoFreehandB, f); applyStyle(pxLassoPolyB, p);
-        ca.style.cursor = "crosshair";
-        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: ortho · add · Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: ortho · add · Alt: subtract";
+        applyStyle(lassoFreehandB, edLassoTool==="freehand" ? onFree : offS);
+        applyStyle(lassoPolyB, edLassoTool==="polygonal" ? onPoly : offS);
+        applyStyle(pxLassoFreehandB, edLassoTool==="freehand" ? onFree : offS);
+        applyStyle(pxLassoPolyB, edLassoTool==="polygonal" ? onPoly : offS);
       } else {
         applyStyle(lassoFreehandB, offS); applyStyle(lassoPolyB, offS);
         applyStyle(pxLassoFreehandB, offS); applyStyle(pxLassoPolyB, offS);
-        if (!edCropMode) {
-          ca.style.cursor = edPixelTool ? "none" : "grab";
-          if (!edPixelTool) hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
-        }
       }
-    }
+
+      // AR row visibility: only for Marquee
+      cropArRow.style.display = edCropMode ? "flex" : "none";
+
+      // Crop button state
+      if (edCropMode || edCropBox) {
+        cropApplyB.style.background = "#1a3a28"; cropApplyB.style.color = "#44cc88"; cropApplyB.style.borderColor = "#336644";
+      } else {
+        cropApplyB.style.background = "#2a2a2a"; cropApplyB.style.color = "#555"; cropApplyB.style.borderColor = "#333";
+      }
+
+      // Cursor
+      if (edCropMode) {
+        ca.style.cursor = "crosshair";
+        hint.textContent = "Draw to crop \u00b7 Drag edges to resize \u00b7 Scroll to zoom";
+      } else if (edLassoMode) {
+        ca.style.cursor = "crosshair";
+        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract";
+      } else if (!edPixelTool) {
+        ca.style.cursor = "grab";
+        hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
+      }
+    };
+
+    // Backward-compat aliases used elsewhere in the codebase
+    let syncCropToggle = function() { syncSelToolRow(); };
+    let syncLassoToggle = function() { syncSelToolRow(); };
 
     // ── helpers ──
     function _gcd(a, b) { a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b)); while (b) { [a, b] = [b, a % b]; } return a || 1; }
@@ -3375,12 +3407,9 @@ function createWidget(node) {
       const eW = effNatW(), eH = effNatH();
       const cxCenter = edCropBox.x + edCropBox.w / 2;
       const cyCenter = edCropBox.y + edCropBox.h / 2;
-      // Preserve area in pixel space
       const areaPx = (edCropBox.w * eW) * (edCropBox.h * eH);
-      // new pixel dims: nW * nH = areaPx, nW/nH = ar → nW = sqrt(areaPx*ar), nH = sqrt(areaPx/ar)
       let nW = Math.sqrt(areaPx * ar), nH = Math.sqrt(areaPx / ar);
       let bw = nW / eW, bh = nH / eH;
-      // clamp to image bounds
       if (bw > 1) { bw = 1; bh = (bw * eW) / (ar * eH); }
       if (bh > 1) { bh = 1; bw = (bh * eH * ar) / eW; }
       bw = Math.min(bw, 1); bh = Math.min(bh, 1);
@@ -3388,17 +3417,18 @@ function createWidget(node) {
       nx = Math.max(0, Math.min(1 - bw, nx));
       ny = Math.max(0, Math.min(1 - bh, ny));
       edCropBox = { x: nx, y: ny, w: bw, h: bh };
-      clampCropBox(); updateCropInfoLbl(); redraw();
+      clampCropBox(); updateSelInfoLbl(); redraw();
     }
 
-    cropToggleB.addEventListener("click", () => {
+    // Toggle Marquee tool
+    marqueeB.addEventListener("click", () => {
       edCropMode = !edCropMode;
-      // Mutual exclusion: disable lasso if crop is enabled
+      // Mutual exclusion: disable lasso if marquee is enabled
       if (edCropMode && edLassoMode) {
         edLassoMode = false; edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
-        stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+        stopLassoAnts();
       }
-      // Auto-initialize crop box on first enable (centered, 50% scale, tensor AR)
+      // Auto-initialize crop box on first enable
       if (edCropMode && !edCropBox) {
         const eW = effNatW(), eH = effNatH();
         const targetAR = parseCropAR() ?? (edRefW / edRefH);
@@ -3411,15 +3441,34 @@ function createWidget(node) {
         }
         bw = Math.min(bw, 1); bh = Math.min(bh, 1);
         edCropBox = { x: (1 - bw) / 2, y: (1 - bh) / 2, w: bw, h: bh };
-        updateCropInfoLbl();
       }
-      syncCropToggle(); redraw();
+      syncSelToolRow(); updateSelInfoLbl(); redraw();
     });
-    secEdit.appendChild(cropToggleB);
 
-    // AR lock + input row
+    function toggleLassoTool(tool) {
+      if (edLassoMode && edLassoTool === tool) {
+        edLassoMode = false; edLassoDrawing = false;
+        edLassoCurrentPts = []; _lassoCursorNorm = null; stopLassoAnts();
+      } else {
+        edLassoMode = true; edLassoTool = tool;
+        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+        if (edCropMode) { edCropMode = false; }
+        if (edLassoOps.length > 0) startLassoAnts();
+        if (typeof edPixelTool !== 'undefined' && edPixelTool !== null) { edPixelTool = null; _syncPixelToolUI(); }
+      }
+      syncSelToolRow(); updateSelInfoLbl(); redraw();
+    }
+    lassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
+    lassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
+
+    selToolRow.appendChild(marqueeB);
+    selToolRow.appendChild(lassoFreehandB);
+    selToolRow.appendChild(lassoPolyB);
+    secEdit.appendChild(selToolRow);
+
+    // AR lock + input row (visible only when Marquee active)
     const cropArRow = document.createElement("div");
-    cropArRow.style.cssText = `display:flex;align-items:center;gap:${_gap5};width:100%;`;
+    cropArRow.style.cssText = `display:none;align-items:center;gap:${_gap5};width:100%;`;
     const cropArLockB = document.createElement("button");
     cropArLockB.style.cssText = `background:none;border:none;cursor:pointer;font-size:${_fs12};padding:0 2px;flex-shrink:0;transition:opacity 0.15s;`;
     function syncArLockUI() {
@@ -3445,11 +3494,84 @@ function createWidget(node) {
     cropArRow.appendChild(cropArInput);
     secEdit.appendChild(cropArRow);
 
+    // Invert & Deselect row
+    const lassoActionRow = document.createElement("div");
+    lassoActionRow.style.cssText = `display:flex;gap:${_gap5};width:100%;margin-top:${_gap5};`;
+
+    const lassoInvertB = document.createElement("button");
+    lassoInvertB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>Invert`;
+    lassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    lassoInvertB.addEventListener("click", () => {
+      edLassoInverted = !edLassoInverted;
+      _lassoChanged();
+      syncLassoInvertBtn(); requestInpaintPreview(); redraw();
+    });
+
+    const lassoDeselectB = document.createElement("button");
+    lassoDeselectB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Deselect`;
+    lassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
+    lassoDeselectB.addEventListener("click", () => {
+      edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false;
+      edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+      _lassoChanged(); stopLassoAnts();
+      syncLassoInvertBtn(); updateSelInfoLbl(); redraw();
+    });
+
+    // pxLassoInvertB is already declared in the hoisted variables above
+    function syncLassoInvertBtn() {
+      if (edLassoInverted) {
+        lassoInvertB.style.background = "#2a1a3a"; lassoInvertB.style.color = "#bb88ff"; lassoInvertB.style.borderColor = "#553388";
+        if (pxLassoInvertB) { pxLassoInvertB.style.background = "#2a1a3a"; pxLassoInvertB.style.color = "#bb88ff"; pxLassoInvertB.style.borderColor = "#553388"; }
+      } else {
+        lassoInvertB.style.background = "#1e1e1e"; lassoInvertB.style.color = "#aaa"; lassoInvertB.style.borderColor = "#333";
+        if (pxLassoInvertB) { pxLassoInvertB.style.background = "#1e1e1e"; pxLassoInvertB.style.color = "#aaa"; pxLassoInvertB.style.borderColor = "#333"; }
+      }
+    }
+    lassoActionRow.appendChild(lassoInvertB);
+    lassoActionRow.appendChild(lassoDeselectB);
+    secEdit.appendChild(lassoActionRow);
+
+    // Hint label
+    const lassoHintLbl = document.createElement("div");
+    lassoHintLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;line-height:1.3;`;
+    lassoHintLbl.textContent = "Shift: ortho \u00b7 add \u00b7 Alt: subtract";
+    secEdit.appendChild(lassoHintLbl);
+
+    // Unified info label (crop dims or lasso ops)
+    const selInfoLbl = document.createElement("div");
+    selInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
+    secEdit.appendChild(selInfoLbl);
+    // Backward-compat aliases
+    const cropInfoLbl = selInfoLbl;
+    const lassoInfoLbl = selInfoLbl;
+
+    let updateSelInfoLbl = function() {
+      // Crop info takes priority when marquee is active
+      if (edCropBox && edCropMode) {
+        const baseW = effNatW(), baseH = effNatH();
+        const w = Math.round(edCropBox.w * baseW), h = Math.round(edCropBox.h * baseH);
+        selInfoLbl.textContent = `${w} \u00d7 ${h} px`;
+        return;
+      }
+      // Lasso info
+      if (edLassoOps.length === 0 && !edLassoInverted) { selInfoLbl.textContent = ''; return; }
+      const addN = edLassoOps.filter(o => o.mode === "add").length;
+      const subN = edLassoOps.filter(o => o.mode === "subtract").length;
+      let txt = `${edLassoOps.length} op${edLassoOps.length !== 1 ? 's' : ''}`;
+      if (addN && subN) txt += ` (${addN} add, ${subN} sub)`;
+      if (edLassoInverted) txt += " \u00b7 inverted";
+      selInfoLbl.textContent = txt;
+    };
+    // Backward-compat aliases
+    let updateCropInfoLbl = function() { updateSelInfoLbl(); };
+    let updateLassoInfoLbl = function() { updateSelInfoLbl(); };
+
+    // ── Crop action button ──
     const cropApplyB = document.createElement("button");
-    cropApplyB.textContent = "\u2713 Apply Crop";
-    cropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:left;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;`;
+    cropApplyB.textContent = "\u2702 Crop";
+    cropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:center;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;margin-top:${_gap5};`;
     cropApplyB.addEventListener("mouseenter", () => { if(edCropMode || edCropBox) { cropApplyB.style.background="#2a5a3a"; cropApplyB.style.color="#55ee99"; cropApplyB.style.borderColor="#55ee99"; } });
-    cropApplyB.addEventListener("mouseleave", () => { syncCropToggle(); });
+    cropApplyB.addEventListener("mouseleave", () => { syncSelToolRow(); });
     cropApplyB.addEventListener("click", () => {
       if (!edCropBox) return;
       _edSaveEditOpsState();
@@ -3484,109 +3606,12 @@ function createWidget(node) {
       }
       edCropBox = null; edCropMode = false;
       edLassoOps = []; edLassoInverted = false; _lassoChanged(); edLassoIsPaint = false;
-      // Reset transforms since we're now working on a new "image"
       dOX = 0; dOY = 0; edScale = 1.0;
-      syncCropToggle(); updateDimLabels(); updateCropInfoLbl();
+      syncSelToolRow(); updateDimLabels(); updateSelInfoLbl();
       syncCvs(); updLbl(); redraw(); requestInpaintPreview();
     });
     secEdit.appendChild(cropApplyB);
 
-    const cropInfoLbl = document.createElement("div");
-    cropInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
-    secEdit.appendChild(cropInfoLbl);
-
-    // ══════════════════════════════════════════════════════════════════
-    // ── Crop Lasso Section ──────────────────────────────────────────
-    // ══════════════════════════════════════════════════════════════════
-    secEdit.appendChild(mkSec("Crop Lasso", () => {
-      edLassoOps = []; edLassoInverted = false; edLassoIsPaint = false;
-      edLassoCurrentPts = []; edLassoDrawing = false;
-      _lassoChanged(); _lassoCursorNorm = null;
-      stopLassoAnts();
-      syncLassoInvertBtn(); updateLassoInfoLbl();
-    }, "Reset Crop Lasso"));
-
-    // Tool buttons: Lasso / Polygonal — act as mode toggles
-    const lassoToolRow = document.createElement("div");
-    lassoToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
-    const lassoFreehandB = document.createElement("button");
-    lassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
-    lassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
-    const lassoPolyB = document.createElement("button");
-    lassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Polygonal`;
-    lassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
-    function toggleLassoTool(tool) {
-      if (edLassoMode && edLassoTool === tool) {
-        edLassoMode = false; edLassoDrawing = false;
-        edLassoCurrentPts = []; _lassoCursorNorm = null; stopLassoAnts();
-      } else {
-        edLassoMode = true; edLassoTool = tool;
-        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
-        if (edCropMode) { edCropMode = false; syncCropToggle(); }
-        if (edLassoOps.length > 0) startLassoAnts();
-        if (typeof edPixelTool !== 'undefined' && edPixelTool !== null) { edPixelTool = null; _syncPixelToolUI(); }
-      }
-      syncLassoToggle(); redraw();
-    }
-    lassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
-    lassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
-    lassoToolRow.appendChild(lassoFreehandB); lassoToolRow.appendChild(lassoPolyB);
-    secEdit.appendChild(lassoToolRow);
-
-    // Invert & Deselect Selection
-    const lassoActionRow = document.createElement("div");
-    lassoActionRow.style.cssText = `display:flex;gap:${_gap5};width:100%;margin-top:${_gap5};`;
-
-    const lassoInvertB = document.createElement("button");
-    lassoInvertB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>Invert`;
-    lassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
-    lassoInvertB.addEventListener("click", () => {
-      edLassoInverted = !edLassoInverted;
-      _lassoChanged();
-      syncLassoInvertBtn(); requestInpaintPreview(); redraw();
-    });
-
-    const lassoDeselectB = document.createElement("button");
-    lassoDeselectB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Deselect`;
-    lassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
-    lassoDeselectB.addEventListener("click", () => {
-      edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false;
-      edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
-      _lassoChanged(); stopLassoAnts();
-      syncLassoInvertBtn(); updateLassoInfoLbl(); redraw();
-    });
-
-    function syncLassoInvertBtn() {
-      if (edLassoInverted) {
-        lassoInvertB.style.background = "#2a1a3a"; lassoInvertB.style.color = "#bb88ff"; lassoInvertB.style.borderColor = "#553388";
-        if (pxLassoInvertB) { pxLassoInvertB.style.background = "#2a1a3a"; pxLassoInvertB.style.color = "#bb88ff"; pxLassoInvertB.style.borderColor = "#553388"; }
-      } else {
-        lassoInvertB.style.background = "#1e1e1e"; lassoInvertB.style.color = "#aaa"; lassoInvertB.style.borderColor = "#333";
-        if (pxLassoInvertB) { pxLassoInvertB.style.background = "#1e1e1e"; pxLassoInvertB.style.color = "#aaa"; pxLassoInvertB.style.borderColor = "#333"; }
-      }
-    }
-    lassoActionRow.appendChild(lassoInvertB);
-    lassoActionRow.appendChild(lassoDeselectB);
-    secEdit.appendChild(lassoActionRow);
-
-    // Hint + Info
-    const lassoHintLbl = document.createElement("div");
-    lassoHintLbl.style.cssText = `color:#555;font-size:${_fs10};text-align:center;line-height:1.3;`;
-    lassoHintLbl.textContent = "Shift: ortho · add · Alt: subtract";
-    secEdit.appendChild(lassoHintLbl);
-    const lassoInfoLbl = document.createElement("div");
-    lassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;`;
-    secEdit.appendChild(lassoInfoLbl);
-
-    function updateLassoInfoLbl() {
-      if (edLassoOps.length === 0 && !edLassoInverted) { lassoInfoLbl.textContent = ''; return; }
-      const addN = edLassoOps.filter(o => o.mode === "add").length;
-      const subN = edLassoOps.filter(o => o.mode === "subtract").length;
-      let txt = `${edLassoOps.length} op${edLassoOps.length !== 1 ? 's' : ''}`;
-      if (addN && subN) txt += ` (${addN} add, ${subN} sub)`;
-      if (edLassoInverted) txt += " \u00b7 inverted";
-      lassoInfoLbl.textContent = txt;
-    }
 
     // ── Orthogonal/45° snap helper ──
     // dw/dh = rendered image pixel dimensions — required for aspect-correct angles.
@@ -4010,26 +4035,65 @@ function createWidget(node) {
 
     // (Background Fill is now in Edit panel)
 
-    // ── Lasso Selection sub-section (needed for CA Fill) ────────
-    secPixels.appendChild(mkSec("Lasso Selection", () => {
+    // ── Selection Tools sub-section (Pixel panel mirror) ────────
+    secPixels.appendChild(mkSec("Selection Tools", () => {
+      edCropBox = null; edCropMode = false;
       edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false; edLassoIsPaint = false;
       edLassoInverted = false; _lassoCursorNorm = null; _lassoChanged();
-      stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      stopLassoAnts(); syncSelToolRow(); updateSelInfoLbl();
       redraw();
-    }, "Clear lasso selection"));
+    }, "Reset selection tools"));
 
-    const pxLassoToolRow = document.createElement("div");
-    pxLassoToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
+    const pxSelToolRow = document.createElement("div");
+    pxSelToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
+
+    pxMarqueeB = document.createElement("button");
+    pxMarqueeB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>Marquee`;
+    pxMarqueeB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
+    pxMarqueeB.addEventListener("click", () => { marqueeB.click(); }); // delegate to main marquee
+
     pxLassoFreehandB = document.createElement("button");
     pxLassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
-    pxLassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
+    pxLassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
+
     pxLassoPolyB = document.createElement("button");
-    pxLassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Polygonal`;
+    pxLassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Poly`;
     pxLassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
     pxLassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
-    pxLassoToolRow.appendChild(pxLassoFreehandB); pxLassoToolRow.appendChild(pxLassoPolyB);
-    secPixels.appendChild(pxLassoToolRow);
+    pxSelToolRow.appendChild(pxMarqueeB); pxSelToolRow.appendChild(pxLassoFreehandB); pxSelToolRow.appendChild(pxLassoPolyB);
+    secPixels.appendChild(pxSelToolRow);
+
+    // AR lock row (pixel panel mirror — syncs with edit panel)
+    const pxCropArRow = document.createElement("div");
+    pxCropArRow.style.cssText = `display:none;align-items:center;gap:${_gap5};width:100%;`;
+    const pxCropArLockB = document.createElement("button");
+    pxCropArLockB.style.cssText = `background:none;border:none;cursor:pointer;font-size:${_fs12};padding:0 2px;flex-shrink:0;transition:opacity 0.15s;`;
+    pxCropArLockB.addEventListener("click", () => { cropArLockB.click(); syncPxArUI(); });
+    const pxCropArInput = document.createElement("input");
+    pxCropArInput.type = "text";
+    pxCropArInput.value = cropArInput.value;
+    pxCropArInput.placeholder = "16:9";
+    pxCropArInput.style.cssText = `flex:1;background:#1a1a1a;color:#ccc;border:1px solid #333;border-radius:${_r5};padding:${_pad4};font-size:${_fs11};text-align:center;min-width:0;`;
+    pxCropArInput.addEventListener("input", () => { cropArInput.value = pxCropArInput.value; });
+    pxCropArInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); cropArInput.value = pxCropArInput.value; cropArInput.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter"})); syncPxArUI(); }
+    });
+    function syncPxArUI() {
+      pxCropArLockB.textContent = edCropArLock ? "\uD83D\uDD12" : "\uD83D\uDD13";
+      pxCropArLockB.style.opacity = edCropArLock ? "1" : "0.4";
+      pxCropArInput.style.color = edCropArLock ? "#ccc" : "#555";
+      pxCropArRow.style.display = edCropMode ? "flex" : "none";
+    }
+    pxCropArRow.appendChild(pxCropArLockB); pxCropArRow.appendChild(pxCropArInput);
+    secPixels.appendChild(pxCropArRow);
+
+    // Patch syncSelToolRow to also sync pixel panel AR row
+    const _origSyncSelToolRow = syncSelToolRow;
+    syncSelToolRow = function() { _origSyncSelToolRow(); syncPxArUI(); };
+    // Re-alias
+    syncCropToggle = syncSelToolRow;
+    syncLassoToggle = syncSelToolRow;
 
     const pxLassoActionRow = document.createElement("div");
     pxLassoActionRow.style.cssText = `display:flex;gap:${_gap5};width:100%;margin-top:${_gap5};`;
@@ -4047,7 +4111,6 @@ function createWidget(node) {
     pxLassoDeselectB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Deselect`;
     pxLassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoDeselectB.addEventListener("click", () => {
-      // Do not wipe lasso ops if they belong to an active Edit crop
       if (edAppliedCrop && edPanelMode !== "pixels") return;
       edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false; _lassoChanged();
       syncLassoInvertBtn(); requestInpaintPreview(); redraw();
@@ -4057,17 +4120,32 @@ function createWidget(node) {
     pxLassoActionRow.appendChild(pxLassoDeselectB);
     secPixels.appendChild(pxLassoActionRow);
 
-
     const pxLassoInfoLbl = document.createElement("div");
     pxLassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;margin-bottom:${_gap5};`;
     secPixels.appendChild(pxLassoInfoLbl);
-    // Keep pxLassoInfoLbl in sync with the main lassoInfoLbl by patching updateLassoInfoLbl
-    const _origUpdateLassoInfoLbl = updateLassoInfoLbl;
-    updateLassoInfoLbl = function() {
-      _origUpdateLassoInfoLbl();
-      // Mirror text to pixel panel label
-      pxLassoInfoLbl.textContent = lassoInfoLbl.textContent;
+
+    // Pixel panel Crop button
+    const pxCropApplyB = document.createElement("button");
+    pxCropApplyB.textContent = "\u2702 Crop";
+    pxCropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:center;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;margin-bottom:${_gap5};`;
+    pxCropApplyB.addEventListener("click", () => { cropApplyB.click(); }); // delegate to main
+    secPixels.appendChild(pxCropApplyB);
+
+    // Keep pxLassoInfoLbl and pxCropApplyB in sync
+    const _origUpdateSelInfoLbl = updateSelInfoLbl;
+    updateSelInfoLbl = function() {
+      _origUpdateSelInfoLbl();
+      pxLassoInfoLbl.textContent = selInfoLbl.textContent;
+      // Sync px crop button state
+      if (edCropMode || edCropBox) {
+        pxCropApplyB.style.background = "#1a3a28"; pxCropApplyB.style.color = "#44cc88"; pxCropApplyB.style.borderColor = "#336644";
+      } else {
+        pxCropApplyB.style.background = "#2a2a2a"; pxCropApplyB.style.color = "#555"; pxCropApplyB.style.borderColor = "#333";
+      }
     };
+    // Re-alias after patching
+    updateCropInfoLbl = updateSelInfoLbl;
+    updateLassoInfoLbl = updateSelInfoLbl;
 
     secPixels.appendChild(mkSec("Image Tools", () => {
       edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
@@ -4798,12 +4876,7 @@ function createWidget(node) {
       edCropBox.w = Math.max(0.02, Math.min(edCropBox.w, 1 - edCropBox.x));
       edCropBox.h = Math.max(0.02, Math.min(edCropBox.h, 1 - edCropBox.y));
     }
-    function updateCropInfoLbl() {
-      if (!edCropBox || !edCropMode) { cropInfoLbl.textContent = ''; return; }
-      const baseW = effNatW(), baseH = effNatH();
-      const w = Math.round(edCropBox.w * baseW), h = Math.round(edCropBox.h * baseH);
-      cropInfoLbl.textContent = `${w} \u00d7 ${h} px`;
-    }
+    // updateCropInfoLbl is now an alias defined earlier → redirects to updateSelInfoLbl
     function drawCropOverlay(ctx) {
       if (!edCropBox || !edCropMode) return;
       const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
