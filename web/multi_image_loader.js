@@ -4754,45 +4754,48 @@ function createWidget(node) {
     pasteB.addEventListener("mouseenter", () => { if (milClipboard) { pasteB.style.background="#2a2a2a"; pasteB.style.borderColor="#555"; } });
     pasteB.addEventListener("mouseleave", () => { pasteB.style.background="#1e1e1e"; _syncPasteBtn(); });
     copyB.addEventListener("click", () => {
-      milClipboard = {
-        crop: edAppliedCrop ? {...edAppliedCrop} : null,
-        rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
-        dOX, dOY, scale: edScale, scaleX: edScaleX, scaleY: edScaleY,
-        pixelCvs: _edCvsEditsPx,           // canvas ref — paste deep-clones it
-        lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
-        lassoInverted: edLassoInverted,
-        lassoIsPaint: edLassoIsPaint,
-      };
+      if (!edImg) return;
+      // Ensure pixel canvas is up to date with current transforms
+      _edCvsEditsPx = null;   // force full re-bake
+      syncCvs();              // recalc bFit etc.
+      _edEnsureEditsPx();     // renders image → _edCvsEditsPx
+      // Capture a standalone clone of the fully-rendered image
+      const src = _edCvsEditsPx;
+      if (!src) return;
+      const clone = document.createElement("canvas");
+      clone.width = src.width; clone.height = src.height;
+      clone.getContext("2d").drawImage(src, 0, 0);
+      milClipboard = { imageCvs: clone };
       _syncPasteBtn();
-      // Brief flash to confirm copy
+      // Flash green
       copyB.style.background = "#1a3a28"; copyB.style.color = "#44cc88"; copyB.style.borderColor = "#336644";
       setTimeout(() => { copyB.style.background="#1e1e1e"; copyB.style.color="#aaa"; copyB.style.borderColor="#3a3a3a"; }, 600);
     });
     pasteB.addEventListener("click", () => {
-      if (!milClipboard) return;
-      const cb = milClipboard;
+      if (!milClipboard?.imageCvs) return;
       _edSaveEditOpsState(); // make paste undoable
-      edAppliedCrop = cb.crop ? {...cb.crop} : null;
-      edRotate = cb.rotate; edFlipH = cb.flipH; edFlipV = cb.flipV; edBg = cb.bg;
-      dOX = cb.dOX; dOY = cb.dOY; edScale = cb.scale;
-      edScaleX = cb.scaleX ?? 1; edScaleY = cb.scaleY ?? 1;
-      // Deep-clone the pixel canvas
-      if (cb.pixelCvs) {
-        const src = cb.pixelCvs;
-        const dst = document.createElement("canvas"); dst.width = src.width; dst.height = src.height;
-        dst.getContext("2d").drawImage(src, 0, 0);
-        _edCvsEditsPx = dst;
-      } else { _edCvsEditsPx = null; }
-      edLassoOps = cb.lassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) }));
-      edLassoInverted = cb.lassoInverted; edLassoIsPaint = cb.lassoIsPaint;
-      _lassoChanged();
-      if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
+      // Reset all transforms — the pasted image is already baked
+      edAppliedCrop = null; edRotate = 0; edFlipH = false; edFlipV = false;
+      dOX = 0; dOY = 0; edScale = 1; edScaleX = 1; edScaleY = 1;
+      edLassoOps = []; edLassoInverted = false; edLassoIsPaint = false;
+      _lassoChanged(); stopLassoAnts();
+      // Build destination pixel canvas at destination image's native size
+      const eW = effNatW(), eH = effNatH();
+      const wpX = Math.min(eW, 2048);
+      const wpY = Math.round(eH * (wpX / eW));
+      const dst = document.createElement("canvas"); dst.width = wpX; dst.height = wpY;
+      const dctx = dst.getContext("2d");
+      dctx.imageSmoothingEnabled = true; dctx.imageSmoothingQuality = "high";
+      // Draw source image, scaled to destination
+      dctx.drawImage(milClipboard.imageCvs, 0, 0, wpX, wpY);
+      _edCvsEditsPx = dst;
+      // Sync all UI controls
       syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI(); syncLassoToggle();
-      if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      if (typeof syncLassoInvertBtn !== "undefined") syncLassoInvertBtn();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
       syncCvs(); redraw(); requestInpaintPreview();
-      // Flash confirmation
+      // Flash blue
       pasteB.style.background = "#1a2a3a"; pasteB.style.color = "#7ab0ff"; pasteB.style.borderColor = "#5a7abf";
       setTimeout(() => { pasteB.style.background="#1e1e1e"; _syncPasteBtn(); }, 600);
     });
