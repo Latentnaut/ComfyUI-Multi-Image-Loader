@@ -3315,7 +3315,8 @@ function createWidget(node) {
     selToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
 
     const marqueeB = document.createElement("button");
-    marqueeB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>Marquee`;
+    marqueeB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>`;
+    marqueeB.title = "Rectangular Marquee";
     marqueeB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
 
     // Pixel-panel marquee button (declared late, referenced here via closure)
@@ -3324,11 +3325,13 @@ function createWidget(node) {
     const cropToggleB = marqueeB; // alias for backward compat in syncCropToggle refs
 
     const lassoFreehandB = document.createElement("button");
-    lassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
+    lassoFreehandB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>`;
+    lassoFreehandB.title = "Freehand Lasso";
     lassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
 
     const lassoPolyB = document.createElement("button");
-    lassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Poly`;
+    lassoPolyB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>`;
+    lassoPolyB.title = "Polygonal Lasso";
     lassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
 
     // Pixel-panel lasso buttons (declared late, referenced here via closure)
@@ -3499,7 +3502,8 @@ function createWidget(node) {
     lassoActionRow.style.cssText = `display:flex;gap:${_gap5};width:100%;margin-top:${_gap5};`;
 
     const lassoInvertB = document.createElement("button");
-    lassoInvertB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>Invert`;
+    lassoInvertB.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>`;
+    lassoInvertB.title = "Invert Selection";
     lassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     lassoInvertB.addEventListener("click", () => {
       edLassoInverted = !edLassoInverted;
@@ -3508,7 +3512,8 @@ function createWidget(node) {
     });
 
     const lassoDeselectB = document.createElement("button");
-    lassoDeselectB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Deselect`;
+    lassoDeselectB.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    lassoDeselectB.title = "Deselect All";
     lassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     lassoDeselectB.addEventListener("click", () => {
       edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false;
@@ -4048,16 +4053,19 @@ function createWidget(node) {
     pxSelToolRow.style.cssText = `display:flex;gap:0;width:100%;`;
 
     pxMarqueeB = document.createElement("button");
-    pxMarqueeB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>Marquee`;
+    pxMarqueeB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/></svg>`;
+    pxMarqueeB.title = "Rectangular Marquee";
     pxMarqueeB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5} 0 0 ${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
     pxMarqueeB.addEventListener("click", () => { marqueeB.click(); }); // delegate to main marquee
 
     pxLassoFreehandB = document.createElement("button");
-    pxLassoFreehandB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>Lasso`;
+    pxLassoFreehandB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-3-.4"/><path d="M12 18a14 14 0 0 1-3.3-.4"/></svg>`;
+    pxLassoFreehandB.title = "Freehand Lasso";
     pxLassoFreehandB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;border-right:none;`;
 
     pxLassoPolyB = document.createElement("button");
-    pxLassoPolyB.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>Poly`;
+    pxLassoPolyB.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 21 8 18 21 7 15"/></svg>`;
+    pxLassoPolyB.title = "Polygonal Lasso";
     pxLassoPolyB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:0 ${_r5} ${_r5} 0;padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoFreehandB.addEventListener("click", () => toggleLassoTool("freehand"));
     pxLassoPolyB.addEventListener("click", () => toggleLassoTool("polygonal"));
@@ -4099,7 +4107,8 @@ function createWidget(node) {
     pxLassoActionRow.style.cssText = `display:flex;gap:${_gap5};width:100%;margin-top:${_gap5};`;
 
     pxLassoInvertB = document.createElement("button");
-    pxLassoInvertB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>Invert`;
+    pxLassoInvertB.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h14l-4-4"/><path d="M21 16H7l4 4"/></svg>`;
+    pxLassoInvertB.title = "Invert Selection";
     pxLassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoInvertB.addEventListener("click", () => {
       edLassoInverted = !edLassoInverted;
@@ -4108,7 +4117,8 @@ function createWidget(node) {
     });
 
     const pxLassoDeselectB = document.createElement("button");
-    pxLassoDeselectB.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Deselect`;
+    pxLassoDeselectB.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    pxLassoDeselectB.title = "Deselect All";
     pxLassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoDeselectB.addEventListener("click", () => {
       if (edAppliedCrop && edPanelMode !== "pixels") return;
@@ -4883,12 +4893,11 @@ function createWidget(node) {
       const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
       const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
       ctx.save();
-      // dim outside crop
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.rect(bx, by, bw, bh); ctx.fill('evenodd');
-      // border
-      ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5;
+      // Selection outline only — no dimming (crop effect applied via Crop button)
+      // dashed selection border
+      ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
       ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
+      ctx.setLineDash([]);
       // handles
       const hs = 4;
       ctx.fillStyle = 'rgba(140,140,50,0.7)'; ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1;
