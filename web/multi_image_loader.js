@@ -3765,21 +3765,9 @@ function createWidget(node) {
     flipRow.appendChild(flipHBtn);
     flipRow.appendChild(flipVBtn);
     secEdit.appendChild(flipRow);
-    secEdit.appendChild(mkSec("Rotate", () => {
-      _edSaveEditOpsState(); edRotate=0; syncRotUI(); redraw();
-    }, "Reset Rotation"));
-    const _rotSR = mkSliderRow("Rotate", { min:-180, max:180, step:1, value:0, suffix:"°", accentColor:"#5a7abf",
-      onInput: v => { edRotate = v; updLbl(); redraw(); requestInpaintPreview(); }
-    });
-    const rotSlider = _rotSR.slider;
-    const rotValEl  = _rotSR.valEl;
     function syncRotUI() {
-      rotSlider.value = edRotate;
-      rotValEl.textContent = edRotate + "°";
       syncRotUITop();
     }
-    secEdit.appendChild(_rotSR.row);
-    rotSlider.addEventListener("pointerdown", () => _edSaveEditOpsState(), { once: false });
 
     // Background fill elements (created here, appended later — after Remove BG)
     const bgSelect = document.createElement("select");
