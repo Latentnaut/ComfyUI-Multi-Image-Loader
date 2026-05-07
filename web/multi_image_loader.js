@@ -3008,35 +3008,74 @@ function createWidget(node) {
     }
 
     // ── Paste Overlays (lightweight layer system) ──────────────────
-    // Each overlay: { id, imageCvs, x, y, scale, selected }
-    //   x, y  = fractional offset from frame centre  (same convention as dOX, dOY)
-    //   scale = relative to frame (1 = fit within frame)
+    // Each overlay: { id, imageCvs, x, y, scale, rotate }
+    //   x, y    = pixel offset from frame centre
+    //   scale   = relative to frame (1 = fit within frame)
+    //   rotate  = degrees (CW)
     let edOverlays = [];
     let _overlayIdCounter = 0;
-    let _ovDrag = null;         // { idx, startMX, startMY, startX, startY }
+    // _ovDrag modes: 'move' | 'scale' | 'rotate'
+    let _ovDrag = null;         // { idx, mode, startMX, startMY, startX, startY, startScale, startRotate, corner, anchorX, anchorY }
     let _ovSelected = -1;       // index of selected overlay, -1 = none
+
+    // Transform a canvas point into the overlay's local (unrotated) coordinate space
+    function _ovToLocal(ov, cx, cy) {
+      const { ocx, ocy } = _ovScreenRect(ov);
+      const rad = -(ov.rotate || 0) * Math.PI / 180;
+      const dx = cx - ocx, dy = cy - ocy;
+      return { lx: dx * Math.cos(rad) - dy * Math.sin(rad),
+               ly: dx * Math.sin(rad) + dy * Math.cos(rad) };
+    }
+    function _ovPointInRotatedRect(ov, cx, cy, pad) {
+      const { ow, oh } = _ovScreenRect(ov);
+      const { lx, ly } = _ovToLocal(ov, cx, cy);
+      return lx >= -ow / 2 - pad && lx <= ow / 2 + pad &&
+             ly >= -oh / 2 - pad && ly <= oh / 2 + pad;
+    }
+
+    // Handle types: 'tl','tr','bl','br' (scale corners), 'rot' (rotation circle)
+    const _OV_HANDLE_RADIUS = 7;
+    const _OV_ROT_DISTANCE  = 28; // px above top edge
+
+    function _ovHandleHitTest(canvasX, canvasY) {
+      if (_ovSelected < 0 || !edOverlays[_ovSelected]) return null;
+      const ov = edOverlays[_ovSelected];
+      const { ow, oh, ocx, ocy } = _ovScreenRect(ov);
+      const hw = ow / 2, hh = oh / 2;
+      const { lx, ly } = _ovToLocal(ov, canvasX, canvasY);
+      const hr = _OV_HANDLE_RADIUS + 3; // generous hit radius
+
+      // Rotation handle (circle above top centre)
+      if (Math.hypot(lx, ly - (-hh - _OV_ROT_DISTANCE)) <= hr + 2) return 'rot';
+      // Corner handles
+      if (Math.hypot(lx - (-hw), ly - (-hh)) <= hr) return 'tl';
+      if (Math.hypot(lx - ( hw), ly - (-hh)) <= hr) return 'tr';
+      if (Math.hypot(lx - (-hw), ly - ( hh)) <= hr) return 'bl';
+      if (Math.hypot(lx - ( hw), ly - ( hh)) <= hr) return 'br';
+      // Edge midpoints (optional: for constrained scale)
+      return null;
+    }
 
     function _ovHitTest(canvasX, canvasY) {
       const borderTol = 5; // px tolerance for border/frame hit
       // Test overlays in reverse order (top-most first)
       for (let i = edOverlays.length - 1; i >= 0; i--) {
         const ov = edOverlays[i];
-        const { ox, oy, ow, oh } = _ovScreenRect(ov);
         // 1. Check if click is on the selection border (dashed rect) of selected overlay
         if (i === _ovSelected) {
-          const inOuter = canvasX >= ox - borderTol && canvasX <= ox + ow + borderTol &&
-                          canvasY >= oy - borderTol && canvasY <= oy + oh + borderTol;
-          const inInner = canvasX >= ox + borderTol && canvasX <= ox + ow - borderTol &&
-                          canvasY >= oy + borderTol && canvasY <= oy + oh - borderTol;
+          const inOuter = _ovPointInRotatedRect(ov, canvasX, canvasY, borderTol);
+          const inInner = _ovPointInRotatedRect(ov, canvasX, canvasY, -borderTol);
           if (inOuter && !inInner) return i; // hit the frame border itself
         }
-        // 2. Check bounding box first (fast reject)
-        if (canvasX < ox || canvasX > ox + ow || canvasY < oy || canvasY > oy + oh) continue;
+        // 2. Rotated bounding box fast reject
+        if (!_ovPointInRotatedRect(ov, canvasX, canvasY, 0)) continue;
         // 3. Alpha test — sample the overlay image at the corresponding pixel
         try {
+          const { ow, oh } = _ovScreenRect(ov);
+          const { lx, ly } = _ovToLocal(ov, canvasX, canvasY);
           const srcW = ov.imageCvs.width, srcH = ov.imageCvs.height;
-          const sx = Math.floor(((canvasX - ox) / ow) * srcW);
-          const sy = Math.floor(((canvasY - oy) / oh) * srcH);
+          const sx = Math.floor(((lx + ow / 2) / ow) * srcW);
+          const sy = Math.floor(((ly + oh / 2) / oh) * srcH);
           if (sx >= 0 && sx < srcW && sy >= 0 && sy < srcH) {
             const ctx = ov.imageCvs.getContext("2d", { willReadFrequently: true });
             const px = ctx.getImageData(sx, sy, 1, 1).data;
@@ -3050,7 +3089,7 @@ function createWidget(node) {
       return -1;
     }
     function _ovScreenRect(ov) {
-      // Compute screen rect of an overlay given current frame geometry
+      // Compute screen rect of an overlay (unrotated dims + centre)
       const srcW = ov.imageCvs.width, srcH = ov.imageCvs.height;
       const aspect = srcW / srcH;
       // Base size: fit within frame while preserving aspect
@@ -3058,9 +3097,11 @@ function createWidget(node) {
       if (aspect >= frameW / frameH) { baseW = frameW; baseH = frameW / aspect; }
       else                            { baseH = frameH; baseW = frameH * aspect; }
       const ow = baseW * ov.scale, oh = baseH * ov.scale;
-      const ox = frameCX + ov.x - ow / 2;
-      const oy = frameCY + ov.y - oh / 2;
-      return { ox, oy, ow, oh };
+      const ocx = frameCX + ov.x;  // centre x in canvas space
+      const ocy = frameCY + ov.y;  // centre y in canvas space
+      const ox = ocx - ow / 2;
+      const oy = ocy - oh / 2;
+      return { ox, oy, ow, oh, ocx, ocy };
     }
 
     /** Bake all overlays into a full WYSIWYG composite and load it as a
@@ -3127,10 +3168,14 @@ function createWidget(node) {
       const scX = wpX / frameW, scY = wpY / frameH;
       const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
       for (const ov of edOverlays) {
-        const { ox, oy, ow, oh } = _ovScreenRect(ov);
-        cc.drawImage(ov.imageCvs,
-          (ox - fx) * scX, (oy - fy) * scY,
-          ow * scX, oh * scY);
+        const { ow, oh, ocx, ocy } = _ovScreenRect(ov);
+        const cx = (ocx - fx) * scX, cy = (ocy - fy) * scY;
+        const dw = ow * scX, dh = oh * scY;
+        cc.save();
+        cc.translate(cx, cy);
+        cc.rotate((ov.rotate || 0) * Math.PI / 180);
+        cc.drawImage(ov.imageCvs, -dw / 2, -dh / 2, dw, dh);
+        cc.restore();
       }
 
       // ── 5. Apply composite as new base image (SYNCHRONOUS) ──
@@ -5007,6 +5052,7 @@ function createWidget(node) {
         imageCvs: clone,
         x: 0, y: 0,      // offset from frame centre
         scale: 1.0,
+        rotate: 0,        // degrees CW
       });
       _ovSelected = edOverlays.length - 1;
       _syncOverlayList();
@@ -5043,7 +5089,9 @@ function createWidget(node) {
         row.addEventListener("mouseleave", () => { row.style.background = isSel ? "#1a2a3a" : "#1e1e1e"; });
         row.addEventListener("click", () => { _ovSelected = i; _syncOverlayList(); redraw(); });
         const lbl = document.createElement("span");
-        lbl.textContent = `Layer ${i + 1}`;
+        const scPct = Math.round(ov.scale * 100);
+        const rotDeg = Math.round(ov.rotate || 0);
+        lbl.textContent = `Layer ${i + 1}  ${scPct}%${rotDeg ? ` ${rotDeg}°` : ''}`;
         lbl.style.cssText = "user-select:none;flex:1;";
         row.appendChild(lbl);
         const delB = document.createElement("span");
@@ -5511,24 +5559,43 @@ function createWidget(node) {
         // ── Render paste overlays ──
         for (let oi = 0; oi < edOverlays.length; oi++) {
           const ov = edOverlays[oi];
-          const { ox, oy, ow, oh } = _ovScreenRect(ov);
+          const { ow, oh, ocx, ocy } = _ovScreenRect(ov);
+          const rad = (ov.rotate || 0) * Math.PI / 180;
           ctx.save();
           // Clip to frame so overlays don't bleed outside
           ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.clip();
           ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-          ctx.drawImage(ov.imageCvs, ox, oy, ow, oh);
-          // Selection border
+          // Rotate around overlay centre
+          ctx.translate(ocx, ocy);
+          ctx.rotate(rad);
+          ctx.drawImage(ov.imageCvs, -ow / 2, -oh / 2, ow, oh);
+          // Selection UI (drawn in rotated space)
           if (oi === _ovSelected) {
-            ctx.strokeStyle = "#5a9aff"; ctx.lineWidth = 2; ctx.setLineDash([6, 3]);
-            ctx.strokeRect(ox, oy, ow, oh);
+            const hw = ow / 2, hh = oh / 2;
+            const hr = _OV_HANDLE_RADIUS;
+            // Dashed selection border
+            ctx.strokeStyle = "#5a9aff"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
+            ctx.strokeRect(-hw, -hh, ow, oh);
             ctx.setLineDash([]);
-            // Corner handles
-            const hs = 6;
-            ctx.fillStyle = "#5a9aff";
-            ctx.fillRect(ox - hs/2, oy - hs/2, hs, hs);
-            ctx.fillRect(ox + ow - hs/2, oy - hs/2, hs, hs);
-            ctx.fillRect(ox - hs/2, oy + oh - hs/2, hs, hs);
-            ctx.fillRect(ox + ow - hs/2, oy + oh - hs/2, hs, hs);
+            // Corner scale handles (white fill, blue stroke)
+            ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#3a7aef"; ctx.lineWidth = 1.5;
+            const corners = [[-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]];
+            for (const [cx, cy] of corners) {
+              ctx.fillRect(cx - hr, cy - hr, hr * 2, hr * 2);
+              ctx.strokeRect(cx - hr, cy - hr, hr * 2, hr * 2);
+            }
+            // Rotation handle — line + circle above top centre
+            const rotY = -hh - _OV_ROT_DISTANCE;
+            ctx.beginPath(); ctx.moveTo(0, -hh); ctx.lineTo(0, rotY);
+            ctx.strokeStyle = "#5a9aff"; ctx.lineWidth = 1; ctx.stroke();
+            ctx.beginPath(); ctx.arc(0, rotY, hr - 1, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff"; ctx.fill();
+            ctx.strokeStyle = "#3a7aef"; ctx.lineWidth = 1.5; ctx.stroke();
+            // Rotation icon (↻) inside circle
+            ctx.fillStyle = "#3a7aef"; ctx.font = `${hr + 2}px system-ui`;
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText("↻", 0.5, rotY + 0.5);
+            ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
           }
           ctx.restore();
         }
@@ -6168,11 +6235,41 @@ function createWidget(node) {
       if (edOverlays.length > 0 && !edPixelTool && !edLassoMode && !edCropMode) {
         const r = cvs.getBoundingClientRect();
         const mx = e.clientX - r.left, my = e.clientY - r.top;
+        // 1. Check handles on currently-selected overlay first
+        const handle = _ovHandleHitTest(mx, my);
+        if (handle) {
+          _edSaveEditOpsState();
+          const ov = edOverlays[_ovSelected];
+          const { ocx, ocy, ow, oh } = _ovScreenRect(ov);
+          if (handle === 'rot') {
+            _ovDrag = { idx: _ovSelected, mode: 'rotate', startMX: mx, startMY: my,
+                        startRotate: ov.rotate || 0, anchorX: ocx, anchorY: ocy };
+            ca.style.cursor = 'grabbing';
+          } else {
+            // Scale from opposite corner
+            const hw = ow / 2, hh = oh / 2;
+            const rad = (ov.rotate || 0) * Math.PI / 180;
+            const cos = Math.cos(rad), sin = Math.sin(rad);
+            // Anchor is the opposite corner in canvas space
+            const opp = { tl: [hw, hh], tr: [-hw, hh], bl: [hw, -hh], br: [-hw, -hh] };
+            const [alx, aly] = opp[handle];
+            _ovDrag = { idx: _ovSelected, mode: 'scale', startMX: mx, startMY: my,
+                        startScale: ov.scale, startX: ov.x, startY: ov.y,
+                        corner: handle,
+                        anchorX: ocx + alx * cos - aly * sin,
+                        anchorY: ocy + alx * sin + aly * cos };
+            ca.style.cursor = 'nwse-resize';
+          }
+          redraw();
+          return;
+        }
+        // 2. Hit-test overlays for move drag
         const hitIdx = _ovHitTest(mx, my);
         if (hitIdx >= 0) {
           _edSaveEditOpsState(); // undoable
           _ovSelected = hitIdx;
-          _ovDrag = { idx: hitIdx, startMX: mx, startMY: my, startX: edOverlays[hitIdx].x, startY: edOverlays[hitIdx].y };
+          _ovDrag = { idx: hitIdx, mode: 'move', startMX: mx, startMY: my,
+                      startX: edOverlays[hitIdx].x, startY: edOverlays[hitIdx].y };
           ca.style.cursor = "move";
           _syncOverlayList(); redraw();
           return;
@@ -6307,14 +6404,61 @@ function createWidget(node) {
         const r = cvs.getBoundingClientRect();
         const mx = e.clientX - r.left, my = e.clientY - r.top;
         const ov = edOverlays[_ovDrag.idx];
-        if (ov) {
+        if (!ov) { _ovDrag = null; return; }
+
+        if (_ovDrag.mode === 'move') {
           ov.x = _ovDrag.startX + (mx - _ovDrag.startMX);
           ov.y = _ovDrag.startY + (my - _ovDrag.startMY);
-          redraw();
+        } else if (_ovDrag.mode === 'scale') {
+          // Scale = ratio of current distance to anchor vs start distance
+          const d0 = Math.hypot(_ovDrag.startMX - _ovDrag.anchorX,
+                                _ovDrag.startMY - _ovDrag.anchorY) || 1;
+          const d1 = Math.hypot(mx - _ovDrag.anchorX, my - _ovDrag.anchorY);
+          const ratio = d1 / d0;
+          ov.scale = Math.max(0.02, Math.min(20, _ovDrag.startScale * ratio));
+          // Keep anchor corner pinned: adjust centre so anchor doesn't move
+          const { ow, oh } = _ovScreenRect(ov);
+          const hw = ow / 2, hh = oh / 2;
+          const rad = (ov.rotate || 0) * Math.PI / 180;
+          const cos = Math.cos(rad), sin = Math.sin(rad);
+          // The anchor's local offset (opposite corner)
+          const opp = { tl: [hw, hh], tr: [-hw, hh], bl: [hw, -hh], br: [-hw, -hh] };
+          const [alx, aly] = opp[_ovDrag.corner];
+          // Where the anchor would be if centre stayed at current ov.x/y
+          const axNow = frameCX + ov.x + alx * cos - aly * sin;
+          const ayNow = frameCY + ov.y + alx * sin + aly * cos;
+          // Shift centre so anchor stays pinned
+          ov.x += (_ovDrag.anchorX - axNow);
+          ov.y += (_ovDrag.anchorY - ayNow);
+        } else if (_ovDrag.mode === 'rotate') {
+          const a0 = Math.atan2(_ovDrag.startMY - _ovDrag.anchorY,
+                                _ovDrag.startMX - _ovDrag.anchorX);
+          const a1 = Math.atan2(my - _ovDrag.anchorY, mx - _ovDrag.anchorX);
+          let deg = _ovDrag.startRotate + (a1 - a0) * 180 / Math.PI;
+          // Snap to 0/90/180/270 when within 3°
+          if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+          else {
+            for (const snap of [0, 90, 180, 270, -90, -180, -270, 360])
+              if (Math.abs(deg - snap) < 3) { deg = snap; break; }
+          }
+          ov.rotate = deg;
         }
+        if (_ovDrag.mode !== 'move') _syncOverlayList(); // live feedback in sidebar
+        redraw();
         return;
       }
       // Pixel tool cursor tracking on canvas
+      // ── Overlay handle cursor feedback ──
+      if (_ovSelected >= 0 && edOverlays.length > 0 && !edPixelTool && !edLassoMode && !edCropMode) {
+        const r = cvs.getBoundingClientRect();
+        const mx = e.clientX - r.left, my = e.clientY - r.top;
+        const hh = _ovHandleHitTest(mx, my);
+        if (hh === 'rot') { ca.style.cursor = 'grab'; return; }
+        if (hh) {
+          const cursors = { tl: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize', br: 'nwse-resize' };
+          ca.style.cursor = cursors[hh] || 'pointer'; return;
+        }
+      }
       if (edPixelTool) {
         const r = cvs.getBoundingClientRect();
         let cx = e.clientX - r.left, cy = e.clientY - r.top;
