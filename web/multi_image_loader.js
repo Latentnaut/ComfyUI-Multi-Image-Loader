@@ -4925,8 +4925,21 @@ function createWidget(node) {
       _syncPixelToolUI();
       // Reset bg
       edBg=getEffectiveBgColor();
-      // Restore original image (undo rembg)
-      await doRembgReset();
+      // Clear session data for this image so flatten state is gone
+      const fn = items[curIdx]?.filename;
+      if (fn && ses[fn]) delete ses[fn];
+      // Try to restore server-side rembg backup (best effort)
+      try { await doRembgReset(); } catch(e) { /* ignore rembg errors */ }
+      // Always reload original image from source (undo flatten/rembg in canvas)
+      await new Promise(res => {
+        const el = new Image(); el.crossOrigin = "anonymous";
+        el.onload = () => {
+          edImg = el; edNatW = el.naturalWidth; edNatH = el.naturalHeight;
+          syncCvs(); res();
+        };
+        el.onerror = res;
+        el.src = items[curIdx].src;
+      });
       // Sync all UI
       syncCropToggle(); syncLassoToggle(); syncLassoInvertBtn(); syncRotUI(); syncBgUI(); syncFlipUI();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
