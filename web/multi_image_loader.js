@@ -3575,9 +3575,24 @@ function createWidget(node) {
     const cropApplyB = document.createElement("button");
     cropApplyB.textContent = "\u2702 Crop";
     cropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:center;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;margin-top:${_gap5};`;
-    cropApplyB.addEventListener("mouseenter", () => { if(edCropMode || edCropBox) { cropApplyB.style.background="#2a5a3a"; cropApplyB.style.color="#55ee99"; cropApplyB.style.borderColor="#55ee99"; } });
+    cropApplyB.addEventListener("mouseenter", () => { if(edCropMode || edCropBox || edLassoOps.length > 0) { cropApplyB.style.background="#2a5a3a"; cropApplyB.style.color="#55ee99"; cropApplyB.style.borderColor="#55ee99"; } });
     cropApplyB.addEventListener("mouseleave", () => { syncSelToolRow(); });
     cropApplyB.addEventListener("click", () => {
+      // If no marquee box but lasso ops exist, compute bounding box from lasso points
+      if (!edCropBox && edLassoOps.length > 0) {
+        let minX = 1, minY = 1, maxX = 0, maxY = 0;
+        for (const op of edLassoOps) {
+          for (const pt of op.points) {
+            if (pt[0] < minX) minX = pt[0];
+            if (pt[1] < minY) minY = pt[1];
+            if (pt[0] > maxX) maxX = pt[0];
+            if (pt[1] > maxY) maxY = pt[1];
+          }
+        }
+        if (maxX > minX && maxY > minY) {
+          edCropBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        }
+      }
       if (!edCropBox) return;
       _edSaveEditOpsState();
       // Compose with any existing applied crop
@@ -4986,8 +5001,8 @@ function createWidget(node) {
         flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
       };
       if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
-      if (edLassoOps.length > 0) { transform.lassoOps = edLassoOps; }
-      if (edLassoInverted) { transform.lassoInverted = true; }
+      if (edLassoOps.length > 0 && edLassoIsPaint) { transform.lassoOps = edLassoOps; }
+      if (edLassoInverted && edLassoIsPaint) { transform.lassoInverted = true; }
       const fn = items[curIdx]?.filename ?? "";
       const fitMode = getFitModeWidget()?.value ?? "letterbox";
       const cacheKey = JSON.stringify(transform) + "|" + fn + "|" + fitMode;
@@ -5373,7 +5388,10 @@ function createWidget(node) {
       if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
-        if (hasLasso && !edLassoIsPaint) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
+        // Lasso ops in edit mode (non-paint) are visual-only selections;
+      // they become crop regions only when the Crop button is pressed.
+      // Do NOT serialize them so the backend doesn't auto-apply a lasso mask.
+      if (hasLasso && edLassoIsPaint) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
         ses[fn] = t;
       } else delete ses[fn];
