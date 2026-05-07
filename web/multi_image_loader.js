@@ -3149,8 +3149,10 @@ function createWidget(node) {
       edImg = comp;
       edNatW = wpX; edNatH = wpY;
 
+      // Persist composite so saveToSes() can serialize it
+      _edFlattenDataUrl = comp.toDataURL("image/webp", 0.92);
+
       // Async: replace with proper Image element for full API compatibility
-      const dataUrl = comp.toDataURL("image/png");
       const newImg = new Image();
       newImg.onload = () => {
         edImg = newImg;
@@ -3158,7 +3160,7 @@ function createWidget(node) {
         edNatH = newImg.naturalHeight;
         redraw();
       };
-      newImg.src = dataUrl;
+      newImg.src = _edFlattenDataUrl;
 
       syncCvs();
       redraw();
@@ -4126,6 +4128,7 @@ function createWidget(node) {
     let edBrushHardness = parseFloat(localStorage.getItem("mil_brush_hardness") ?? "0.5");
     if (isNaN(edBrushHardness) || edBrushHardness < 0 || edBrushHardness > 1) edBrushHardness = 0.5;
     let _edCvsEditsPx = null;
+    let _edFlattenDataUrl = null;  // composite data URL from overlay flatten
     let _edEditsUndoStack = [];
     let _edSmudgeBuf = null;
     let _edSmudgeStr = 0.5;
@@ -4259,7 +4262,7 @@ function createWidget(node) {
     updateLassoInfoLbl = updateSelInfoLbl;
 
     secPixels.appendChild(mkSec("Image Tools", () => {
-      edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
+      edPixelTool = null; _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
       _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = [];
       _syncPixelToolUI(); redraw();
     }, "Reset all pixel edits"));
@@ -4868,7 +4871,7 @@ function createWidget(node) {
       edLassoOps=[]; edLassoInverted=false; edLassoCurrentPts=[]; edLassoDrawing=false;
       _lassoChanged(); _lassoCursorNorm=null; stopLassoAnts();
       // Reset pixel edits
-      edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
+      edPixelTool = null; _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = [];
       _edOpsUndoStack = []; _edOpsRedoStack = [];
       _edSmudgeBuf = null; _edCloneBuffer = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
       _syncPixelToolUI();
@@ -4927,7 +4930,7 @@ function createWidget(node) {
     copyB.addEventListener("click", () => {
       if (!edImg) return;
       // Ensure pixel canvas is up to date with current transforms
-      _edCvsEditsPx = null;   // force full re-bake
+      _edCvsEditsPx = null; _edFlattenDataUrl = null;   // force full re-bake
       syncCvs();              // recalc bFit etc.
       _edEnsureEditsPx();     // renders image → _edCvsEditsPx
       // Capture a standalone clone of the fully-rendered image
@@ -5766,14 +5769,16 @@ function createWidget(node) {
       const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
       const hasLasso = edLassoOps.length > 0 || edLassoInverted;
       const hasPixelEdits = !!_edCvsEditsPx;
+      const hasFlatten = !!_edFlattenDataUrl;
       const nodeBg = getEffectiveBgColor();
-      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
+      if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits||hasFlatten) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
         // Lasso ops from all selection tools (marquee, freehand, polygonal) define mask regions
       // and are always serialized so the backend applies the selection mask.
       if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
+        else if (hasFlatten) { t.imageEditsDataUrl = _edFlattenDataUrl; }
         ses[fn] = t;
       } else delete ses[fn];
     }
@@ -5796,7 +5801,7 @@ function createWidget(node) {
         el.onload=()=>{
           edImg=el; edNatW=el.naturalWidth; edNatH=el.naturalHeight;
           // Reset pixel tool state on image switch
-          edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
+          edPixelTool = null; _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = [];
           _edSmudgeBuf = null; _edCloneBuffer = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
           _syncPixelToolUI();
           const t=ses[items[idx].filename];
@@ -5816,12 +5821,23 @@ function createWidget(node) {
           edInpaintPreview=null; edInpaintDirty=true;
           // Restore pixel edits from session
           if (t && t.imageEditsDataUrl) {
+            const isFlattenComposite = !(t.cx != null);  // flatten clears crop
             try {
               const pxImg = new Image();
               pxImg.onload = () => {
-                _edCvsEditsPx = document.createElement("canvas");
-                _edCvsEditsPx.width = pxImg.naturalWidth; _edCvsEditsPx.height = pxImg.naturalHeight;
-                _edCvsEditsPx.getContext("2d").drawImage(pxImg, 0, 0);
+                if (isFlattenComposite) {
+                  // Flatten composite: replace edImg entirely (different aspect)
+                  edImg = pxImg;
+                  edNatW = pxImg.naturalWidth; edNatH = pxImg.naturalHeight;
+                  _edFlattenDataUrl = t.imageEditsDataUrl;
+                  _edCvsEditsPx = null;
+                  syncCvs();
+                } else {
+                  // Normal pixel edits: overlay on base image
+                  _edCvsEditsPx = document.createElement("canvas");
+                  _edCvsEditsPx.width = pxImg.naturalWidth; _edCvsEditsPx.height = pxImg.naturalHeight;
+                  _edCvsEditsPx.getContext("2d").drawImage(pxImg, 0, 0);
+                }
                 redraw();
               };
               pxImg.src = t.imageEditsDataUrl;
