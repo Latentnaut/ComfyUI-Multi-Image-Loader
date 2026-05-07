@@ -3064,28 +3064,55 @@ function createWidget(node) {
     }
 
     /** Bake all overlays into _edCvsEditsPx and clear the overlay array.
-     *  Maps overlay screen positions relative to the image center/size,
-     *  NOT the frame, so letterbox padding is handled correctly. */
+     *  Maps overlay screen positions to the pixel canvas coordinate system,
+     *  handling both the FAST PATH (image fills canvas) and FULL COMPOSITE
+     *  (image centered with offset/rotation/flip) correctly. */
     function _ovBakeIntoPixelCvs() {
       if (edOverlays.length === 0) return;
+      syncCvs(); // ensure bFit, frameW, frameH, frameCX, frameCY are fresh
       _edEnsureEditsPx();
       const ctx = _edCvsEditsPx.getContext("2d");
       const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
-      // Image render rect on screen (center = frameCX+dOX, size = dw×dh)
+
+      // Screen image rect
       const { dw, dh } = _imgRenderDims();
       const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+      const imgLeft = imgCX - dw / 2, imgTop = imgCY - dh / 2;
+
+      // Detect which path _edEnsureEditsPx took
+      const hasOffset = (dOX !== 0 || dOY !== 0);
+      const hasScale  = (edScale !== 1.0 || edScaleX !== 1.0 || edScaleY !== 1.0);
+      const hasFlip   = (edFlipH || edFlipV);
+      const hasRot    = (edRotate !== 0);
+      const hasLasso  = (edLassoOps.length > 0 || edLassoInverted);
+      const hasTransforms = hasOffset || hasScale || hasFlip || hasRot || hasLasso;
+
       for (const ov of edOverlays) {
         const { ox, oy, ow, oh } = _ovScreenRect(ov);
-        // Map overlay rect from screen-space to image-relative coords
-        // Image left edge on screen = imgCX - dw/2, top = imgCY - dh/2
-        const relX = (ox - (imgCX - dw / 2)) / dw;  // 0..1 within image
-        const relY = (oy - (imgCY - dh / 2)) / dh;
-        const relW = ow / dw;
-        const relH = oh / dh;
-        ctx.drawImage(ov.imageCvs, relX * pxW, relY * pxH, relW * pxW, relH * pxH);
+
+        if (!hasTransforms) {
+          // FAST PATH: image fills entire pixel canvas (0,0,pxW,pxH)
+          // Map overlay from screen image-relative to pixel canvas
+          const relX = (ox - imgLeft) / dw;
+          const relY = (oy - imgTop) / dh;
+          const relW = ow / dw;
+          const relH = oh / dh;
+          ctx.drawImage(ov.imageCvs, relX * pxW, relY * pxH, relW * pxW, relH * pxH);
+        } else {
+          // FULL COMPOSITE: pixel canvas has bg fill + centered image with transforms
+          // The frame maps 1:1 to the pixel canvas proportionally
+          const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+          const scX = pxW / frameW, scY = pxH / frameH;
+          const dx = (ox - fx) * scX;
+          const dy = (oy - fy) * scY;
+          const dw2 = ow * scX;
+          const dh2 = oh * scY;
+          ctx.drawImage(ov.imageCvs, dx, dy, dw2, dh2);
+        }
       }
       edOverlays = []; _ovSelected = -1;
     }
+
 
     // Lasso state
     let edLassoMode = false;
