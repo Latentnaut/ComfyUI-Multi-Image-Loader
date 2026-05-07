@@ -1491,7 +1491,7 @@ function createWidget(node) {
         opacity:0;transition:opacity 0.15s;
         z-index:3;
       `;
-      removeBtn.addEventListener("click", (e) => {
+      removeBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         pushUndoState();
         
@@ -1501,10 +1501,13 @@ function createWidget(node) {
         }
         
         for (const i of toRemove) {
+          const fn = items[i]?.filename;
+          if (fn) delete cropMap[fn];
           items.splice(i, 1);
         }
-        items.forEach((it) => delete it.previewSrc);
-        previewActive = false;
+        // Don't clear ALL previewSrc — only removed items are gone.
+        // Re-check if any remaining items still have previews.
+        previewActive = items.some(it => it.previewSrc);
         
         selectedIndices.clear();
         selectedIdx = null;
@@ -1514,6 +1517,8 @@ function createWidget(node) {
         flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
         render();
         persist();
+        await renderFitPreviews();
+        await renderCropPreviews();
       });
 
       // ── drag-to-reorder events ────────────────────────────────────────────
@@ -2659,7 +2664,7 @@ function createWidget(node) {
   root._getCachedBlob    = () => (_cachedCopyIdx === selectedIdx && _cachedCopyBlob) ? _cachedCopyBlob : null;
   root._undo             = popUndoState;
   
-  root._removeSelectedItems = () => {
+  root._removeSelectedItems = async () => {
     if (selectedIdx === null) return;
     pushUndoState();
     
@@ -2669,10 +2674,12 @@ function createWidget(node) {
     }
     
     for (const i of toRemove) {
+      const fn = items[i]?.filename;
+      if (fn) delete cropMap[fn];
       items.splice(i, 1);
     }
-    items.forEach((it) => delete it.previewSrc);
-    previewActive = false;
+    // Don't clear ALL previewSrc — only removed items are gone.
+    previewActive = items.some(it => it.previewSrc);
     
     selectedIndices.clear();
     selectedIdx = null;
@@ -2682,6 +2689,8 @@ function createWidget(node) {
     if (typeof flashStatusMessage === "function") flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
     render();
     persist();
+    await renderFitPreviews();
+    await renderCropPreviews();
   };
 
   root._copySelected     = async () => {
@@ -2920,6 +2929,9 @@ function createWidget(node) {
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
         dOX, dOY, scale: edScale,
         pixelCvs: _edCvsEditsPx,
+        lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
+        lassoInverted: edLassoInverted,
+        lassoIsPaint: edLassoIsPaint,
       });
       if (_edOpsUndoStack.length > 30) _edOpsUndoStack.shift();
       _edOpsRedoStack = [];
@@ -2931,15 +2943,22 @@ function createWidget(node) {
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
         dOX, dOY, scale: edScale,
         pixelCvs: _edCvsEditsPx,
+        lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
+        lassoInverted: edLassoInverted,
+        lassoIsPaint: edLassoIsPaint,
       });
       const s = _edOpsUndoStack.pop();
       edAppliedCrop = s.crop; edRotate = s.rotate;
       edFlipH = s.flipH; edFlipV = s.flipV; edBg = s.bg;
       dOX = s.dOX; dOY = s.dOY; edScale = s.scale;
       _edCvsEditsPx = s.pixelCvs;
+      edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
+      _lassoChanged();
+      if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
       syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI();
-      updateDimLabels(); updateCropInfoLbl(); updLbl();
+      if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
       syncCvs(); redraw(); requestInpaintPreview();
     }
@@ -2950,15 +2969,22 @@ function createWidget(node) {
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
         dOX, dOY, scale: edScale,
         pixelCvs: _edCvsEditsPx,
+        lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
+        lassoInverted: edLassoInverted,
+        lassoIsPaint: edLassoIsPaint,
       });
       const s = _edOpsRedoStack.pop();
       edAppliedCrop = s.crop; edRotate = s.rotate;
       edFlipH = s.flipH; edFlipV = s.flipV; edBg = s.bg;
       dOX = s.dOX; dOY = s.dOY; edScale = s.scale;
       _edCvsEditsPx = s.pixelCvs;
+      edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
+      _lassoChanged();
+      if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
       syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI();
-      updateDimLabels(); updateCropInfoLbl(); updLbl();
+      if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
+      updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
       syncCvs(); redraw(); requestInpaintPreview();
     }
@@ -2978,7 +3004,7 @@ function createWidget(node) {
     let _lassoOverlayBg = null;
     let _lassoMaskDirty = true;
     let _lassoCursorNorm = null;
-    let _lassoShiftAnchorIdx = -1; // index into edLassoCurrentPts when Shift was last pressed
+
     // Reusable temp canvas for brush clipping (avoids GC pressure from createElement per mousemove)
     let _brushClipCvs = null; let _brushClipCtx = null; // kept for potential future use
     // ── Path2D lasso clip cache — version counter ensures rebuild whenever selection changes ──
@@ -3477,6 +3503,7 @@ function createWidget(node) {
     lassoInvertB.title = "Invert Selection";
     lassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     lassoInvertB.addEventListener("click", () => {
+      _edSaveEditOpsState();
       edLassoInverted = !edLassoInverted;
       _lassoChanged();
       syncLassoInvertBtn(); requestInpaintPreview(); redraw();
@@ -3487,6 +3514,7 @@ function createWidget(node) {
     lassoDeselectB.title = "Deselect All";
     lassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     lassoDeselectB.addEventListener("click", () => {
+      _edSaveEditOpsState();
       edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false;
       edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
       _lassoChanged(); stopLassoAnts();
@@ -3548,24 +3576,11 @@ function createWidget(node) {
     // (Crop button removed — marquee now creates lasso mask directly)
 
 
-    // ── Orthogonal/45° snap helper ──
-    // dw/dh = rendered image pixel dimensions — required for aspect-correct angles.
-    // Without them, 45° in normalized space looks visually wrong for non-square images.
-    function _snapOrtho45(lastPt, nx, ny, dw, dh) {
-      if (!lastPt) return { x: nx, y: ny };
-      const pw = dw || 1, ph = dh || 1;
-      // Convert to canvas pixels for correct visual angle calculation
-      const dpx = (nx - lastPt.x) * pw, dpy = (ny - lastPt.y) * ph;
-      const angle = Math.atan2(dpy, dpx);
-      const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4); // nearest 45°
-      const dist = Math.hypot(dpx, dpy);
-      // Convert snapped result back to normalized coordinates
-      return { x: lastPt.x + dist * Math.cos(snap) / pw, y: lastPt.y + dist * Math.sin(snap) / ph };
-    }
 
     // ── Commit a completed polygon/freehand shape ──
     function commitLassoShape(points, e) {
       if (points.length < 3) return;
+      _edSaveEditOpsState();
       const normalized = points.map(p => [p.x, p.y]);
       let mode = "add";
       if (e && e.altKey) mode = "subtract";
@@ -4041,6 +4056,7 @@ function createWidget(node) {
     pxLassoInvertB.title = "Invert Selection";
     pxLassoInvertB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoInvertB.addEventListener("click", () => {
+      _edSaveEditOpsState();
       edLassoInverted = !edLassoInverted;
       _lassoChanged();
       syncLassoInvertBtn(); requestInpaintPreview(); redraw();
@@ -4052,6 +4068,7 @@ function createWidget(node) {
     pxLassoDeselectB.style.cssText = `flex:1;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW};font-size:${_fs10};cursor:pointer;transition:background 0.15s;display:flex;align-items:center;justify-content:center;`;
     pxLassoDeselectB.addEventListener("click", () => {
       if (edAppliedCrop && edPanelMode !== "pixels") return;
+      _edSaveEditOpsState();
       edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false; _lassoChanged();
       syncLassoInvertBtn(); requestInpaintPreview(); redraw();
     });
@@ -4813,10 +4830,15 @@ function createWidget(node) {
       const x1 = Math.min(d.anchorX, d.curX), y1 = Math.min(d.anchorY, d.curY);
       const x2 = Math.max(d.anchorX, d.curX), y2 = Math.max(d.anchorY, d.curY);
       if (x2 - x1 < 0.003 || y2 - y1 < 0.003) return;
-      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
-      const bx = fx + x1 * frameW, by = fy + y1 * frameH;
-      const bw = (x2 - x1) * frameW, bh = (y2 - y1) * frameH;
+      // Render in image-space (same transform as cropPxToNorm uses)
+      const { dw, dh } = _imgRenderDims();
       ctx.save();
+      ctx.translate(frameCX + dOX, frameCY + dOY);
+      ctx.rotate(edRotate * Math.PI / 180);
+      ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
+      // Normalized coords → image-local pixels (origin at -dw/2, -dh/2)
+      const bx = (x1 - 0.5) * dw, by = (y1 - 0.5) * dh;
+      const bw = (x2 - x1) * dw, bh = (y2 - y1) * dh;
       // Dashed selection border
       ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
       ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
@@ -4867,15 +4889,98 @@ function createWidget(node) {
       const fm = getFitModeWidget()?.value ?? "letterbox";
       return fm === "crop" ? Math.max(frameW/rW, frameH/rH) : Math.min(frameW/rW, frameH/rH);
     }
+    // ── Lasso bounding-box (normalized 0..1) ──
+    // Returns null if no non-paint lasso selection is active.
+    function _lassoBBox() {
+      if (edLassoOps.length === 0 || edLassoIsPaint) return null;
+      // For simple additive-only selections (no invert, no subtract),
+      // compute the analytical bounding box directly from vertex coords.
+      // This avoids rasterization quantization errors.
+      const hasSubtract = edLassoOps.some(op => op.mode === "subtract");
+      if (!edLassoInverted && !hasSubtract) {
+        let minX = 1, minY = 1, maxX = 0, maxY = 0;
+        for (const op of edLassoOps) {
+          for (const pt of op.points) {
+            if (pt[0] < minX) minX = pt[0];
+            if (pt[0] > maxX) maxX = pt[0];
+            if (pt[1] < minY) minY = pt[1];
+            if (pt[1] > maxY) maxY = pt[1];
+          }
+        }
+        if (maxX <= minX || maxY <= minY) return null;
+        return { x1: minX, y1: minY, x2: maxX, y2: maxY };
+      }
+      // Complex case (subtract/invert): rasterize at higher resolution
+      const S = 512;
+      const tc = document.createElement('canvas'); tc.width = S; tc.height = S;
+      const tx = tc.getContext('2d');
+      tx.clearRect(0, 0, S, S);
+      for (const op of edLassoOps) {
+        if (op.points.length < 3) continue;
+        tx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
+        tx.fillStyle = "white"; tx.beginPath();
+        tx.moveTo(op.points[0][0] * S, op.points[0][1] * S);
+        for (let k = 1; k < op.points.length; k++) tx.lineTo(op.points[k][0] * S, op.points[k][1] * S);
+        tx.closePath(); tx.fill();
+      }
+      if (edLassoInverted) { tx.globalCompositeOperation = "xor"; tx.fillStyle = "white"; tx.fillRect(0, 0, S, S); }
+      const id = tx.getImageData(0, 0, S, S).data;
+      let minX = S, minY = S, maxX = 0, maxY = 0;
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        if (id[(y * S + x) * 4 + 3] > 128) {
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+      if (maxX < minX) return null; // empty mask
+      return { x1: minX / S, y1: minY / S, x2: (maxX + 1) / S, y2: (maxY + 1) / S };
+    }
+
+    // ── Fit helpers that respect lasso selection ──
+    // When a lasso bbox exists, scale/offset are computed so the bbox fills/fits the frame.
+    function _fitToLassoBBox(targetAxis) {
+      // targetAxis: "both" | "w" | "h"
+      const bb = _lassoBBox();
+      if (!bb) return false; // no lasso → caller falls through to normal fit
+      const eW = effNatW(), eH = effNatH();
+      const bf = _bfitOf(_rotDims().rW, _rotDims().rH);
+      // Bounding box size in image-native pixels
+      const bbW = (bb.x2 - bb.x1) * eW, bbH = (bb.y2 - bb.y1) * eH;
+      // Account for rotation
+      const rf = edRotate * Math.PI / 180;
+      const cosR = Math.abs(Math.cos(rf)), sinR = Math.abs(Math.sin(rf));
+      const rotBBW = bbW * cosR + bbH * sinR;
+      const rotBBH = bbW * sinR + bbH * cosR;
+      // Required scale so the rotated BB fits/fills the frame
+      let newScale;
+      if (targetAxis === "w") newScale = frameW / (rotBBW * bf);
+      else if (targetAxis === "h") newScale = frameH / (rotBBH * bf);
+      else newScale = Math.max(frameW / (rotBBW * bf), frameH / (rotBBH * bf));
+      edScale = newScale;
+      // Use the canonical _normToCanvas to find where bb center lands with dOX=dOY=0,
+      // then set offset so it lands at frameCX, frameCY.
+      dOX = 0; dOY = 0;
+      const bbMidNx = (bb.x1 + bb.x2) / 2, bbMidNy = (bb.y1 + bb.y2) / 2;
+      const { dw, dh } = _imgRenderDims();
+      const landed = _normToCanvas(bbMidNx, bbMidNy, dw, dh);
+      dOX = frameCX - landed.cx;
+      dOY = frameCY - landed.cy;
+      syncScaleUI(); updLbl();
+      return true;
+    }
+
     function doFill() {
+      if (_fitToLassoBBox("both")) { redraw(); return; }
       const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
       dOX=0;dOY=0; edScale=Math.max(frameW/(rW*bf),frameH/(rH*bf)); syncScaleUI(); updLbl();
     }
     function doFitW() {
+      if (_fitToLassoBBox("w")) { redraw(); return; }
       const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
       dOX=0;dOY=0; edScale=frameW/(rW*bf); syncScaleUI(); updLbl();
     }
     function doFitH() {
+      if (_fitToLassoBBox("h")) { redraw(); return; }
       const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
       dOX=0;dOY=0; edScale=frameH/(rH*bf); syncScaleUI(); updLbl();
     }
@@ -5004,11 +5109,9 @@ function createWidget(node) {
               ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
               ctx.drawImage(_edCvsEditsPx, -dw/2, -dh/2, dw, dh);
             }
-            // Lasso mask overlay — show bg color outside selection.
-            // In pixels mode: only shown before pixel edits start (_edCvsEditsPx==null),
-            // because once initialized, the lasso is already baked into _edCvsEditsPx.
+            // Lasso mask overlay — show bg color outside selection in all modes.
             const showLassoOverlay = (edLassoOps.length > 0 || edLassoInverted) &&
-              (edPanelMode !== "pixels");
+              !edLassoIsPaint;
             if (showLassoOverlay) {
               const mw = Math.ceil(dw), mh = Math.ceil(dh);
               // Build mask canvas (white = inside selection)
@@ -5507,31 +5610,13 @@ function createWidget(node) {
           redraw(); return;
         }
         if (edLassoTool === "freehand" && edLassoDrawing) {
-          const { dw: _sdw, dh: _sdh } = _imgRenderDims();
-          if (e.shiftKey) {
-            // Shift held: lock to a straight snapped segment from anchor
-            if (_lassoShiftAnchorIdx < 0) _lassoShiftAnchorIdx = edLassoCurrentPts.length - 1;
-            const anchor = edLassoCurrentPts[Math.max(0, _lassoShiftAnchorIdx)];
-            edLassoCurrentPts = edLassoCurrentPts.slice(0, _lassoShiftAnchorIdx + 1);
-            edLassoCurrentPts.push({ x: cNx, y: cNy }); // straight line to cursor, no angle constraint
-          } else if (_lassoShiftAnchorIdx >= 0) {
-            // Shift just released: snapped endpoint already committed — just exit shift mode
-            _lassoShiftAnchorIdx = -1;
-            // No push: the committed snapped point is the pivot; free drawing resumes next move
-          } else {
-            // Normal free drawing
-            edLassoCurrentPts.push({ x: cNx, y: cNy });
-          }
+          // Normal free drawing — Shift/Alt only affect mode on commit
+          edLassoCurrentPts.push({ x: cNx, y: cNy });
           redraw(); return;
         }
         if (edLassoTool === "polygonal" && edLassoCurrentPts.length > 0) {
-          const last = edLassoCurrentPts[edLassoCurrentPts.length - 1];
-          if (e.shiftKey) {
-            const { dw: _sdw, dh: _sdh } = _imgRenderDims();
-            _lassoCursorNorm = _snapOrtho45(last, cNx, cNy, _sdw, _sdh);
-          } else {
-            _lassoCursorNorm = { x: cNx, y: cNy };
-          }
+          // Shift/Alt only affect mode on commit — no snap during draw
+          _lassoCursorNorm = { x: cNx, y: cNy };
           redraw(); return;
         }
         return; // lasso mode active — don't pan
@@ -5754,7 +5839,7 @@ function createWidget(node) {
           _marqueeRectDrag = { anchorX: cNx, anchorY: cNy, curX: cNx, curY: cNy };
           edLassoDrawing = true; ca.style.cursor = 'crosshair';
         } else if (edLassoTool === "freehand") {
-          edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; _lassoShiftAnchorIdx = -1; ca.style.cursor = 'crosshair';
+          edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; ca.style.cursor = 'crosshair';
         } else {
           if (edLassoCurrentPts.length >= 3) {
             const { dw: _cdw, dh: _cdh } = _imgRenderDims();
@@ -5762,11 +5847,8 @@ function createWidget(node) {
             const d = Math.hypot(cx - p0c.cx, cy - p0c.cy); // distance in canvas pixels
             if (d < 10) { commitLassoShape(edLassoCurrentPts, e); return; }
           }
-          edLassoCurrentPts.push(
-            e.shiftKey && edLassoCurrentPts.length > 0
-              ? _snapOrtho45(edLassoCurrentPts[edLassoCurrentPts.length - 1], cNx, cNy, _cdw, _cdh)
-              : { x: cNx, y: cNy }
-          ); redraw();
+          edLassoCurrentPts.push({ x: cNx, y: cNy });
+          redraw();
         }
         return;
       }
@@ -5854,24 +5936,30 @@ function createWidget(node) {
       // Ctrl+D: deselect
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         e.preventDefault(); e.stopImmediatePropagation();
+        _edSaveEditOpsState();
         edLassoOps = []; edLassoIsPaint = false; edLassoInverted = false; _lassoChanged();
         if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
         requestInpaintPreview(); redraw(); return;
       }
-      // Ctrl+Shift+Z: redo pixel edits
+      // Ctrl+Shift+Z: redo
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) {
         e.preventDefault(); e.stopImmediatePropagation();
-        if (typeof _edRedoEdits !== 'undefined') _edRedoEdits(); return;
+        if (edPanelMode === "pixels" && _edEditsRedoStack.length > 0) { _edRedoEdits(); }
+        else { _edRedoEditOps(); }
+        return;
       }
-      // Ctrl+Z: undo pixel edits
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && edPixelTool && _edEditsUndoStack.length > 0) {
+      // Ctrl+Z: undo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault(); e.stopImmediatePropagation();
-        _edUndoEdits(); return;
+        if (edPanelMode === "pixels" && _edEditsUndoStack.length > 0) { _edUndoEdits(); }
+        else { _edUndoEditOps(); }
+        return;
       }
       // Ctrl+I: Invert selection
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "i") {
         e.preventDefault(); e.stopImmediatePropagation();
         if (edLassoOps.length > 0) {
+          _edSaveEditOpsState();
           edLassoInverted = !edLassoInverted; _lassoChanged();
           if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
           requestInpaintPreview(); redraw();
@@ -5988,7 +6076,13 @@ function createWidget(node) {
         }
       }
       persistCropData(); persist(); doClose();
-      renderCropPreviews();  // async: update thumbnails with crop applied
+      // DEBUG: trace lasso data commit
+      const _dbgFn = items[curIdx]?.filename;
+      const _dbgT = cropMap[_dbgFn];
+      console.log("[MIL doApply] fn:", _dbgFn, "cropMap entry:", _dbgT,
+        "hasLassoOps:", !!(_dbgT?.lassoOps?.length),
+        "hasCrop:", hasCrop(_dbgFn));
+      renderFitPreviews().then(() => renderCropPreviews());  // async: update thumbnails
     }
     applyB.addEventListener("click",  doApply);
     cancelB.addEventListener("click", doClose);
