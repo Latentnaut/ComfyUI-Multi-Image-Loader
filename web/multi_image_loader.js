@@ -2927,7 +2927,7 @@ function createWidget(node) {
       _edOpsUndoStack.push({
         crop: edAppliedCrop ? {...edAppliedCrop} : null,
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
-        dOX, dOY, scale: edScale,
+        dOX, dOY, scale: edScale, scaleX: edScaleX, scaleY: edScaleY,
         pixelCvs: _edCvsEditsPx,
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
@@ -2941,7 +2941,7 @@ function createWidget(node) {
       _edOpsRedoStack.push({
         crop: edAppliedCrop ? {...edAppliedCrop} : null,
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
-        dOX, dOY, scale: edScale,
+        dOX, dOY, scale: edScale, scaleX: edScaleX, scaleY: edScaleY,
         pixelCvs: _edCvsEditsPx,
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
@@ -2951,12 +2951,14 @@ function createWidget(node) {
       edAppliedCrop = s.crop; edRotate = s.rotate;
       edFlipH = s.flipH; edFlipV = s.flipV; edBg = s.bg;
       dOX = s.dOX; dOY = s.dOY; edScale = s.scale;
+      edScaleX = s.scaleX ?? 1; edScaleY = s.scaleY ?? 1;
       _edCvsEditsPx = s.pixelCvs;
       edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
       _lassoChanged();
       if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
-      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI();
+      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI();
+      syncLassoToggle();
       if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
@@ -2967,7 +2969,7 @@ function createWidget(node) {
       _edOpsUndoStack.push({
         crop: edAppliedCrop ? {...edAppliedCrop} : null,
         rotate: edRotate, flipH: edFlipH, flipV: edFlipV, bg: edBg,
-        dOX, dOY, scale: edScale,
+        dOX, dOY, scale: edScale, scaleX: edScaleX, scaleY: edScaleY,
         pixelCvs: _edCvsEditsPx,
         lassoOps: edLassoOps.map(op => ({ mode: op.mode, points: op.points.map(p => [...p]) })),
         lassoInverted: edLassoInverted,
@@ -2977,12 +2979,14 @@ function createWidget(node) {
       edAppliedCrop = s.crop; edRotate = s.rotate;
       edFlipH = s.flipH; edFlipV = s.flipV; edBg = s.bg;
       dOX = s.dOX; dOY = s.dOY; edScale = s.scale;
+      edScaleX = s.scaleX ?? 1; edScaleY = s.scaleY ?? 1;
       _edCvsEditsPx = s.pixelCvs;
       edLassoOps = s.lassoOps || []; edLassoInverted = !!s.lassoInverted; edLassoIsPaint = !!s.lassoIsPaint;
       _edEditsUndoStack = []; _edEditsRedoStack = [];
       _lassoChanged();
       if (edLassoOps.length > 0) startLassoAnts(); else stopLassoAnts();
-      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI();
+      syncCropToggle(); syncRotUI(); syncFlipUI(); syncBgUI(); syncScaleUI();
+      syncLassoToggle();
       if (typeof syncLassoInvertBtn !== 'undefined') syncLassoInvertBtn();
       updateDimLabels(); updateCropInfoLbl(); updateLassoInfoLbl(); updLbl();
       edInpaintPreview = null; edInpaintDirty = true;
