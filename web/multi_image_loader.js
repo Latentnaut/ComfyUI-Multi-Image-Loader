@@ -3063,6 +3063,30 @@ function createWidget(node) {
       return { ox, oy, ow, oh };
     }
 
+    /** Bake all overlays into _edCvsEditsPx and clear the overlay array.
+     *  Maps overlay screen positions relative to the image center/size,
+     *  NOT the frame, so letterbox padding is handled correctly. */
+    function _ovBakeIntoPixelCvs() {
+      if (edOverlays.length === 0) return;
+      _edEnsureEditsPx();
+      const ctx = _edCvsEditsPx.getContext("2d");
+      const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
+      // Image render rect on screen (center = frameCX+dOX, size = dw×dh)
+      const { dw, dh } = _imgRenderDims();
+      const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+      for (const ov of edOverlays) {
+        const { ox, oy, ow, oh } = _ovScreenRect(ov);
+        // Map overlay rect from screen-space to image-relative coords
+        // Image left edge on screen = imgCX - dw/2, top = imgCY - dh/2
+        const relX = (ox - (imgCX - dw / 2)) / dw;  // 0..1 within image
+        const relY = (oy - (imgCY - dh / 2)) / dh;
+        const relW = ow / dw;
+        const relH = oh / dh;
+        ctx.drawImage(ov.imageCvs, relX * pxW, relY * pxH, relW * pxW, relH * pxH);
+      }
+      edOverlays = []; _ovSelected = -1;
+    }
+
     // Lasso state
     let edLassoMode = false;
     let edLassoTool = "freehand";
@@ -4918,23 +4942,7 @@ function createWidget(node) {
       flattenB.addEventListener("click", () => {
         if (edOverlays.length === 0) return;
         _edSaveEditOpsState();
-        _edEnsureEditsPx();
-        const ctx = _edCvsEditsPx.getContext("2d");
-        const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
-        // Map screen-space overlays to pixel canvas space
-        for (const ov of edOverlays) {
-          const { ox, oy, ow, oh } = _ovScreenRect(ov);
-          // Convert from canvas (screen) coords to pixel canvas coords
-          const cw = cvs.width, ch = cvs.height;
-          const fx2 = (cw - frameW) / 2, fy2 = (ch - frameH) / 2;
-          // Normalise overlay rect to frame-relative 0..1 coords
-          const rx = (ox - fx2) / frameW;
-          const ry = (oy - fy2) / frameH;
-          const rw = ow / frameW;
-          const rh = oh / frameH;
-          ctx.drawImage(ov.imageCvs, rx * pxW, ry * pxH, rw * pxW, rh * pxH);
-        }
-        edOverlays = []; _ovSelected = -1;
+        _ovBakeIntoPixelCvs();
         _syncOverlayList(); redraw();
       });
       ovListBody.appendChild(flattenB);
@@ -5625,18 +5633,7 @@ function createWidget(node) {
       const fn = items[curIdx]?.filename; if (!fn) return;
       // Auto-flatten overlays before saving
       if (edOverlays.length > 0) {
-        _edEnsureEditsPx();
-        const ctx = _edCvsEditsPx.getContext("2d");
-        const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
-        for (const ov of edOverlays) {
-          const { ox, oy, ow, oh } = _ovScreenRect(ov);
-          const cw2 = cvs.width, ch2 = cvs.height;
-          const fx2 = (cw2 - frameW) / 2, fy2 = (ch2 - frameH) / 2;
-          const rx = (ox - fx2) / frameW, ry = (oy - fy2) / frameH;
-          const rw = ow / frameW, rh = oh / frameH;
-          ctx.drawImage(ov.imageCvs, rx * pxW, ry * pxH, rw * pxW, rh * pxH);
-        }
-        edOverlays = []; _ovSelected = -1;
+        _ovBakeIntoPixelCvs();
         if (typeof _syncOverlayList === 'function') _syncOverlayList();
       }
       const hasAppliedCrop = edAppliedCrop && (edAppliedCrop.cx > 0 || edAppliedCrop.cy > 0 || edAppliedCrop.cw < 1 || edAppliedCrop.ch < 1);
