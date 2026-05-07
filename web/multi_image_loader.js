@@ -3063,87 +3063,98 @@ function createWidget(node) {
       return { ox, oy, ow, oh };
     }
 
-    /** Bake all overlays into _edCvsEditsPx and clear the overlay array.
-     *  Overlays are in screen-space, but the pixel canvas is in the image's
-     *  local coordinate system (pre-rotate, pre-flip). We inverse-transform
-     *  overlay positions from screen→image-local so the flatten is WYSIWYG. */
+    /** Bake all overlays into a full WYSIWYG composite and load it as a
+     *  new base image. This avoids pixel-canvas aspect/coord issues by
+     *  treating the result as a fresh image. Resets all transforms. */
     function _ovBakeIntoPixelCvs() {
       if (edOverlays.length === 0) return;
       syncCvs(); // ensure bFit, frameW, frameH, frameCX, frameCY are fresh
-      _edEnsureEditsPx();
-      const pxW = _edCvsEditsPx.width, pxH = _edCvsEditsPx.height;
 
-      // Screen-space image geometry
-      const { dw, dh } = _imgRenderDims();
-      const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+      // ── 1. Create composite canvas at OUTPUT resolution ──
+      const maxDim = 2048;
+      const outAsp = edRefW / edRefH;
+      let wpX, wpY;
+      if (outAsp >= 1) { wpX = Math.min(edRefW, maxDim); wpY = Math.round(wpX / outAsp); }
+      else             { wpY = Math.min(edRefH, maxDim); wpX = Math.round(wpY * outAsp); }
+      const comp = document.createElement("canvas");
+      comp.width = wpX; comp.height = wpY;
+      const cc = comp.getContext("2d");
+      cc.imageSmoothingEnabled = true; cc.imageSmoothingQuality = "high";
 
-      // Create a temp canvas at pixel canvas resolution to render overlays
-      const tmp = document.createElement("canvas");
-      tmp.width = pxW; tmp.height = pxH;
-      const tc = tmp.getContext("2d");
-      tc.imageSmoothingEnabled = true; tc.imageSmoothingQuality = "high";
+      // ── 2. Fill background ──
+      const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
+      cc.fillStyle = bgC;
+      cc.fillRect(0, 0, wpX, wpY);
 
-      // The pixel canvas maps to the image's LOCAL space: it's drawn at
-      // (-dw/2, -dh/2, dw, dh) INSIDE the transform context
-      // (translate+rotate+flip). To get from screen→image-local:
-      //   1. Subtract image center (imgCX, imgCY)
-      //   2. Un-flip
-      //   3. Un-rotate
-      //   4. Now we're in image-local px relative to center
-      //   5. Scale from screen image size → pixel canvas size
+      // ── 3. Draw base image with current transforms ──
+      // Replicate redraw() logic: fit image into comp canvas, apply transforms.
+      if (edImg) {
+        const eW = effNatW(), eH = effNatH();
+        let srcX = 0, srcY = 0, srcW = edNatW, srcH = edNatH;
+        if (edAppliedCrop) {
+          srcX = edAppliedCrop.cx * edNatW;
+          srcY = edAppliedCrop.cy * edNatH;
+          srcW = edAppliedCrop.cw * edNatW;
+          srcH = edAppliedCrop.ch * edNatH;
+        }
+        // Fit calculation (same as syncCvs but targeting comp canvas)
+        const rot   = edRotate * Math.PI / 180;
+        const cosA  = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
+        const rW    = eW * cosA + eH * sinA;
+        const rH    = eW * sinA + eH * cosA;
+        const fitMode = getFitModeWidget()?.value ?? "letterbox";
+        const bf    = fitMode === "crop"
+          ? Math.max(wpX / rW, wpY / rH)
+          : Math.min(wpX / rW, wpY / rH);
+        const eff   = bf * edScale;
+        const dw    = eW * eff;
+        const dh    = eH * eff;
 
-      const rot = -(edRotate * Math.PI / 180); // INVERSE rotation
-      const flipX = edFlipH ? -1 : 1;
-      const flipY = edFlipV ? -1 : 1;
-      const scX = pxW / dw;  // screen→pixel scale
-      const scY = pxH / dh;
+        cc.save();
+        cc.translate(wpX / 2 + (dOX / frameW) * wpX, wpY / 2 + (dOY / frameH) * wpY);
+        cc.rotate(rot);
+        cc.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
+        cc.drawImage(edImg, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
 
-      for (const ov of edOverlays) {
-        const { ox, oy, ow, oh } = _ovScreenRect(ov);
-        // Get overlay's 4 corners in screen space
-        const corners = [
-          [ox,      oy],
-          [ox + ow, oy],
-          [ox + ow, oy + oh],
-          [ox,      oy + oh],
-        ];
-        // Transform each corner: screen → image-local → pixel canvas
-        const txCorners = corners.map(([cx, cy]) => {
-          // 1. Relative to image center on screen
-          let rx = cx - imgCX, ry = cy - imgCY;
-          // 2. Un-flip
-          rx *= flipX; ry *= flipY;
-          // 3. Un-rotate
-          const cos = Math.cos(rot), sin = Math.sin(rot);
-          const ux = rx * cos - ry * sin;
-          const uy = rx * sin + ry * cos;
-          // 4. Scale to pixel canvas and offset to center
-          return [ux * scX + pxW / 2, uy * scY + pxH / 2];
-        });
-
-        // For non-rotated overlays, we can use a simple drawImage
-        // For rotated/flipped, we use transform matrix
-        tc.save();
-        // Compute affine transform from unit square → txCorners
-        // Top-left=corners[0], top-right=corners[1], bottom-left=corners[3]
-        const [x0, y0] = txCorners[0];
-        const [x1, y1] = txCorners[1];
-        const [x3, y3] = txCorners[3];
-        tc.setTransform(
-          (x1 - x0) / ow, (y1 - y0) / ow,  // a, b (x-axis)
-          (x3 - x0) / oh, (y3 - y0) / oh,  // c, d (y-axis)
-          x0, y0                             // e, f (translation)
-        );
-        tc.drawImage(ov.imageCvs, 0, 0, ov.imageCvs.width, ov.imageCvs.height, 0, 0, ow, oh);
-        tc.restore();
+        // Draw existing pixel edits (if any, in image-local space)
+        if (_edCvsEditsPx) {
+          cc.drawImage(_edCvsEditsPx, -dw / 2, -dh / 2, dw, dh);
+        }
+        cc.restore();
       }
 
-      // Composite the overlay temp canvas onto the pixel canvas
-      const ctx = _edCvsEditsPx.getContext("2d");
-      ctx.drawImage(tmp, 0, 0);
+      // ── 4. Draw overlays at frame-relative positions ──
+      const scX = wpX / frameW, scY = wpY / frameH;
+      const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
+      for (const ov of edOverlays) {
+        const { ox, oy, ow, oh } = _ovScreenRect(ov);
+        cc.drawImage(ov.imageCvs,
+          (ox - fx) * scX, (oy - fy) * scY,
+          ow * scX, oh * scY);
+      }
 
+      // ── 5. Load composite as new base image ──
+      const dataUrl = comp.toDataURL("image/png");
+      const newImg = new Image();
+      newImg.onload = () => {
+        edImg = newImg;
+        edNatW = newImg.naturalWidth;
+        edNatH = newImg.naturalHeight;
+        _edCvsEditsPx = null;
+        edAppliedCrop = null;
+        dOX = 0; dOY = 0;
+        edScale = 1; edScaleX = 1; edScaleY = 1;
+        edRotate = 0; edFlipH = false; edFlipV = false;
+        edOverlays = []; _ovSelected = -1;
+        // Clear lasso state
+        edLassoOps = []; edLassoInverted = false;
+        redraw();
+      };
+      newImg.src = dataUrl;
+      // Immediately clear overlays visually
       edOverlays = []; _ovSelected = -1;
     }
+
 
 
     // Lasso state
