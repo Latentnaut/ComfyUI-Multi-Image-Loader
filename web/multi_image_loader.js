@@ -3133,26 +3133,35 @@ function createWidget(node) {
           ow * scX, oh * scY);
       }
 
-      // ── 5. Load composite as new base image ──
+      // ── 5. Apply composite as new base image (SYNCHRONOUS) ──
+      // Use the canvas directly as edImg for immediate rendering compatibility
+      // (Canvas works as drawImage source). Then async-load a proper Image
+      // for naturalWidth/src compatibility.
+      _edCvsEditsPx = null;
+      edAppliedCrop = null;
+      dOX = 0; dOY = 0;
+      edScale = 1; edScaleX = 1; edScaleY = 1;
+      edRotate = 0; edFlipH = false; edFlipV = false;
+      edOverlays = []; _ovSelected = -1;
+      edLassoOps = []; edLassoInverted = false;
+
+      // Set canvas as temp edImg (drawImage compatible)
+      edImg = comp;
+      edNatW = wpX; edNatH = wpY;
+
+      // Async: replace with proper Image element for full API compatibility
       const dataUrl = comp.toDataURL("image/png");
       const newImg = new Image();
       newImg.onload = () => {
         edImg = newImg;
         edNatW = newImg.naturalWidth;
         edNatH = newImg.naturalHeight;
-        _edCvsEditsPx = null;
-        edAppliedCrop = null;
-        dOX = 0; dOY = 0;
-        edScale = 1; edScaleX = 1; edScaleY = 1;
-        edRotate = 0; edFlipH = false; edFlipV = false;
-        edOverlays = []; _ovSelected = -1;
-        // Clear lasso state
-        edLassoOps = []; edLassoInverted = false;
         redraw();
       };
       newImg.src = dataUrl;
-      // Immediately clear overlays visually
-      edOverlays = []; _ovSelected = -1;
+
+      syncCvs();
+      redraw();
     }
 
 
