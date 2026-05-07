@@ -3726,10 +3726,10 @@ function createWidget(node) {
     }
 
     secEdit.appendChild(mkSec("Quick Fit", () => {
-      dOX=0; dOY=0; edScale=1; syncScaleUI(); updLbl();
+      doFit();
     }, "Reset to Letterbox"));
     secEdit.appendChild(mkPB("\u2B1B Fill  (cover)",  doFill));
-    secEdit.appendChild(mkPB("\u2B1C Fit   (letterbox)", ()=>{ dOX=0;dOY=0;edScale=1; updLbl(); }));
+    secEdit.appendChild(mkPB("\u2B1C Fit   (letterbox)", doFit));
     secEdit.appendChild(mkPB("\u2194 Fit Width",  doFitW));
     secEdit.appendChild(mkPB("\u2195 Fit Height", doFitH));
     secEdit.appendChild(mkSec("Flip", () => {
@@ -4943,7 +4943,7 @@ function createWidget(node) {
     // ── Fit helpers that respect lasso selection ──
     // When a lasso bbox exists, scale/offset are computed so the bbox fills/fits the frame.
     function _fitToLassoBBox(targetAxis) {
-      // targetAxis: "both" | "w" | "h"
+      // targetAxis: "fill" | "fit" | "w" | "h"
       const bb = _lassoBBox();
       if (!bb) return false; // no lasso → caller falls through to normal fit
       const eW = effNatW(), eH = effNatH();
@@ -4959,7 +4959,8 @@ function createWidget(node) {
       let newScale;
       if (targetAxis === "w") newScale = frameW / (rotBBW * bf);
       else if (targetAxis === "h") newScale = frameH / (rotBBH * bf);
-      else newScale = Math.max(frameW / (rotBBW * bf), frameH / (rotBBH * bf));
+      else if (targetAxis === "fit") newScale = Math.min(frameW / (rotBBW * bf), frameH / (rotBBH * bf));
+      else /* fill */ newScale = Math.max(frameW / (rotBBW * bf), frameH / (rotBBH * bf));
       edScale = newScale;
       // Use the canonical _normToCanvas to find where bb center lands with dOX=dOY=0,
       // then set offset so it lands at frameCX, frameCY.
@@ -4974,9 +4975,13 @@ function createWidget(node) {
     }
 
     function doFill() {
-      if (_fitToLassoBBox("both")) { redraw(); return; }
+      if (_fitToLassoBBox("fill")) { redraw(); return; }
       const {rW,rH}=_rotDims(); const bf=_bfitOf(rW,rH);
       dOX=0;dOY=0; edScale=Math.max(frameW/(rW*bf),frameH/(rH*bf)); syncScaleUI(); updLbl();
+    }
+    function doFit() {
+      if (_fitToLassoBBox("fit")) { redraw(); return; }
+      dOX=0;dOY=0; edScale=1; syncScaleUI(); updLbl();
     }
     function doFitW() {
       if (_fitToLassoBBox("w")) { redraw(); return; }
