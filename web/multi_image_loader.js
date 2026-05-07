@@ -2339,15 +2339,51 @@ function createWidget(node) {
           const backup = JSON.parse(raw);
           const backupFilenames = JSON.parse(backup.image_list || "[]");
           console.log(`[MIL:${nid}] localStorage backup found. images:`, backupFilenames.length, "AR:", backup.resolved_aspect_ratio || "(none)");
-          if (backupFilenames.length) {
+
+          // Cross-check: is the backup from the SAME workflow?
+          // Collect ALL filenames from already-restored widgets (set by onConfigure).
+          const wfFilenames = new Set();
+          try {
+            const cdW = getCropDataWidget();
+            if (cdW?.value && cdW.value !== "{}") {
+              for (const k of Object.keys(JSON.parse(cdW.value))) wfFilenames.add(k);
+            }
+          } catch(_) {}
+          try {
+            const sw = getSelectedItemsWidget();
+            if (sw?.value && sw.value !== "[]") {
+              for (const f of JSON.parse(sw.value)) { if (f) wfFilenames.add(f); }
+            }
+          } catch(_) {}
+          try {
+            const rw = getReferenceImageWidget();
+            if (rw?.value && rw.value !== "") wfFilenames.add(rw.value);
+          } catch(_) {}
+
+          let backupMatchesWorkflow = false; // default: don't trust
+          if (wfFilenames.size > 0 && backupFilenames.length > 0) {
+            const bkSet = new Set(backupFilenames);
+            const overlap = [...wfFilenames].filter(f => bkSet.has(f)).length;
+            backupMatchesWorkflow = overlap >= Math.ceil(wfFilenames.size / 2);
+            if (!backupMatchesWorkflow) {
+              console.log(`[MIL:${nid}] localStorage backup is STALE. ` +
+                `Workflow filenames: ${wfFilenames.size}, backup: ${backupFilenames.length}, overlap: ${overlap}. Skipping.`);
+            }
+          } else if (wfFilenames.size === 0 && backupFilenames.length > 0) {
+            // No filenames in any widget → can't verify → skip backup
+            console.log(`[MIL:${nid}] No workflow filenames found in widgets, cannot verify localStorage backup. Skipping.`);
+          }
+
+          if (backupMatchesWorkflow && backupFilenames.length) {
             // Restore widget values from backup so the rest of restore() works normally
             const ww  = getImageListWidget();     if (ww  && backup.image_list)      ww.value  = backup.image_list;
             const cw  = getCropDataWidget();      if (cw  && backup.crop_data)       cw.value  = backup.crop_data;
             const sw  = getSelectedItemsWidget(); if (sw  && backup.selected_items)  sw.value  = backup.selected_items;
             const rw2 = getReferenceImageWidget();if (rw2 && backup.reference_image) rw2.value = backup.reference_image;
             filenames = backupFilenames;
+            console.log(`[MIL:${nid}] localStorage backup MATCHES workflow. Restored.`);
           }
-          // Restore resolved AR from backup
+          // Restore resolved AR from backup (safe regardless of staleness)
           if (backup.resolved_aspect_ratio) {
             node._resolvedAspectRatio = backup.resolved_aspect_ratio;
           }
@@ -3931,7 +3967,12 @@ function createWidget(node) {
       }
     }
 
-    // (Background Fill moved to Pixels panel)
+    // ── Background Fill ─────────────────────────────────────────
+    secEdit.appendChild(mkSec("Background Fill", () => {
+      edBg = getEffectiveBgColor(); syncBgUI();
+      edInpaintPreview=null; edInpaintDirty=true;
+    }, "Reset to Node Default"));
+    secEdit.appendChild(bgSelect); secEdit.appendChild(bgCustomRow); secEdit.appendChild(bgNote);
 
     // ══════════════════════════════════════════════════════════════════
     // ── IMAGE TOOLS section (Blur / Smudge / CA Fill on image pixels) ──
@@ -3967,12 +4008,7 @@ function createWidget(node) {
     }
     secPixels.appendChild(pxDimLbl);
 
-    // ── Background Fill (moved here from Edit panel) ─────────────────
-    secPixels.appendChild(mkSec("Background Fill", () => {
-      edBg = getEffectiveBgColor(); syncBgUI();
-      edInpaintPreview=null; edInpaintDirty=true;
-    }, "Reset to Node Default"));
-    secPixels.appendChild(bgSelect); secPixels.appendChild(bgCustomRow); secPixels.appendChild(bgNote);
+    // (Background Fill is now in Edit panel)
 
     // ── Lasso Selection sub-section (needed for CA Fill) ────────
     secPixels.appendChild(mkSec("Lasso Selection", () => {
@@ -7802,6 +7838,34 @@ app.registerExtension({
       };
     };
 
+    // ── onSerialize: ensure image_list is ALWAYS saved in the workflow ────
+    // LiteGraph's default serialization may skip or misposition `image_list`
+    // (hidden STRING widget), causing it to be absent from PNG metadata.
+    // This hook rebuilds `widgets_values` with every widget's current value
+    // in the correct order, so any future Ctrl+S / SaveAsPNG / API export
+    // will always embed the image filenames.
+    const origOnSerialize = nodeType.prototype.onSerialize;
+    nodeType.prototype.onSerialize = function (data) {
+      origOnSerialize?.call(this, data);
+      const node = this;
+      try {
+        if (node.widgets?.length) {
+          const vals = [];
+          for (const w of node.widgets) {
+            // Skip the DOM widget — it has no meaningful value
+            if (w.type === "MultiImageLoaderWidget") continue;
+            if (w.name === "mil_uploader") continue;
+            // All MIL widgets are standard types — just grab .value
+            vals.push(w.value ?? "");
+          }
+          data.widgets_values = vals;
+          console.log(`[MIL:${node.id}] onSerialize: saved ${vals.length} widget values. image_list included: ${vals[0]?.substring?.(0, 60) || "(empty)"}`);
+        }
+      } catch(e) {
+        console.error("[MIL] onSerialize error:", e);
+      }
+    };
+
     nodeType.prototype.onConfigure = function (data) {
       origOnConfigure?.call(this, data);
       const node = this;
@@ -7838,7 +7902,17 @@ app.registerExtension({
               if (w) w.value = sv[i];
             }
 
-            // Restore image_list from localStorage backup
+            // Restore image_list from localStorage backup — but ONLY if it
+            // belongs to the SAME workflow.  When the user drags a PNG to load
+            // a different workflow, ComfyUI may re-use the same node.id, so the
+            // localStorage entry would contain images from the *previous* wf.
+            //
+            // Detection strategy: collect ALL filenames embedded in the
+            // serialized workflow data (crop_data keys, selected_items,
+            // reference_image) and compare against the backup's image_list.
+            // If the workflow has identifiable filenames that don't overlap
+            // with the backup → stale.  If the workflow has ZERO identifiable
+            // filenames → we cannot verify → skip backup (safe default).
             try {
               const raw = localStorage.getItem(`mil_backup_${node.id}`);
               if (raw) {
@@ -7846,7 +7920,49 @@ app.registerExtension({
                 const ilW = node.widgets.find(w => w.name === "image_list");
                 const bkFiles = JSON.parse(bk.image_list || "[]");
                 console.log(`[MIL:${node.id}] onConfigure: localStorage backup has ${bkFiles.length} image(s)`);
-                if (ilW && bk.image_list && bkFiles.length > 0) ilW.value = bk.image_list;
+
+                // Collect ALL filenames from the serialized workflow data.
+                // nameOrder: sv[6]=crop_data, sv[7]=selected_items, sv[8]=reference_image
+                const wfFilenames = new Set();
+                try {
+                  const cdRaw = sv[6];
+                  if (cdRaw && cdRaw !== "{}") {
+                    for (const k of Object.keys(JSON.parse(cdRaw))) wfFilenames.add(k);
+                  }
+                } catch(_) {}
+                try {
+                  const siRaw = sv[7];
+                  if (siRaw && siRaw !== "[]") {
+                    for (const f of JSON.parse(siRaw)) { if (f) wfFilenames.add(f); }
+                  }
+                } catch(_) {}
+                try {
+                  const ri = sv[8];
+                  if (ri && ri !== "") wfFilenames.add(ri);
+                } catch(_) {}
+
+                let backupMatchesWorkflow = false; // default: don't trust
+                if (wfFilenames.size > 0 && bkFiles.length > 0) {
+                  // Workflow has identifiable filenames — check overlap
+                  const bkSet = new Set(bkFiles);
+                  const overlap = [...wfFilenames].filter(f => bkSet.has(f)).length;
+                  backupMatchesWorkflow = overlap >= Math.ceil(wfFilenames.size / 2);
+                  if (!backupMatchesWorkflow) {
+                    console.log(`[MIL:${node.id}] onConfigure: localStorage backup is STALE. `
+                      + `Workflow filenames: ${wfFilenames.size}, backup files: ${bkFiles.length}, overlap: ${overlap}. Skipping.`);
+                  }
+                } else if (wfFilenames.size === 0 && bkFiles.length > 0) {
+                  // Workflow has NO filenames in any serialized field but backup has images.
+                  // This means either the workflow had no images, or the data doesn't carry
+                  // filename info.  Either way, we CANNOT verify the backup → skip it.
+                  console.log(`[MIL:${node.id}] onConfigure: workflow has no identifiable filenames, `
+                    + `cannot verify localStorage backup (${bkFiles.length} images). Skipping.`);
+                }
+
+                if (backupMatchesWorkflow && ilW && bk.image_list && bkFiles.length > 0) {
+                  ilW.value = bk.image_list;
+                  console.log(`[MIL:${node.id}] onConfigure: localStorage backup MATCHES workflow. Restored image_list.`);
+                }
               } else {
                 console.log(`[MIL:${node.id}] onConfigure: NO localStorage backup found`);
               }

@@ -518,7 +518,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
         inpaint_mask = np.where(alpha_np < 128, 255, 0).astype(np.uint8)
 
         # Incorporate lasso mask — areas outside lasso selection should also be inpainted
-        lasso_mask = _generate_lasso_mask(transform, img.size, canvas_w, canvas_h)
+        lasso_mask = _generate_lasso_mask(transform, img.size, canvas_w, canvas_h, fit_mode)
         if lasso_mask is not None:
             lasso_np = np.array(lasso_mask)
             # lasso_np: 255 = inside selection (keep), 0 = outside (inpaint)
@@ -573,7 +573,15 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     canvas_bg = node_bg_color if fit_mode == "letterbox" else bg_color
     canvas = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
     canvas.paste(resized, (paste_x, paste_y))
-    
+
+    # ── LASSO MASK: apply poly-crop cutout in solid-fill path ──────────────
+    lasso_mask = _generate_lasso_mask(transform, img.size, canvas_w, canvas_h, fit_mode)
+    if lasso_mask is not None:
+        # lasso_mask: 255 = inside selection (keep), 0 = outside (fill with bg)
+        bg_layer = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
+        # Composite: where mask is white keep canvas, where black show bg
+        canvas = Image.composite(canvas, bg_layer, lasso_mask)
+
     if global_scale != 1.0:
         scaled_w = max(1, round(canvas_w * global_scale))
         scaled_h = max(1, round(canvas_h * global_scale))
@@ -585,7 +593,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     return canvas
 
 
-def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int, canvas_h: int) -> Image.Image:
+def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int, canvas_h: int, fit_mode: str = "letterbox") -> Image.Image:
     """Generate a composite lasso mask from operations and apply geometric transforms.
     Returns an 'L' mode image (canvas_w × canvas_h) — 255 inside, 0 outside.
     Returns None if no lasso ops in transform."""
@@ -649,7 +657,10 @@ def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int,
         mask = mask.rotate(-rotate, expand=True, resample=Image.BICUBIC, fillcolor=0)
 
     src_w, src_h = mask.size
-    base_scale   = min(canvas_w / src_w, canvas_h / src_h)
+    if fit_mode == "crop":
+        base_scale = max(canvas_w / src_w, canvas_h / src_h)
+    else:
+        base_scale = min(canvas_w / src_w, canvas_h / src_h)
     eff_scale    = base_scale * scale
     new_w        = max(1, round(src_w * eff_scale))
     new_h        = max(1, round(src_h * eff_scale))
