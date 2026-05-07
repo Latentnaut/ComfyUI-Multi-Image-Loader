@@ -3017,11 +3017,35 @@ function createWidget(node) {
     let _ovSelected = -1;       // index of selected overlay, -1 = none
 
     function _ovHitTest(canvasX, canvasY) {
+      const borderTol = 5; // px tolerance for border/frame hit
       // Test overlays in reverse order (top-most first)
       for (let i = edOverlays.length - 1; i >= 0; i--) {
         const ov = edOverlays[i];
         const { ox, oy, ow, oh } = _ovScreenRect(ov);
-        if (canvasX >= ox && canvasX <= ox + ow && canvasY >= oy && canvasY <= oy + oh) return i;
+        // 1. Check if click is on the selection border (dashed rect) of selected overlay
+        if (i === _ovSelected) {
+          const inOuter = canvasX >= ox - borderTol && canvasX <= ox + ow + borderTol &&
+                          canvasY >= oy - borderTol && canvasY <= oy + oh + borderTol;
+          const inInner = canvasX >= ox + borderTol && canvasX <= ox + ow - borderTol &&
+                          canvasY >= oy + borderTol && canvasY <= oy + oh - borderTol;
+          if (inOuter && !inInner) return i; // hit the frame border itself
+        }
+        // 2. Check bounding box first (fast reject)
+        if (canvasX < ox || canvasX > ox + ow || canvasY < oy || canvasY > oy + oh) continue;
+        // 3. Alpha test — sample the overlay image at the corresponding pixel
+        try {
+          const srcW = ov.imageCvs.width, srcH = ov.imageCvs.height;
+          const sx = Math.floor(((canvasX - ox) / ow) * srcW);
+          const sy = Math.floor(((canvasY - oy) / oh) * srcH);
+          if (sx >= 0 && sx < srcW && sy >= 0 && sy < srcH) {
+            const ctx = ov.imageCvs.getContext("2d", { willReadFrequently: true });
+            const px = ctx.getImageData(sx, sy, 1, 1).data;
+            if (px[3] > 10) return i; // non-transparent pixel → hit
+          }
+        } catch (_) {
+          // Fallback: if getImageData fails (cross-origin), treat as opaque hit
+          return i;
+        }
       }
       return -1;
     }
