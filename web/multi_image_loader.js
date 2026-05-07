@@ -4919,6 +4919,9 @@ function createWidget(node) {
       edPixelTool = null; _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = [];
       _edOpsUndoStack = []; _edOpsRedoStack = [];
       _edSmudgeBuf = null; _edCloneBuffer = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+      // Reset overlays
+      edOverlays = []; _ovSelected = -1; _ovDrag = null;
+      if (typeof _syncOverlayList === 'function') _syncOverlayList();
       _syncPixelToolUI();
       // Reset bg
       edBg=getEffectiveBgColor();
