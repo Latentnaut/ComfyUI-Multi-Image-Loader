@@ -2909,6 +2909,7 @@ function createWidget(node) {
     let _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
     let edCropMode = false, edCropBox = null;
     let edCropDrag = null;
+    let _marqueeRectDrag = null; // {anchorX, anchorY} in normalized coords for marquee rect drawing
     let edAppliedCrop = null; // committed crop {cx,cy,cw,ch} — applied BEFORE transforms
 
     // ── Edit-operations undo/redo (crop, rotate, flip, bg) ────────
@@ -3239,7 +3240,7 @@ function createWidget(node) {
       }
       // Deactivate crop/lasso when switching to pixels
       if (mode === "pixels") {
-        if (edCropMode) { edCropMode = false; syncCropToggle(); }
+        // (edCropMode removed — marquee is now a lasso tool variant)
         if (edLassoMode) { edLassoMode = false; edLassoDrawing = false; edLassoCurrentPts = []; stopLassoAnts(); syncLassoToggle(); }
         _updatePxDimLbl();
       }
@@ -3301,7 +3302,7 @@ function createWidget(node) {
     // ── Selection Tools (unified: Marquee + Lasso + Polygonal) ─────
     // ══════════════════════════════════════════════════════════════════
     secEdit.appendChild(mkSec("Selection Tools", () => {
-      edCropBox = null; edAppliedCrop = null; edCropMode = false;
+      edCropBox = null; edAppliedCrop = null;
       edLassoOps = []; edLassoInverted = false; _lassoChanged(); edLassoIsPaint = false;
       edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
       dOX = 0; dOY = 0; edScale = 1.0;
@@ -3344,38 +3345,31 @@ function createWidget(node) {
       const onPoly = {bg:'#3a2a1a',col:'#ff9f43',bc:'#664422'};
       const applyStyle = (btn, s) => { if (!btn) return; btn.style.background=s.bg; btn.style.color=s.col; btn.style.borderColor=s.bc; };
 
-      // Marquee
-      applyStyle(marqueeB, edCropMode ? onMarq : offS);
-      applyStyle(pxMarqueeB, edCropMode ? onMarq : offS);
+      // All three tools are now lasso variants
+      const isMarq = edLassoMode && edLassoTool === "marquee";
+      const isFree = edLassoMode && edLassoTool === "freehand";
+      const isPoly = edLassoMode && edLassoTool === "polygonal";
 
-      // Lasso / Poly
-      if (edLassoMode) {
-        applyStyle(lassoFreehandB, edLassoTool==="freehand" ? onFree : offS);
-        applyStyle(lassoPolyB, edLassoTool==="polygonal" ? onPoly : offS);
-        applyStyle(pxLassoFreehandB, edLassoTool==="freehand" ? onFree : offS);
-        applyStyle(pxLassoPolyB, edLassoTool==="polygonal" ? onPoly : offS);
-      } else {
-        applyStyle(lassoFreehandB, offS); applyStyle(lassoPolyB, offS);
-        applyStyle(pxLassoFreehandB, offS); applyStyle(pxLassoPolyB, offS);
-      }
+      applyStyle(marqueeB, isMarq ? onMarq : offS);
+      applyStyle(pxMarqueeB, isMarq ? onMarq : offS);
+      applyStyle(lassoFreehandB, isFree ? onFree : offS);
+      applyStyle(lassoPolyB, isPoly ? onPoly : offS);
+      applyStyle(pxLassoFreehandB, isFree ? onFree : offS);
+      applyStyle(pxLassoPolyB, isPoly ? onPoly : offS);
 
       // AR row visibility: only for Marquee
-      cropArRow.style.display = edCropMode ? "flex" : "none";
+      cropArRow.style.display = isMarq ? "flex" : "none";
 
-      // Crop button state
-      if (edCropMode || edCropBox) {
-        cropApplyB.style.background = "#1a3a28"; cropApplyB.style.color = "#44cc88"; cropApplyB.style.borderColor = "#336644";
-      } else {
-        cropApplyB.style.background = "#2a2a2a"; cropApplyB.style.color = "#555"; cropApplyB.style.borderColor = "#333";
-      }
-
-      // Cursor
-      if (edCropMode) {
+      // Cursor & hint
+      if (edLassoMode) {
         ca.style.cursor = "crosshair";
-        hint.textContent = "Draw to crop \u00b7 Drag edges to resize \u00b7 Scroll to zoom";
-      } else if (edLassoMode) {
-        ca.style.cursor = "crosshair";
-        hint.textContent = edLassoTool === "freehand" ? "Drag to draw \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract" : "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract";
+        if (edLassoTool === "marquee") {
+          hint.textContent = "Drag to select \u00b7 Shift: add \u00b7 Alt: subtract \u00b7 Scroll to zoom";
+        } else if (edLassoTool === "freehand") {
+          hint.textContent = "Drag to draw \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract";
+        } else {
+          hint.textContent = "Click vertices \u00b7 Close near start / dblclick \u00b7 Shift: ortho \u00b7 add \u00b7 Alt: subtract";
+        }
       } else if (!edPixelTool) {
         ca.style.cursor = "grab";
         hint.textContent = "Drag to pan \u00b7 Scroll to zoom";
@@ -3423,30 +3417,8 @@ function createWidget(node) {
       clampCropBox(); updateSelInfoLbl(); redraw();
     }
 
-    // Toggle Marquee tool
-    marqueeB.addEventListener("click", () => {
-      edCropMode = !edCropMode;
-      // Mutual exclusion: disable lasso if marquee is enabled
-      if (edCropMode && edLassoMode) {
-        edLassoMode = false; edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
-        stopLassoAnts();
-      }
-      // Auto-initialize crop box on first enable
-      if (edCropMode && !edCropBox) {
-        const eW = effNatW(), eH = effNatH();
-        const targetAR = parseCropAR() ?? (edRefW / edRefH);
-        const imgAR = eW / eH;
-        let bw, bh;
-        if (targetAR >= imgAR) {
-          bw = 0.5; bh = (bw * eW) / (targetAR * eH);
-        } else {
-          bh = 0.5; bw = (bh * eH * targetAR) / eW;
-        }
-        bw = Math.min(bw, 1); bh = Math.min(bh, 1);
-        edCropBox = { x: (1 - bw) / 2, y: (1 - bh) / 2, w: bw, h: bh };
-      }
-      syncSelToolRow(); updateSelInfoLbl(); redraw();
-    });
+    // Toggle Marquee tool — now acts as a rectangular selection (lasso variant)
+    marqueeB.addEventListener("click", () => toggleLassoTool("marquee"));
 
     function toggleLassoTool(tool) {
       if (edLassoMode && edLassoTool === tool) {
@@ -3454,8 +3426,7 @@ function createWidget(node) {
         edLassoCurrentPts = []; _lassoCursorNorm = null; stopLassoAnts();
       } else {
         edLassoMode = true; edLassoTool = tool;
-        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
-        if (edCropMode) { edCropMode = false; }
+        edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null; _marqueeRectDrag = null;
         if (edLassoOps.length > 0) startLassoAnts();
         if (typeof edPixelTool !== 'undefined' && edPixelTool !== null) { edPixelTool = null; _syncPixelToolUI(); }
       }
@@ -3551,10 +3522,12 @@ function createWidget(node) {
     const lassoInfoLbl = selInfoLbl;
 
     let updateSelInfoLbl = function() {
-      // Crop info takes priority when marquee is active
-      if (edCropBox && edCropMode) {
+      // Marquee rect info while dragging
+      if (_marqueeRectDrag && edLassoDrawing) {
+        const d = _marqueeRectDrag;
         const baseW = effNatW(), baseH = effNatH();
-        const w = Math.round(edCropBox.w * baseW), h = Math.round(edCropBox.h * baseH);
+        const w = Math.round(Math.abs(d.curX - d.anchorX) * baseW);
+        const h = Math.round(Math.abs(d.curY - d.anchorY) * baseH);
         selInfoLbl.textContent = `${w} \u00d7 ${h} px`;
         return;
       }
@@ -3572,65 +3545,7 @@ function createWidget(node) {
     let updateLassoInfoLbl = function() { updateSelInfoLbl(); };
 
     // ── Crop action button ──
-    const cropApplyB = document.createElement("button");
-    cropApplyB.textContent = "\u2702 Crop";
-    cropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:center;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;margin-top:${_gap5};`;
-    cropApplyB.addEventListener("mouseenter", () => { if(edCropMode || edCropBox || edLassoOps.length > 0) { cropApplyB.style.background="#2a5a3a"; cropApplyB.style.color="#55ee99"; cropApplyB.style.borderColor="#55ee99"; } });
-    cropApplyB.addEventListener("mouseleave", () => { syncSelToolRow(); });
-    cropApplyB.addEventListener("click", () => {
-      // If no marquee box but lasso ops exist, compute bounding box from lasso points
-      if (!edCropBox && edLassoOps.length > 0) {
-        let minX = 1, minY = 1, maxX = 0, maxY = 0;
-        for (const op of edLassoOps) {
-          for (const pt of op.points) {
-            if (pt[0] < minX) minX = pt[0];
-            if (pt[1] < minY) minY = pt[1];
-            if (pt[0] > maxX) maxX = pt[0];
-            if (pt[1] > maxY) maxY = pt[1];
-          }
-        }
-        if (maxX > minX && maxY > minY) {
-          edCropBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-        }
-      }
-      if (!edCropBox) return;
-      _edSaveEditOpsState();
-      // Compose with any existing applied crop
-      if (edAppliedCrop) {
-        edAppliedCrop = {
-          cx: edAppliedCrop.cx + edCropBox.x * edAppliedCrop.cw,
-          cy: edAppliedCrop.cy + edCropBox.y * edAppliedCrop.ch,
-          cw: edCropBox.w * edAppliedCrop.cw,
-          ch: edCropBox.h * edAppliedCrop.ch,
-        };
-      } else {
-        edAppliedCrop = { cx: edCropBox.x, cy: edCropBox.y, cw: edCropBox.w, ch: edCropBox.h };
-      }
-      // Re-crop pixel-edit canvas if it exists (preserves brush strokes)
-      if (_edCvsEditsPx) {
-        const oldCvs = _edCvsEditsPx;
-        const sx = Math.round(edCropBox.x * oldCvs.width);
-        const sy = Math.round(edCropBox.y * oldCvs.height);
-        const sw = Math.round(edCropBox.w * oldCvs.width);
-        const sh = Math.round(edCropBox.h * oldCvs.height);
-        const newEW = edAppliedCrop.cw * edNatW, newEH = edAppliedCrop.ch * edNatH;
-        const newWpX = Math.min(Math.round(newEW), 2048);
-        const newWpY = Math.round(newEH * (newWpX / newEW));
-        const newCvs = document.createElement("canvas");
-        newCvs.width = newWpX; newCvs.height = newWpY;
-        const nCtx = newCvs.getContext("2d");
-        nCtx.imageSmoothingEnabled = true; nCtx.imageSmoothingQuality = "high";
-        nCtx.drawImage(oldCvs, sx, sy, sw, sh, 0, 0, newWpX, newWpY);
-        _edCvsEditsPx = newCvs;
-        _edEditsUndoStack = []; _edEditsRedoStack = [];
-      }
-      edCropBox = null; edCropMode = false;
-      edLassoOps = []; edLassoInverted = false; _lassoChanged(); edLassoIsPaint = false;
-      dOX = 0; dOY = 0; edScale = 1.0;
-      syncSelToolRow(); updateDimLabels(); updateSelInfoLbl();
-      syncCvs(); updLbl(); redraw(); requestInpaintPreview();
-    });
-    secEdit.appendChild(cropApplyB);
+    // (Crop button removed — marquee now creates lasso mask directly)
 
 
     // ── Orthogonal/45° snap helper ──
@@ -4057,7 +3972,7 @@ function createWidget(node) {
 
     // ── Selection Tools sub-section (Pixel panel mirror) ────────
     secPixels.appendChild(mkSec("Selection Tools", () => {
-      edCropBox = null; edCropMode = false;
+      edCropBox = null;
       edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false; edLassoIsPaint = false;
       edLassoInverted = false; _lassoCursorNorm = null; _lassoChanged();
       stopLassoAnts(); syncSelToolRow(); updateSelInfoLbl();
@@ -4106,7 +4021,7 @@ function createWidget(node) {
       pxCropArLockB.textContent = edCropArLock ? "\uD83D\uDD12" : "\uD83D\uDD13";
       pxCropArLockB.style.opacity = edCropArLock ? "1" : "0.4";
       pxCropArInput.style.color = edCropArLock ? "#ccc" : "#555";
-      pxCropArRow.style.display = edCropMode ? "flex" : "none";
+      pxCropArRow.style.display = (edLassoMode && edLassoTool === "marquee") ? "flex" : "none";
     }
     pxCropArRow.appendChild(pxCropArLockB); pxCropArRow.appendChild(pxCropArInput);
     secPixels.appendChild(pxCropArRow);
@@ -4149,24 +4064,13 @@ function createWidget(node) {
     pxLassoInfoLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;min-height:${Math.round(11*uiScale)}px;margin-bottom:${_gap5};`;
     secPixels.appendChild(pxLassoInfoLbl);
 
-    // Pixel panel Crop button
-    const pxCropApplyB = document.createElement("button");
-    pxCropApplyB.textContent = "\u2702 Crop";
-    pxCropApplyB.style.cssText = `background:#2a2a2a;color:#555;border:1px solid #333;border-radius:${_r5};padding:${_btnPadW} ${_pad8};font-size:${_fs11};cursor:pointer;text-align:center;width:100%;font-weight:600;transition:background 0.15s,border-color 0.15s,color 0.15s;margin-bottom:${_gap5};`;
-    pxCropApplyB.addEventListener("click", () => { cropApplyB.click(); }); // delegate to main
-    secPixels.appendChild(pxCropApplyB);
+    // (Pixel panel Crop button removed — marquee creates lasso mask directly)
 
-    // Keep pxLassoInfoLbl and pxCropApplyB in sync
+    // Keep pxLassoInfoLbl in sync
     const _origUpdateSelInfoLbl = updateSelInfoLbl;
     updateSelInfoLbl = function() {
       _origUpdateSelInfoLbl();
       pxLassoInfoLbl.textContent = selInfoLbl.textContent;
-      // Sync px crop button state
-      if (edCropMode || edCropBox) {
-        pxCropApplyB.style.background = "#1a3a28"; pxCropApplyB.style.color = "#44cc88"; pxCropApplyB.style.borderColor = "#336644";
-      } else {
-        pxCropApplyB.style.background = "#2a2a2a"; pxCropApplyB.style.color = "#555"; pxCropApplyB.style.borderColor = "#333";
-      }
     };
     // Re-alias after patching
     updateCropInfoLbl = updateSelInfoLbl;
@@ -4365,12 +4269,12 @@ function createWidget(node) {
       else {
         edPixelTool = t;
         // Mutual exclusion: disable crop only (lasso stays active in pixels mode for CA Fill)
-        if (edCropMode) { edCropMode = false; syncCropToggle(); }
+        // (edCropMode removed — marquee is now a lasso tool variant)
         if (typeof edLassoMode !== 'undefined' && edLassoMode) { edLassoMode = false; edLassoDrawing = false; edLassoCurrentPts = []; stopLassoAnts(); syncLassoToggle(); }
         _edEnsureEditsPx();
       }
       _syncPixelToolUI();
-      if (!edPixelTool && !edCropMode && !edLassoMode) {
+      if (!edPixelTool && !edLassoMode) {
         ca.style.cursor = "grab"; hint.textContent = "Drag to pan · Scroll to zoom";
       }
       redraw();
@@ -4777,7 +4681,7 @@ function createWidget(node) {
       dOX=0; dOY=0; edScale=1; edScaleX=1; edScaleY=1; _fhDrag=null;
       edFlipH=false; edFlipV=false; edRotate=0;
       // Reset crop
-      edCropBox=null; edAppliedCrop=null; edCropMode=false;
+      edCropBox=null; edAppliedCrop=null;
       // Reset lasso
       edLassoOps=[]; edLassoInverted=false; edLassoCurrentPts=[]; edLassoDrawing=false;
       _lassoChanged(); _lassoCursorNorm=null; stopLassoAnts();
@@ -4903,33 +4807,24 @@ function createWidget(node) {
     }
     // updateCropInfoLbl is now an alias defined earlier → redirects to updateSelInfoLbl
     function drawCropOverlay(ctx) {
-      if (!edCropBox || !edCropMode) return;
+      // Draw marquee rectangle preview while dragging
+      if (!_marqueeRectDrag || !edLassoDrawing) return;
+      const d = _marqueeRectDrag;
+      const x1 = Math.min(d.anchorX, d.curX), y1 = Math.min(d.anchorY, d.curY);
+      const x2 = Math.max(d.anchorX, d.curX), y2 = Math.max(d.anchorY, d.curY);
+      if (x2 - x1 < 0.003 || y2 - y1 < 0.003) return;
       const fx = frameCX - frameW / 2, fy = frameCY - frameH / 2;
-      const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
-      const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
+      const bx = fx + x1 * frameW, by = fy + y1 * frameH;
+      const bw = (x2 - x1) * frameW, bh = (y2 - y1) * frameH;
       ctx.save();
-      // Selection outline only — no dimming (crop effect applied via Crop button)
-      // dashed selection border
+      // Dashed selection border
       ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]);
       ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
       ctx.setLineDash([]);
-      // handles
-      const hs = 4;
-      ctx.fillStyle = 'rgba(140,140,50,0.7)'; ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1;
-      [[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh],
-       [bx+bw/2,by],[bx+bw/2,by+bh],[bx,by+bh/2],[bx+bw,by+bh/2]].forEach(([hx,hy]) => {
-        ctx.fillRect(hx-hs, hy-hs, hs*2, hs*2); ctx.strokeRect(hx-hs, hy-hs, hs*2, hs*2);
-      });
-      // rule-of-thirds inside crop
-      ctx.strokeStyle = 'rgba(213,255,107,0.12)'; ctx.lineWidth = 0.5;
-      for (let i = 1; i < 3; i++) {
-        ctx.beginPath(); ctx.moveTo(bx + bw/3*i, by); ctx.lineTo(bx + bw/3*i, by+bh); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(bx, by + bh/3*i); ctx.lineTo(bx+bw, by + bh/3*i); ctx.stroke();
-      }
-      // dimensions text
+      // Dimensions text
       if (bw > 60 && bh > 30) {
         const baseW = effNatW(), baseH = effNatH();
-        const cpW = Math.round(edCropBox.w * baseW), cpH = Math.round(edCropBox.h * baseH);
+        const cpW = Math.round((x2 - x1) * baseW), cpH = Math.round((y2 - y1) * baseH);
         ctx.fillStyle = '#d5ff6b'; ctx.font = '11px system-ui';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(`${cpW} \u00d7 ${cpH}`, bx + bw/2, by + bh/2);
@@ -5001,8 +4896,8 @@ function createWidget(node) {
         flipH:edFlipH, flipV:edFlipV, rotate:edRotate, bg:edBg
       };
       if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
-      if (edLassoOps.length > 0 && edLassoIsPaint) { transform.lassoOps = edLassoOps; }
-      if (edLassoInverted && edLassoIsPaint) { transform.lassoInverted = true; }
+      if (edLassoOps.length > 0) { transform.lassoOps = edLassoOps; }
+      if (edLassoInverted) { transform.lassoInverted = true; }
       const fn = items[curIdx]?.filename ?? "";
       const fitMode = getFitModeWidget()?.value ?? "letterbox";
       const cacheKey = JSON.stringify(transform) + "|" + fn + "|" + fitMode;
@@ -5291,7 +5186,7 @@ function createWidget(node) {
           ctx.restore();
         }
         // rule-of-thirds (hide when crop overlay active — it draws its own)
-        if (!edCropMode || !edCropBox) {
+        if (!_marqueeRectDrag) {
           ctx.strokeStyle="rgba(255,255,255,0.1)"; ctx.lineWidth=0.5;
           for(let i=1;i<3;i++) {
             ctx.beginPath(); ctx.moveTo(fx+frameW/3*i,fy); ctx.lineTo(fx+frameW/3*i,fy+frameH); ctx.stroke();
@@ -5326,7 +5221,7 @@ function createWidget(node) {
     }
 
     function _hitFreeHandle(mx, my) {
-      if (edPixelTool || edCropMode || edLassoMode) return null;
+      if (edPixelTool || edLassoMode) return null;
       if (!edImg || edPanelMode === 'pixels') return null;
       const corners = _getImgCorners(); if (!corners) return null;
       for (const c of corners) {
@@ -5354,7 +5249,7 @@ function createWidget(node) {
     }
 
     function drawFreeHandles(ctx) {
-      if (edPixelTool || edCropMode || edLassoMode) return;
+      if (edPixelTool || edLassoMode) return;
       if (!edImg || edPanelMode === 'pixels') return;
       const corners = _getImgCorners(); if (!corners) return;
       ctx.save();
@@ -5388,10 +5283,9 @@ function createWidget(node) {
       if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
-        // Lasso ops in edit mode (non-paint) are visual-only selections;
-      // they become crop regions only when the Crop button is pressed.
-      // Do NOT serialize them so the backend doesn't auto-apply a lasso mask.
-      if (hasLasso && edLassoIsPaint) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
+        // Lasso ops from all selection tools (marquee, freehand, polygonal) define mask regions
+      // and are always serialized so the backend applies the selection mask.
+      if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
         ses[fn] = t;
       } else delete ses[fn];
@@ -5424,7 +5318,7 @@ function createWidget(node) {
           edLassoIsPaint = false;
           _lassoChanged();
           syncLassoInvertBtn();
-          edCropBox = null; edCropDrag = null;
+          edCropBox = null;
           syncCvs();
           dOX=(t?.ox??0)*frameW; dOY=(t?.oy??0)*frameH; edScale=t?.scale??1.0;
           edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??getEffectiveBgColor();
@@ -5589,6 +5483,29 @@ function createWidget(node) {
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
+        if (edLassoTool === "marquee" && edLassoDrawing && _marqueeRectDrag) {
+          _marqueeRectDrag.curX = cNx; _marqueeRectDrag.curY = cNy;
+          // AR constraint for marquee
+          const arVal = parseCropAR();
+          if (arVal) {
+            const eW = effNatW(), eH = effNatH();
+            const dx = cNx - _marqueeRectDrag.anchorX;
+            const dy = cNy - _marqueeRectDrag.anchorY;
+            const absDx = Math.abs(dx), absDy = Math.abs(dy);
+            // Derive h from w (or w from h) to maintain AR
+            const derivedH = (absDx * eW) / (arVal * eH);
+            const derivedW = (absDy * eH * arVal) / eW;
+            if (derivedH <= 1) {
+              _marqueeRectDrag.curY = _marqueeRectDrag.anchorY + Math.sign(dy) * derivedH;
+            } else {
+              _marqueeRectDrag.curX = _marqueeRectDrag.anchorX + Math.sign(dx) * derivedW;
+            }
+            // Clamp to [0,1]
+            _marqueeRectDrag.curX = Math.max(0, Math.min(1, _marqueeRectDrag.curX));
+            _marqueeRectDrag.curY = Math.max(0, Math.min(1, _marqueeRectDrag.curY));
+          }
+          redraw(); return;
+        }
         if (edLassoTool === "freehand" && edLassoDrawing) {
           const { dw: _sdw, dh: _sdh } = _imgRenderDims();
           if (e.shiftKey) {
@@ -5619,83 +5536,7 @@ function createWidget(node) {
         }
         return; // lasso mode active — don't pan
       }
-      // ── crop drag ──
-      if (edCropMode && edCropDrag) {
-        const r = cvs.getBoundingClientRect();
-        const cx = e.clientX - r.left, cy = e.clientY - r.top;
-        const { nx, ny } = cropPxToNorm(cx, cy);
-        const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
-        const ob = edCropDrag.origBox;
-        const m = edCropDrag.mode;
-        if (edCropDrag.isNew) {
-          const ax = edCropDrag.anchorX, ay = edCropDrag.anchorY;
-          edCropBox = { x: Math.min(ax, cNx), y: Math.min(ay, cNy), w: Math.abs(cNx - ax), h: Math.abs(cNy - ay) };
-        } else if (m === 'move') {
-          const dx = (cx - edCropDrag.startX) / frameW, dy = (cy - edCropDrag.startY) / frameH;
-          let nx2 = Math.max(0, Math.min(1 - ob.w, ob.x + dx));
-          let ny2 = Math.max(0, Math.min(1 - ob.h, ob.y + dy));
-          edCropBox = { x: nx2, y: ny2, w: ob.w, h: ob.h };
-        } else {
-          let { x, y, w, h } = { ...ob };
-          const right = x + w, bottom = y + h;
-          if (m.includes('left'))   { const nX = Math.min(cNx, right - 0.02); w = right - nX; x = nX; }
-          if (m.includes('right'))  { w = Math.max(0.02, cNx - x); }
-          if (m.includes('top'))    { const nY = Math.min(cNy, bottom - 0.02); h = bottom - nY; y = nY; }
-          if (m.includes('bottom')) { h = Math.max(0.02, cNy - y); }
-          edCropBox = { x, y, w, h };
-        }
-        // ── AR constraint ─────────────────────────────────────────
-        const arVal = parseCropAR();
-        if (arVal && m !== 'move' && edCropBox) {
-          const eW = effNatW(), eH = effNatH();
-          const b = edCropBox;
-          if (m === 'top' || m === 'bottom') {
-            // h is driven by drag → derive w to match AR
-            b.w = (b.h * eH * arVal) / eW;
-          } else {
-            // w is driven by drag → derive h to match AR
-            b.h = (b.w * eW) / (arVal * eH);
-          }
-          // Now enforce that both dimensions fit inside [0,1] without breaking AR.
-          // Anchor: the edge opposite to the drag handle stays fixed.
-          // We scale the box down if it overflows, keeping the ratio locked.
-          let scale = 1;
-          // Max size limited by image edges
-          if (m.includes('right') || m === 'bottom') {
-            // anchor is left/top edge (x,y are fixed)
-            if (b.x + b.w > 1) scale = Math.min(scale, (1 - b.x) / b.w);
-            if (b.y + b.h > 1) scale = Math.min(scale, (1 - b.y) / b.h);
-          } else if (m.includes('left') || m === 'top') {
-            // anchor is right/bottom edge (x+w, y+h are fixed)
-            const right  = b.x + b.w;
-            const bottom = b.y + b.h;
-            if (b.w > right)  scale = Math.min(scale, right  / b.w);
-            if (b.h > bottom) scale = Math.min(scale, bottom / b.h);
-          } else {
-            // corner: anchor is the opposite corner
-            if (b.x + b.w > 1) scale = Math.min(scale, (1 - b.x) / b.w);
-            if (b.y + b.h > 1) scale = Math.min(scale, (1 - b.y) / b.h);
-            if (b.x < 0)       scale = Math.min(scale, (b.x + b.w) / b.w);
-            if (b.y < 0)       scale = Math.min(scale, (b.y + b.h) / b.h);
-          }
-          if (scale < 1) {
-            // Scale both dims, keeping the far anchor fixed
-            const newW = b.w * scale, newH = b.h * scale;
-            if (m.includes('left'))   { b.x = (b.x + b.w) - newW; }
-            if (m.includes('top'))    { b.y = (b.y + b.h) - newH; }
-            b.w = newW; b.h = newH;
-          }
-          // Clamp position only (size is already valid from scale above)
-          b.x = Math.max(0, Math.min(b.x, 1 - b.w));
-          b.y = Math.max(0, Math.min(b.y, 1 - b.h));
-          b.w = Math.max(0.02, b.w);
-          b.h = Math.max(0.02, b.h);
-        } else {
-          clampCropBox();
-        }
-        updateCropInfoLbl(); redraw();
-        return;
-      }
+      // (crop drag removed — marquee uses lasso system now)
       // ── pan drag with snap-to-edges ──
       if (!panSt) return;
       if (edPanelMode === "pixels" && panSt.vpx !== undefined) {
@@ -5783,6 +5624,23 @@ function createWidget(node) {
         }
         redraw(); return;
       }
+      // ── marquee rect end ──
+      if (edLassoMode && edLassoDrawing && edLassoTool === "marquee" && _marqueeRectDrag) {
+        edLassoDrawing = false;
+        const d = _marqueeRectDrag;
+        const x1 = Math.min(d.anchorX, d.curX), y1 = Math.min(d.anchorY, d.curY);
+        const x2 = Math.max(d.anchorX, d.curX), y2 = Math.max(d.anchorY, d.curY);
+        _marqueeRectDrag = null;
+        if (x2 - x1 > 0.005 && y2 - y1 > 0.005) {
+          // Commit rectangle as a 4-point lasso op
+          const rectPts = [
+            { x: x1, y: y1 }, { x: x2, y: y1 },
+            { x: x2, y: y2 }, { x: x1, y: y2 }
+          ];
+          commitLassoShape(rectPts, e);
+        }
+        redraw(); ca.style.cursor = 'crosshair'; return;
+      }
       // ── lasso freehand end ──
       if (edLassoMode && edLassoDrawing && edLassoTool === "freehand") {
         edLassoDrawing = false;
@@ -5790,18 +5648,11 @@ function createWidget(node) {
         else { commitLassoShape(edLassoCurrentPts, e); }
         redraw(); ca.style.cursor = e.shiftKey ? _lassoCursors.add : e.altKey ? _lassoCursors.subtract : _lassoCursors.normal; return;
       }
-      if (edCropMode && edCropDrag) {
-        edCropDrag = null;
-        const r = cvs.getBoundingClientRect();
-        const hit = cropHitTest(e.clientX - r.left, e.clientY - r.top);
-        ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
-        updateCropInfoLbl(); return;
-      }
       if (panSt) {
         panSt = null;
         // Clear snap guides when releasing pan
         _snapGuides = { cx: false, cy: false, L: false, R: false, T: false, B: false };
-        ca.style.cursor = edLassoMode ? _lassoCursors.normal : edCropMode ? "crosshair" : "grab";
+        ca.style.cursor = edLassoMode ? _lassoCursors.normal : "grab";
         requestInpaintPreview();
       }
     }
@@ -5892,13 +5743,17 @@ function createWidget(node) {
         }
         return;
       }
-      // ── lasso start / polygonal click ──
+      // ── lasso start / polygonal click / marquee rect start ──
       if (edLassoMode) {
         const r = cvs.getBoundingClientRect();
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
         const { nx, ny } = cropPxToNorm(cx, cy);
         const cNx = Math.max(0, Math.min(1, nx)), cNy = Math.max(0, Math.min(1, ny));
-        if (edLassoTool === "freehand") {
+        if (edLassoTool === "marquee") {
+          // Start rectangle drag
+          _marqueeRectDrag = { anchorX: cNx, anchorY: cNy, curX: cNx, curY: cNy };
+          edLassoDrawing = true; ca.style.cursor = 'crosshair';
+        } else if (edLassoTool === "freehand") {
           edLassoCurrentPts = [{ x: cNx, y: cNy }]; edLassoDrawing = true; _lassoShiftAnchorIdx = -1; ca.style.cursor = 'crosshair';
         } else {
           if (edLassoCurrentPts.length >= 3) {
@@ -5915,26 +5770,8 @@ function createWidget(node) {
         }
         return;
       }
-      if (edCropMode) {
-        const r = cvs.getBoundingClientRect();
-        const cx = e.clientX - r.left, cy = e.clientY - r.top;
-        const hit = cropHitTest(cx, cy);
-        if (hit) {
-          edCropDrag = { mode: hit, startX: cx, startY: cy, origBox: { ...edCropBox } };
-          ca.style.cursor = hit === 'move' ? 'grabbing' : cropCursorFor(hit);
-        } else {
-          const fx = frameCX - frameW/2, fy = frameCY - frameH/2;
-          if (cx >= fx && cy >= fy && cx <= fx+frameW && cy <= fy+frameH) {
-            const { nx, ny } = cropPxToNorm(cx, cy);
-            edCropBox = { x: nx, y: ny, w: 0.001, h: 0.001 };
-            edCropDrag = { mode:'bottom-right', startX:cx, startY:cy, origBox:{x:nx,y:ny,w:0.001,h:0.001}, isNew:true, anchorX:nx, anchorY:ny };
-            ca.style.cursor = 'crosshair';
-          }
-        }
-        return;
-      }
       // ── Free-transform handle drag start ──
-      if (!edPixelTool && !edCropMode && !edLassoMode && edPanelMode !== 'pixels') {
+      if (!edPixelTool && !edLassoMode && edPanelMode !== 'pixels') {
         const r = cvs.getBoundingClientRect();
         const mx = e.clientX - r.left, my = e.clientY - r.top;
         const hit = _hitFreeHandle(mx, my);
@@ -5974,14 +5811,9 @@ function createWidget(node) {
         ca.style.cursor = e.shiftKey ? _lassoCursors.add : e.altKey ? _lassoCursors.subtract : _lassoCursors.normal;
         return;
       }
-      if (edCropMode && !edCropDrag) {
-        const r = cvs.getBoundingClientRect();
-        const hit = cropHitTest(e.clientX - r.left, e.clientY - r.top);
-        ca.style.cursor = hit ? cropCursorFor(hit) : 'crosshair';
-        return;
-      }
+      // (crop hover removed — marquee uses lasso system)
       // Hover: show handle cursor
-      if (!edPixelTool && !edCropMode && !edLassoMode && edPanelMode !== 'pixels') {
+      if (!edPixelTool && !edLassoMode && edPanelMode !== 'pixels') {
         const r = cvs.getBoundingClientRect();
         const hit = _hitFreeHandle(e.clientX - r.left, e.clientY - r.top);
         ca.style.cursor = hit ? _handleCursor(hit) : (panSt ? 'grabbing' : 'grab');
@@ -6128,7 +5960,7 @@ function createWidget(node) {
         } else {
           edAppliedCrop = { cx: edCropBox.x, cy: edCropBox.y, cw: edCropBox.w, ch: edCropBox.h };
         }
-        edCropBox = null; edCropMode = false;
+        edCropBox = null;
       }
       saveToSes();
       const valid=new Set(items.map(i=>i.filename));
