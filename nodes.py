@@ -78,7 +78,12 @@ async def inpaint_handler(request):
         loop = asyncio.get_event_loop()
 
         def _run():
-            img_pil = Image.open(_io.BytesIO(base64.b64decode(img_b64))).convert("RGB")
+            img_pil_raw = Image.open(_io.BytesIO(base64.b64decode(img_b64)))
+            has_alpha = img_pil_raw.mode == "RGBA"
+            alpha_channel = None
+            if has_alpha:
+                alpha_channel = img_pil_raw.split()[3]
+            img_pil = img_pil_raw.convert("RGB")
             mask_pil = Image.open(_io.BytesIO(base64.b64decode(mask_b64))).convert("L")
             # Resize mask to match image if needed
             if mask_pil.size != img_pil.size:
@@ -90,6 +95,14 @@ async def inpaint_handler(request):
             result = cv2.inpaint(img_cv, mask_cv, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
             result_rgb = result[:, :, ::-1]  # BGR→RGB
             result_pil = Image.fromarray(result_rgb)
+            # Restore alpha channel if source had transparency
+            if has_alpha and alpha_channel is not None:
+                # In the inpainted region (mask_cv white), make pixels fully opaque
+                alpha_np = np.array(alpha_channel)
+                mask_np = np.array(mask_cv)
+                alpha_np = np.where(mask_np > 128, 255, alpha_np).astype(np.uint8)
+                result_pil = result_pil.convert("RGBA")
+                result_pil.putalpha(Image.fromarray(alpha_np))
             buf = _io.BytesIO()
             result_pil.save(buf, format="PNG")
             return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
