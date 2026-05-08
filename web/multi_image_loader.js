@@ -3123,9 +3123,11 @@ function createWidget(node) {
       cc.imageSmoothingEnabled = true; cc.imageSmoothingQuality = "high";
 
       // ── 2. Fill background ──
-      const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
-      cc.fillStyle = bgC;
-      cc.fillRect(0, 0, wpX, wpY);
+      if (edBg !== "transparent") {
+        const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
+        cc.fillStyle = bgC;
+        cc.fillRect(0, 0, wpX, wpY);
+      }
 
       // ── 3. Draw base image with current transforms ──
       // Replicate redraw() logic: fit image into comp canvas, apply transforms.
@@ -3195,7 +3197,7 @@ function createWidget(node) {
       edNatW = wpX; edNatH = wpY;
 
       // Persist composite so saveToSes() can serialize it
-      _edFlattenDataUrl = comp.toDataURL("image/webp", 0.92);
+      _edFlattenDataUrl = comp.toDataURL(edBg === "transparent" ? "image/png" : "image/webp", 0.92);
 
       // Async: replace with proper Image element for full API compatibility
       const newImg = new Image();
@@ -3992,7 +3994,7 @@ function createWidget(node) {
     // Background fill elements (created here, appended later — after Remove BG)
     const bgSelect = document.createElement("select");
     bgSelect.style.cssText=`width:100%;background:#1e1e1e;color:#aaa;border:1px solid #333;border-radius:${_r5};padding:${Math.round(4*uiScale)}px ${Math.round(5*uiScale)}px;font-size:${_fs10};cursor:pointer;`;
-    [["#808080","Gray (default)"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
+    [["#808080","Gray (default)"],["transparent","Transparent (alpha) \u25A6"],["black","Black"],["white","White"],["custom","Custom color\u2026"],["telea","Telea inpaint \u2699"],["navier-stokes","Navier-Stokes \u2699"]]
       .forEach(([v,l])=>{ const o=document.createElement("option"); o.value=v; o.textContent=l; bgSelect.appendChild(o); });
     const bgCustomRow = document.createElement("div");
     bgCustomRow.style.cssText="display:none;align-items:center;gap:4px;";
@@ -4025,7 +4027,7 @@ function createWidget(node) {
       // Map hex values to dropdown option values
       const hexToOpt = {"#000000":"black","#ffffff":"white"};
       const optVal = hexToOpt[edBg?.toLowerCase()] || edBg;
-      const known=["#808080","black","white","telea","navier-stokes"];
+      const known=["#808080","transparent","black","white","telea","navier-stokes"];
       bgSelect.value=known.includes(optVal)?optVal:"custom";
       const isCust=!known.includes(optVal);
       bgCustomRow.style.display=isCust?"flex":"none";
@@ -4090,6 +4092,9 @@ function createWidget(node) {
 
         rbStatus.textContent = "\u2713 Done — BG removed";
         rbStatus.style.color = "#44cc88";
+
+        // Auto-switch to transparent BG to show alpha immediately
+        edBg = "transparent"; syncBgUI();
 
         // Reload ONLY the image element — preserve all editor state (bg, pan, zoom, etc.)
         await new Promise(res => {
@@ -4545,8 +4550,10 @@ function createWidget(node) {
 
       // ── FULL COMPOSITE: bake Edit-panel state into pixel canvas ──
       const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : getEffectiveBgColor();
-      ctx.fillStyle = bgC;
-      ctx.fillRect(0, 0, wpX, wpY);
+      if (edBg !== "transparent") {
+        ctx.fillStyle = bgC;
+        ctx.fillRect(0, 0, wpX, wpY);
+      }
 
       // Source region (pre-crop)
       let srcX = 0, srcY = 0, srcW = edNatW, srcH = edNatH;
@@ -5496,8 +5503,20 @@ function createWidget(node) {
         }
         const fx=frameCX-frameW/2, fy=frameCY-frameH/2;
         // background fill inside frame — uses per-image edBg (initialized from node bg_color, overridable per-image)
-        const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
-        ctx.fillStyle=bgC; ctx.fillRect(fx,fy,frameW,frameH);
+        const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : (edBg === "transparent" ? "#808080" : "#808080");
+        if (edBg === "transparent") {
+          // Photoshop-style alpha checkerboard inside frame
+          const aT = 12;
+          ctx.save(); ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.clip();
+          for (let ar = 0; ar < Math.ceil(frameH / aT); ar++)
+            for (let ac = 0; ac < Math.ceil(frameW / aT); ac++) {
+              ctx.fillStyle = (ar + ac) % 2 === 0 ? "#cccccc" : "#999999";
+              ctx.fillRect(fx + ac * aT, fy + ar * aT, aT, aT);
+            }
+          ctx.restore();
+        } else {
+          ctx.fillStyle = bgC; ctx.fillRect(fx, fy, frameW, frameH);
+        }
         if (edBg==="telea"||edBg==="navier-stokes") {
           ctx.save(); ctx.strokeStyle="rgba(90,122,191,0.18)"; ctx.lineWidth=1;
           for(let i=-frameH;i<frameW+frameH;i+=14){
@@ -5860,7 +5879,7 @@ function createWidget(node) {
         // Lasso ops from all selection tools (marquee, freehand, polygonal) define mask regions
       // and are always serialized so the backend applies the selection mask.
       if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
-        if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
+        if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL(edBg === "transparent" ? "image/png" : "image/webp", 0.92); }
         else if (hasFlatten) { t.imageEditsDataUrl = _edFlattenDataUrl; }
         ses[fn] = t;
       } else delete ses[fn];
