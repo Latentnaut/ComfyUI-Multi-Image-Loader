@@ -213,19 +213,38 @@ async def rembg_handler(request):
         os.makedirs(os.environ["U2NET_HOME"], exist_ok=True)
 
         loop = asyncio.get_event_loop()
+        edited_file = data.get("editedFile", "")  # pixel-edited image uploaded as temp file
 
         def _run():
-            # Always work from the untouched original image.
-            # On first call, save a backup; on re-runs, read from it.
+            # On first call, save a backup of the untouched original
+            # so "Reset original" can always restore it.
             stem, ext = os.path.splitext(path)
             backup = f"{stem}_original{ext}"
             if not os.path.isfile(backup):
-                # First rembg on this file — save the original
                 import shutil
                 shutil.copy2(path, backup)
-            source = backup  # always rembg from the pristine original
 
-            img = Image.open(source).convert("RGBA")
+            # Flatten model: if pixel edits exist, rembg processes THAT
+            # image directly (brush strokes, blur, etc. are baked in).
+            # Otherwise fall back to the pristine backup.
+            if edited_file:
+                edit_path = os.path.join(folder_paths.get_input_directory(), edited_file)
+                if os.path.isfile(edit_path):
+                    img = Image.open(edit_path).convert("RGBA")
+                    print(f"[MIL rembg] processing pixel-edited image: {edit_path}")
+                    print(f"[MIL rembg] input size: {img.size}, mode: {img.mode}")
+                    # Debug: check alpha channel of input
+                    import numpy as np
+                    arr = np.array(img)
+                    alpha = arr[:,:,3]
+                    print(f"[MIL rembg] input alpha stats: min={alpha.min()}, max={alpha.max()}, "
+                          f"mean={alpha.mean():.1f}, fully_opaque_pct={100*(alpha==255).sum()/alpha.size:.1f}%")
+                else:
+                    print(f"[MIL rembg] editedFile not found, falling back to backup")
+                    img = Image.open(backup).convert("RGBA")
+            else:
+                img = Image.open(backup).convert("RGBA")
+
             result = remove(
                 img,
                 session=new_session(model),
@@ -237,6 +256,14 @@ async def rembg_handler(request):
                 only_mask=only_mask,
             )
             result = result.convert("RGBA")
+            # Debug: check alpha channel of result
+            import numpy as np
+            res_arr = np.array(result)
+            res_alpha = res_arr[:,:,3]
+            print(f"[MIL rembg] result size: {result.size}, "
+                  f"result alpha: min={res_alpha.min()}, max={res_alpha.max()}, "
+                  f"fully_transparent_pct={100*(res_alpha==0).sum()/res_alpha.size:.1f}%, "
+                  f"fully_opaque_pct={100*(res_alpha==255).sum()/res_alpha.size:.1f}%")
             # Overwrite the working file as RGBA PNG
             result.save(path, format="PNG")
             # Encode for immediate preview
@@ -305,6 +332,77 @@ async def rembg_reset_handler(request):
         return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
+# ─── Upload-temp route (multipart binary image upload) ─────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/upload_temp")
+async def upload_temp_handler(request):
+    """Accept a binary image via multipart FormData, save to input/mil_edits/,
+    return the relative filename.  Used for operations like rembg that need
+    the pixel-edited canvas as a file reference."""
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None:
+            return web.Response(status=400, text="No file uploaded")
+        img_bytes = await field.read()
+
+        h = hashlib.sha256(img_bytes).hexdigest()[:12]
+        edits_dir = Path(folder_paths.get_input_directory()) / "mil_edits"
+        edits_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"temp_{h}.png"
+        dest = edits_dir / fname
+        if not dest.exists():
+            dest.write_bytes(img_bytes)
+        rel_path = f"mil_edits/{fname}"
+        return web.json_response({"success": True, "filename": rel_path})
+    except Exception as e:
+        import traceback
+        print(f"[MIL upload_temp] error: {e}\n{traceback.format_exc()}")
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+
+
+# ─── Upload-edit route (externalize base64 blobs) ─────────────────────────────
+
+@PromptServer.instance.routes.post("/multi_image_loader/upload_edit")
+async def upload_edit_handler(request):
+    """Accept a base64 data URL, save it as a PNG in input/mil_edits/,
+    and return the relative filename.  Used to externalize heavy
+    imageEditsDataUrl and maskOps.dataUrl blobs from the workflow JSON."""
+    import asyncio
+    try:
+        data = await request.json()
+        data_url = data.get("data_url", "")
+        if not data_url:
+            return web.Response(status=400, text="Missing data_url")
+
+        loop = asyncio.get_event_loop()
+
+        def _save():
+            import base64, io as _io
+            # Strip data URL prefix
+            if "," in data_url:
+                _, b64data = data_url.split(",", 1)
+            else:
+                b64data = data_url
+            img_bytes = base64.b64decode(b64data)
+            # Deduplicate by content hash
+            h = hashlib.sha256(img_bytes).hexdigest()[:12]
+            edits_dir = Path(folder_paths.get_input_directory()) / "mil_edits"
+            edits_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"edit_{h}.png"
+            dest = edits_dir / fname
+            if not dest.exists():
+                dest.write_bytes(img_bytes)
+            return f"mil_edits/{fname}"
+
+        rel_path = await loop.run_in_executor(None, _save)
+        return web.json_response({"success": True, "filename": rel_path})
+    except Exception as e:
+        import traceback
+        print(f"[MIL upload_edit] error: {e}\n{traceback.format_exc()}")
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+
+
 # ─── Node ─────────────────────────────────────────────────────────────────────
 
 def _scale_to_megapixels(img: Image.Image, megapixels: float) -> Image.Image:
@@ -324,12 +422,20 @@ def _compute_canvas_dims(aspect_ratio: str, megapixels: float, first_img_size=No
     """
     Return (canvas_w, canvas_h) based on the selected aspect ratio.
     When aspect_ratio is 'none', returns first_img_size unchanged.
-    When set, computes dimensions whose product ≈ megapixels * 1 000 000.
+    When megapixels > 0, computes dimensions whose product ≈ megapixels * 1 000 000.
+    When megapixels == 0 (no compression), uses native pixel count from first_img_size.
     """
     if aspect_ratio in ("Starred image", "Image Input", "none") or not aspect_ratio:
         return first_img_size  # may be None if not yet known
     aw, ah = map(int, aspect_ratio.split(":"))
-    total_px = max(1, megapixels * 1_000_000)
+    if megapixels <= 0 and first_img_size:
+        # No compression: use native pixel count, just reshape to aspect ratio
+        total_px = max(1, first_img_size[0] * first_img_size[1])
+    elif megapixels <= 0:
+        # No compression but no reference image yet — cannot compute; signal caller
+        return None
+    else:
+        total_px = max(1, int(megapixels * 1_000_000))
     w = max(1, round(math.sqrt(total_px * aw / ah)))
     h = max(1, round(math.sqrt(total_px * ah / aw)))
     return (w, h)
@@ -431,9 +537,18 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     # ── PRE-CROP: apply crop region to source image FIRST ──────────────────────
     img = _apply_crop_region(img, transform)
 
-    # ── PIXEL EDITS: composite imageEditsDataUrl over source ──────────────────
-    edits_data_url = transform.get("imageEditsDataUrl")
-    if edits_data_url and isinstance(edits_data_url, str):
+    # ── PIXEL EDITS: composite imageEditsDataUrl or imageEditsFile over source ─
+    edits_file = transform.get("imageEditsFile")  # new: file-based
+    edits_data_url = transform.get("imageEditsDataUrl")  # legacy: inline base64
+    edits_pil = None
+    if edits_file and isinstance(edits_file, str):
+        try:
+            fpath = Path(folder_paths.get_input_directory()) / edits_file
+            if fpath.exists():
+                edits_pil = Image.open(fpath).convert("RGBA")
+        except Exception as e:
+            print(f"[MIL] Warning: failed to load pixel edits file '{edits_file}': {e}")
+    elif edits_data_url and isinstance(edits_data_url, str):
         import base64, io as _io
         try:
             # Strip data URL prefix
@@ -443,13 +558,16 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
                     edits_data_url = edits_data_url[len(pfx):]
                     break
             edits_pil = Image.open(_io.BytesIO(base64.b64decode(edits_data_url))).convert("RGBA")
-            # Resize edits to match current source size
+        except Exception as e:
+            print(f"[MIL] Warning: failed to apply pixel edits: {e}")
+    if edits_pil is not None:
+        try:
             if edits_pil.size != img.size:
                 edits_pil = edits_pil.resize(img.size, Image.BICUBIC)
             img = img.convert("RGBA")
             img = Image.alpha_composite(img, edits_pil).convert("RGB")
         except Exception as e:
-            print(f"[MIL] Warning: failed to apply pixel edits: {e}")
+            print(f"[MIL] Warning: failed to composite pixel edits: {e}")
 
     ox     = float(transform.get("ox",     0.0))
     oy     = float(transform.get("oy",     0.0))
@@ -707,24 +825,32 @@ def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Imag
         mode   = op.get("mode", "add")
         otype  = op.get("type", "polygon")
 
-        # ── Fill op: decode pre-baked mask from dataUrl ──
-        if otype == "fill" and op.get("dataUrl"):
+        # ── Fill op: load pre-baked mask from file or dataUrl ──
+        if otype == "fill" and (op.get("maskFile") or op.get("dataUrl")):
             try:
-                data_url = op["dataUrl"]
-                # Strip "data:image/png;base64," prefix
-                header, b64data = data_url.split(",", 1)
-                img_bytes = base64.b64decode(b64data)
-                fill_img = Image.open(_io.BytesIO(img_bytes)).convert("L")
-                # The fill canvas stores: black=masked, white=unmasked
-                # But our mask convention is: white=selected/masked, black=unselected
-                # So we need to INVERT: fill canvas black(0) → mask white(255)
-                fill_img = ImageOps.invert(fill_img)
-                fill_img = fill_img.resize((ref_w, ref_h), Image.BICUBIC)
-                # Fill op is a complete mask snapshot — replace current mask
-                mask = fill_img
-                draw = ImageDraw.Draw(mask)
+                fill_img = None
+                mask_file = op.get("maskFile")  # new: file-based
+                if mask_file and isinstance(mask_file, str):
+                    fpath = Path(folder_paths.get_input_directory()) / mask_file
+                    if fpath.exists():
+                        fill_img = Image.open(fpath).convert("L")
+                if fill_img is None and op.get("dataUrl"):
+                    # Legacy: inline base64
+                    data_url = op["dataUrl"]
+                    header, b64data = data_url.split(",", 1)
+                    img_bytes = base64.b64decode(b64data)
+                    fill_img = Image.open(_io.BytesIO(img_bytes)).convert("L")
+                if fill_img is not None:
+                    # The fill canvas stores: black=masked, white=unmasked
+                    # But our mask convention is: white=selected/masked, black=unselected
+                    # So we need to INVERT: fill canvas black(0) → mask white(255)
+                    fill_img = ImageOps.invert(fill_img)
+                    fill_img = fill_img.resize((ref_w, ref_h), Image.BICUBIC)
+                    # Fill op is a complete mask snapshot — replace current mask
+                    mask = fill_img
+                    draw = ImageDraw.Draw(mask)
             except Exception as e:
-                print(f"[MIL] Warning: failed to decode fill op dataUrl: {e}")
+                print(f"[MIL] Warning: failed to load fill op mask: {e}")
             continue
 
         pts = op.get("pts", [])
@@ -782,7 +908,7 @@ class MultiImageLoader:
                                  {"default": "gray"}),
                 "aspect_ratio": (["Starred image", "Image Input", "Aspect Ratio Input", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"],
                                  {"default": "Starred image"}),
-                "megapixels":   ("FLOAT", {"default": 1.0, "min": 0.1, "max": 32.0, "step": 0.1, "display": "number"}),
+                "megapixels":   ("INT", {"default": 1, "min": 0, "max": 32, "step": 1, "display": "number"}),
 
                 "thumb_size":   (["full", "large", "medium", "small"], {"default": "medium"}), # KEEP FOR BACKWARDS COMPATIBILITY
                 "double_click": (["Edit Image", "Edit Pixel", "Mask"], {"default": "Edit Image"}),
@@ -802,7 +928,7 @@ class MultiImageLoader:
     OUTPUT_NODE = False
 
     @classmethod
-    def IS_CHANGED(cls, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def IS_CHANGED(cls, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         if randomize != "None":
             return float("NaN")
         # Include images shape in the hash so re-execution triggers when it changes
@@ -812,7 +938,7 @@ class MultiImageLoader:
         ar_in_hash = aspect_ratio_in or ""
         return hashlib.md5((image_list + crop_data + selected_items + reference_image + aspect_ratio + ar_in_hash + fit_mode + bg_color + str(megapixels) + str(grid_columns) + str(grid_rows) + master_hash).encode()).hexdigest()
 
-    def load_images(self, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1.0, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
+    def load_images(self, images=None, aspect_ratio_in=None, image_list="[]", fit_mode="letterbox", bg_color="gray", aspect_ratio="Starred image", megapixels=1, thumb_size="medium", double_click="Edit Image", crop_data="{}", selected_items="[]", reference_image="", grid_columns=3, grid_rows=3, randomize="None"):
         # ── Resolve aspect_ratio from upstream input if requested ──────────────
         if aspect_ratio == "Aspect Ratio Input":
             if aspect_ratio_in and isinstance(aspect_ratio_in, str) and ":" in aspect_ratio_in:
@@ -905,10 +1031,14 @@ class MultiImageLoader:
                 fixed_canvas = True
                 print(f"[MultiImageLoader] Image Input mode: using exact tensor dims {m_w}x{m_h}")
             else:
-                total_px = max(1, megapixels * 1_000_000)
-                ratio = m_w / m_h
-                c_w = max(1, round(math.sqrt(total_px * ratio)))
-                c_h = max(1, round(math.sqrt(total_px / ratio)))
+                if megapixels <= 0:
+                    # No compression: use native tensor dimensions
+                    c_w, c_h = m_w, m_h
+                else:
+                    total_px = max(1, megapixels * 1_000_000)
+                    ratio = m_w / m_h
+                    c_w = max(1, round(math.sqrt(total_px * ratio)))
+                    c_h = max(1, round(math.sqrt(total_px / ratio)))
                 master_canvas = (c_w, c_h)
                 ref_w, ref_h = master_canvas
                 fixed_canvas = True
@@ -917,8 +1047,14 @@ class MultiImageLoader:
         # Step 3: If no badge and no upstream, try aspect_ratio
         elif not badge_resolved and aspect_ratio not in ("Starred image", "Image Input", "none") and bool(aspect_ratio):
             fixed_canvas = True
-            ref_w, ref_h = _compute_canvas_dims(aspect_ratio, megapixels)
-            print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
+            dims = _compute_canvas_dims(aspect_ratio, megapixels)
+            if dims is not None:
+                ref_w, ref_h = dims
+                print(f"[MultiImageLoader] fixed canvas {aspect_ratio}: {ref_w}x{ref_h} ({ref_w*ref_h/1e6:.2f} MP)")
+            else:
+                # megapixels=0 with fixed AR but no image yet — defer to Step 4
+                ref_w = ref_h = None
+                fixed_canvas = False
         elif not badge_resolved:
             fixed_canvas = False
             ref_w = ref_h = None
@@ -946,7 +1082,11 @@ class MultiImageLoader:
                     orig_ref_h = max(1, round(math.sqrt(native_mp * 1_000_000 / ratio)))
                 elif fixed_canvas:
                     native_mp = (first_native_w * first_native_h) / 1_000_000
-                    orig_ref_w, orig_ref_h = _compute_canvas_dims(aspect_ratio, native_mp)
+                    dims = _compute_canvas_dims(aspect_ratio, native_mp, (first_native_w, first_native_h))
+                    if dims is not None:
+                        orig_ref_w, orig_ref_h = dims
+                    else:
+                        orig_ref_w, orig_ref_h = first_native_w, first_native_h
                 else:
                     orig_ref_w = first_native_w
                     orig_ref_h = first_native_h
@@ -959,8 +1099,15 @@ class MultiImageLoader:
         if orig_ref_w is None:
             orig_ref_w, orig_ref_h = 512, 512
         if ref_w is None:
-            tmp_scaled = _scale_to_megapixels(Image.new("RGB", (512, 512)), megapixels)
-            ref_w, ref_h = tmp_scaled.size
+            if megapixels <= 0:
+                # No compression: use first valid image native size, or fallback 512x512
+                if first_valid_img is not None:
+                    ref_w, ref_h = first_valid_img.size
+                else:
+                    ref_w, ref_h = 512, 512
+            else:
+                tmp_scaled = _scale_to_megapixels(Image.new("RGB", (512, 512)), megapixels)
+                ref_w, ref_h = tmp_scaled.size
 
         for fname in filtered_filenames:
             if fname.startswith("__BLANK__"):

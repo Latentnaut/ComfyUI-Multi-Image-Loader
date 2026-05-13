@@ -1871,8 +1871,11 @@ function createWidget(node) {
       const mode = getFitModeWidget()?.value ?? "letterbox";
       // If pixel edits exist, load the edited image (crop already baked in)
       let drawSrc = el, srcX, srcY, srcW, srcH;
-      if (t.imageEditsDataUrl) {
-        const pxImg = await loadImage(t.imageEditsDataUrl);
+      if (t.imageEditsDataUrl || t.imageEditsFile) {
+        const editSrc = t.imageEditsFile
+          ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+          : t.imageEditsDataUrl;
+        const pxImg = await loadImage(editSrc);
         drawSrc = pxImg;
         srcX = 0; srcY = 0; srcW = pxImg.naturalWidth; srcH = pxImg.naturalHeight;
       } else {
@@ -1960,7 +1963,7 @@ function createWidget(node) {
     if (t.bg === "telea" || t.bg === "navier-stokes") return true;
     return !!(
       t.cx != null || t.cy != null || t.cw != null || t.ch != null ||
-      t.imageEditsDataUrl || (t.lassoOps && t.lassoOps.length) || (t.maskOps && t.maskOps.length) ||
+      t.imageEditsDataUrl || t.imageEditsFile || (t.lassoOps && t.lassoOps.length) || (t.maskOps && t.maskOps.length) ||
       t.ox || t.oy || (t.scale !== undefined && t.scale !== 1 && t.scale !== 0) || t.rotate || t.flipH || t.flipV
     );
   }
@@ -2040,8 +2043,11 @@ function createWidget(node) {
         );
       } else {
         const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
-        const imgSrc = t.imageEditsDataUrl || item.src;
-        const xform = t.imageEditsDataUrl
+        const hasEdits = t.imageEditsFile || t.imageEditsDataUrl;
+        const imgSrc = t.imageEditsFile
+          ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+          : (t.imageEditsDataUrl || item.src);
+        const xform = hasEdits
           ? { ...t, cx: undefined, cy: undefined, cw: undefined, ch: undefined }
           : t;
         jobs.push(
@@ -3403,13 +3409,37 @@ function createWidget(node) {
       rbStatus.textContent = "";
       rbStatus.style.color = "#888";
       try {
+        const payload = {
+          filename: fn,
+          model:    rbModelSel.value,
+        };
+        // DEBUG: check if pixel canvas exists
+        console.log("[MIL rembg] _edCvsEditsPx =", _edCvsEditsPx, "edPixelTool =", edPixelTool);
+        // If pixel edits exist, upload the flattened canvas (base image + all
+        // brush/blur/smudge edits baked in) as a temp file for rembg to process.
+        // _edCvsEditsPx always contains the complete composite — the base image
+        // was drawn into it during _edEnsureEditsPx() and all subsequent pixel
+        // tool strokes are drawn on top.
+        if (_edCvsEditsPx) {
+          console.log("[MIL rembg] exporting pixel canvas:", _edCvsEditsPx.width, "x", _edCvsEditsPx.height);
+          const blob = await new Promise(res => _edCvsEditsPx.toBlob(res, "image/png"));
+          console.log("[MIL rembg] blob size:", blob.size, "bytes");
+          const fd = new FormData();
+          fd.append("image", blob, "rembg_src.png");
+          const upResp = await fetch("/multi_image_loader/upload_temp", {
+            method: "POST",
+            body: fd,
+          });
+          const upJson = await upResp.json();
+          console.log("[MIL rembg] upload response:", upJson);
+          if (upJson.filename) {
+            payload.editedFile = upJson.filename;
+          }
+        }
         const resp = await fetch("/multi_image_loader/rembg", {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filename: fn,
-            model:    rbModelSel.value,
-          }),
+          body: JSON.stringify(payload),
         });
         const json = await resp.json();
         if (!json.success) throw new Error(json.error || "Unknown error");
@@ -3417,6 +3447,16 @@ function createWidget(node) {
         // Update the item's src to the new transparent PNG
         items[curIdx].src = json.dataUrl;
         delete items[curIdx].previewSrc;
+
+        // The rembg result already incorporates any prior pixel edits
+        // (blur, paint, etc.), so reset pixel edits canvas — the result
+        // is now the new baseline image.
+        _edCvsEditsPx = null;
+        const fnKey = items[curIdx]?.filename;
+        if (fnKey && cropMap[fnKey]) {
+          delete cropMap[fnKey].imageEditsDataUrl;
+          delete cropMap[fnKey].imageEditsFile;
+        }
 
         rbStatus.textContent = "\u2713 Done — BG removed";
         rbStatus.style.color = "#44cc88";
@@ -3509,6 +3549,14 @@ function createWidget(node) {
     let _edCafillLoading = false;
     let _edAltEyedrop = false; // Alt held while brush — temp eyedropper
 
+    // ── Clipboard Paste floating overlay state ──
+    let _pasteImg = null;      // HTMLImageElement of pasted content
+    let _pasteX = 0;           // X position in pixel-canvas coords (center)
+    let _pasteY = 0;           // Y position in pixel-canvas coords (center)
+    let _pasteScale = 1;       // Scale of pasted image
+    let _pasteDrag = null;     // {startX, startY, origPX, origPY} while dragging
+    let _lastCvsMousePos = null; // {cx, cy} last mouse position on canvas (screen coords)
+
     // Image dims in pixels panel (mirrors secEdit dims)
     const pxDimLbl = document.createElement("div");
     pxDimLbl.style.cssText = `color:#666;font-size:${_fs10};text-align:center;`;
@@ -3580,6 +3628,7 @@ function createWidget(node) {
     secPixels.appendChild(mkSec("Image Tools", () => {
       edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
       _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = [];
+      _pasteImg = null; _pasteDrag = null; _pasteStopAnts();
       _syncPixelToolUI(); redraw();
     }, "Reset all pixel edits"));
 
@@ -3616,6 +3665,14 @@ function createWidget(node) {
     ptBwBtn.addEventListener("mouseleave", () => { ptBwBtn.style.background="#1e1e1e"; ptBwBtn.style.borderColor="#3a3a3a"; });
     ptBwBtn.addEventListener("click", () => _edApplyGrayscale());
     ptFilterRow.appendChild(ptBwBtn);
+    const ptPasteBtn = document.createElement("button");
+    ptPasteBtn.textContent = "\uD83D\uDCCB Paste";
+    ptPasteBtn.title = "Paste image from clipboard (Ctrl+V)";
+    ptPasteBtn.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptPasteBtn.addEventListener("mouseenter", () => { ptPasteBtn.style.background="#2a2a2a"; ptPasteBtn.style.borderColor="#555"; });
+    ptPasteBtn.addEventListener("mouseleave", () => { ptPasteBtn.style.background="#1e1e1e"; ptPasteBtn.style.borderColor="#3a3a3a"; });
+    ptPasteBtn.addEventListener("click", () => _edHandleClipboardPaste());
+    ptFilterRow.appendChild(ptPasteBtn);
     secPixels.appendChild(ptFilterRow);
 
     // ── Color row: compact FG/BG + swap + reset ──
@@ -4110,6 +4167,86 @@ function createWidget(node) {
       redraw();
     }
 
+    // ── Clipboard Paste functions ──────────────────────────────────
+    let _pasteAntsRAF = null;
+    function _pasteStartAnts() {
+      if (_pasteAntsRAF) return;
+      (function tick() { _pasteAntsRAF = requestAnimationFrame(() => { if (!_pasteImg) { _pasteAntsRAF = null; return; } redraw(); tick(); }); })();
+    }
+    function _pasteStopAnts() {
+      if (_pasteAntsRAF) { cancelAnimationFrame(_pasteAntsRAF); _pasteAntsRAF = null; }
+    }
+
+    async function _edHandleClipboardPaste() {
+      try {
+        const clipItems = await navigator.clipboard.read();
+        for (const item of clipItems) {
+          const imgType = item.types.find(t => t.startsWith("image/"));
+          if (!imgType) continue;
+          const blob = await item.getType(imgType);
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+          img.onload = () => {
+            _edEnsureEditsPx();
+            // Position pasted image at mouse cursor (or center if no mouse pos)
+            if (_lastCvsMousePos && _edCvsEditsPx) {
+              const { dw, dh } = _imgRenderDims();
+              const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+              const pxToScreen = dw / _edCvsEditsPx.width;
+              _pasteX = (_lastCvsMousePos.cx - (imgCX - dw/2)) / pxToScreen;
+              _pasteY = (_lastCvsMousePos.cy - (imgCY - dh/2)) / pxToScreen;
+            } else {
+              _pasteX = _edCvsEditsPx.width / 2;
+              _pasteY = _edCvsEditsPx.height / 2;
+            }
+            // Scale: fit pasted image into 60% of canvas width if it's larger
+            const maxDim = _edCvsEditsPx.width * 0.6;
+            if (img.naturalWidth > maxDim || img.naturalHeight > maxDim) {
+              _pasteScale = maxDim / Math.max(img.naturalWidth, img.naturalHeight);
+            } else {
+              _pasteScale = 1;
+            }
+            _pasteImg = img;
+            _pasteDrag = null;
+            hint.textContent = "\uD83D\uDCCB Paste: drag to move \u00B7 scroll to resize \u00B7 Enter to commit \u00B7 Esc to cancel";
+            _pasteStartAnts();
+            redraw();
+          };
+          img.onerror = () => { URL.revokeObjectURL(url); hint.textContent = "Failed to load pasted image"; };
+          img.src = url;
+          return; // use first image found
+        }
+        hint.textContent = "No image found in clipboard";
+      } catch (err) {
+        console.warn("[MIL paste]", err);
+        hint.textContent = "Clipboard access denied \u2014 try copying the image again";
+      }
+    }
+
+    function _edCommitPaste() {
+      if (!_pasteImg || !_edCvsEditsPx) return;
+      _edSaveUndo();
+      const ctx = _edCvsEditsPx.getContext("2d");
+      const pw = _pasteImg.naturalWidth * _pasteScale;
+      const ph = _pasteImg.naturalHeight * _pasteScale;
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(_pasteImg, _pasteX - pw/2, _pasteY - ph/2, pw, ph);
+      // Clean up
+      if (_pasteImg.src.startsWith("blob:")) URL.revokeObjectURL(_pasteImg.src);
+      _pasteImg = null; _pasteDrag = null;
+      _pasteStopAnts();
+      hint.textContent = "\u2713 Pasted image committed";
+      redraw();
+    }
+
+    function _edCancelPaste() {
+      if (_pasteImg && _pasteImg.src && _pasteImg.src.startsWith("blob:")) URL.revokeObjectURL(_pasteImg.src);
+      _pasteImg = null; _pasteDrag = null;
+      _pasteStopAnts();
+      hint.textContent = "Paste cancelled";
+      redraw();
+    }
+
     // ── Reset All button ─────────────────────────────────────────
     const resetAllB = document.createElement("button");
     resetAllB.textContent = "\u27F2 Reset All";
@@ -4135,6 +4272,7 @@ function createWidget(node) {
       edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
       _edOpsUndoStack = []; _edOpsRedoStack = [];
       _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+      _pasteImg = null; _pasteDrag = null; _pasteStopAnts();
       _syncPixelToolUI();
       // Reset bg
       edBg=getEffectiveBgColor();
@@ -4458,6 +4596,27 @@ function createWidget(node) {
               ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
               ctx.drawImage(_edCvsEditsPx, -dw/2, -dh/2, dw, dh);
             }
+            // ── Floating paste overlay ──
+            if (_pasteImg && _edCvsEditsPx) {
+              const pxToScreen = dw / _edCvsEditsPx.width;
+              const pw = _pasteImg.naturalWidth * _pasteScale * pxToScreen;
+              const ph = _pasteImg.naturalHeight * _pasteScale * pxToScreen;
+              const sx = _pasteX * pxToScreen - dw/2;
+              const sy = _pasteY * pxToScreen - dh/2;
+              // Draw pasted image
+              ctx.drawImage(_pasteImg, sx - pw/2, sy - ph/2, pw, ph);
+              // Marching-ants border (dashed)
+              ctx.save();
+              ctx.strokeStyle = "#fff";
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([6, 4]);
+              ctx.lineDashOffset = -(performance.now() / 60) % 20;
+              ctx.strokeRect(sx - pw/2, sy - ph/2, pw, ph);
+              ctx.strokeStyle = "#000";
+              ctx.lineDashOffset -= 5;
+              ctx.strokeRect(sx - pw/2, sy - ph/2, pw, ph);
+              ctx.restore();
+            }
             // Lasso mask overlay — show bg color outside selection.
             // In pixels mode: only shown before pixel edits start (_edCvsEditsPx==null),
             // because once initialized, the lasso is already baked into _edCvsEditsPx.
@@ -4682,6 +4841,7 @@ function createWidget(node) {
           // Reset pixel tool state on image switch
           edPixelTool = null; _edCvsEditsPx = null; _edEditsUndoStack = [];
           _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = []; _edBrushPos = null;
+          _pasteImg = null; _pasteDrag = null; _pasteStopAnts();
           _syncPixelToolUI();
           const t=ses[items[idx].filename];
           // Restore applied crop BEFORE syncCvs so bFit uses effective dims
@@ -4698,16 +4858,19 @@ function createWidget(node) {
           updateDimLabels(); updateCropInfoLbl();
           edInpaintPreview=null; edInpaintDirty=true;
           // Restore pixel edits from session
-          if (t && t.imageEditsDataUrl) {
+          if (t && (t.imageEditsDataUrl || t.imageEditsFile)) {
             try {
               const pxImg = new Image();
+              pxImg.crossOrigin = "anonymous";
               pxImg.onload = () => {
                 _edCvsEditsPx = document.createElement("canvas");
                 _edCvsEditsPx.width = pxImg.naturalWidth; _edCvsEditsPx.height = pxImg.naturalHeight;
                 _edCvsEditsPx.getContext("2d").drawImage(pxImg, 0, 0);
                 redraw();
               };
-              pxImg.src = t.imageEditsDataUrl;
+              pxImg.src = t.imageEditsFile
+                ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+                : t.imageEditsDataUrl;
             } catch(e) { console.warn("[MIL] Failed to restore pixel edits:", e); }
           }
           syncRotUI(); syncBgUI(); syncFlipUI(); updLbl(); _updatePxDimLbl(); redraw(); requestInpaintPreview(); res();
@@ -4718,6 +4881,17 @@ function createWidget(node) {
 
     // ── events ───────────────────────────────────────────────
     function onGlobalMove(e) {
+      // ── Floating paste drag ──
+      if (_pasteDrag && _pasteImg) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const dx = (cx - _pasteDrag.startCX) / _pasteDrag.pxToScreen;
+        const dy = (cy - _pasteDrag.startCY) / _pasteDrag.pxToScreen;
+        _pasteX = _pasteDrag.origPX + dx;
+        _pasteY = _pasteDrag.origPY + dy;
+        redraw();
+        return;
+      }
       // ── Free-transform handle drag ──
       if (_fhDrag) {
         const r = cvs.getBoundingClientRect();
@@ -5044,6 +5218,16 @@ function createWidget(node) {
       redraw();
     }
     function onGlobalUp(e) {
+      // ── Floating paste drag end ──
+      if (_pasteDrag) {
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const moved = Math.hypot(cx - _pasteDrag.startCX, cy - _pasteDrag.startCY);
+        _pasteDrag = null;
+        // If barely moved (click), commit paste
+        if (moved < 3) { _edCommitPaste(); }
+        return;
+      }
       // ── Free-transform handle drag end ──
       if (_fhDrag) {
         _fhDrag = null;
@@ -5084,6 +5268,18 @@ function createWidget(node) {
     }
     cvs.addEventListener("contextmenu", e => { if (edPixelTool === "brush") e.preventDefault(); });
     cvs.addEventListener("mousedown", e=>{
+      // ── Floating paste: start drag or commit ──
+      if (_pasteImg && e.button === 0) {
+        e.preventDefault();
+        const r = cvs.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        // Convert screen coords to pixel-canvas coords
+        const { dw, dh } = _imgRenderDims();
+        const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
+        const pxToScreen = dw / (_edCvsEditsPx ? _edCvsEditsPx.width : 1);
+        _pasteDrag = { startCX: cx, startCY: cy, origPX: _pasteX, origPY: _pasteY, pxToScreen };
+        return;
+      }
       // right-click on brush = erase mode
       if (e.button === 2 && edPixelTool === "brush") {
         e.preventDefault();
@@ -5204,6 +5400,9 @@ function createWidget(node) {
       panSt={x:e.clientX,y:e.clientY,ox:dOX,oy:dOY}; ca.style.cursor="grabbing";
     });
     cvs.addEventListener("mousemove", e=>{
+      // Track last mouse position for paste placement
+      const _r = cvs.getBoundingClientRect();
+      _lastCvsMousePos = { cx: e.clientX - _r.left, cy: e.clientY - _r.top };
       // Pixel tool cursor tracking on canvas
       if (edPixelTool) {
         const r = cvs.getBoundingClientRect();
@@ -5242,6 +5441,13 @@ function createWidget(node) {
     window.addEventListener("mouseup",   onGlobalUp);
     cvs.addEventListener("wheel", e=>{
       e.preventDefault();
+      // ── Floating paste: scroll to resize ──
+      if (_pasteImg) {
+        const f = e.deltaY < 0 ? 1.08 : 0.93;
+        _pasteScale = Math.max(0.02, Math.min(10, _pasteScale * f));
+        redraw();
+        return;
+      }
       const f=e.deltaY<0?1.12:0.89;
       const r=cvs.getBoundingClientRect();
       const mx=e.clientX-r.left-frameCX, my=e.clientY-r.top-frameCY;
@@ -5257,7 +5463,11 @@ function createWidget(node) {
       }
       if (e.key === "ArrowLeft"  && curIdx > 0)              { saveToSes(); loadIdx(curIdx-1); }
       if (e.key === "ArrowRight" && curIdx < items.length-1) { saveToSes(); loadIdx(curIdx+1); }
-      if (e.key === "Escape") doClose();
+      // Escape: cancel floating paste first, then close modal
+      if (e.key === "Escape") {
+        if (_pasteImg) { _pasteImg = null; _pasteDrag = null; hint.textContent = "Paste cancelled"; redraw(); e.preventDefault(); e.stopImmediatePropagation(); return; }
+        doClose();
+      }
       // Ctrl+Z/Y: undo/redo pixel edits
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && edPixelTool && _edEditsUndoStack.length > 0) {
         e.preventDefault(); e.stopImmediatePropagation();
@@ -5266,6 +5476,18 @@ function createWidget(node) {
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey)) && edPixelTool && _edEditsRedoStack.length > 0) {
         e.preventDefault(); e.stopImmediatePropagation();
         _edRedoEdits(); return;
+      }
+      // Ctrl+V — paste from clipboard (pixels mode)
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && edPanelMode === "pixels") {
+        e.preventDefault(); e.stopImmediatePropagation();
+        _edHandleClipboardPaste();
+        return;
+      }
+      // Enter — commit floating paste
+      if (e.key === "Enter" && _pasteImg) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        _edCommitPaste();
+        return;
       }
       // Photoshop shortcuts in Edit Pixels mode
       if (edPanelMode === "pixels" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -5356,7 +5578,7 @@ function createWidget(node) {
         const prevMaskInv = cropMap[fn]?.maskInverted;
         const prevMaskXf = cropMap[fn]?.maskXform;
         if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!==_nodeBg)||
-            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted||t.imageEditsDataUrl)) {
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted||t.imageEditsDataUrl||t.imageEditsFile)) {
           cropMap[fn]=t;
         } else {
           // No edit transforms — keep entry only if mask data exists
@@ -5590,17 +5812,18 @@ function createWidget(node) {
     smudgeRow.appendChild(smudgeLbl); smudgeRow.appendChild(smudgeSlider); smudgeRow.appendChild(smudgeValEl);
     pnlBody.appendChild(smudgeRow);
 
-    // ── Brush size ──
+    // ── Brush size (persisted) ──
     pnlBody.appendChild(mkSec("BRUSH SIZE"));
+    const _savedBrushSize = parseInt(localStorage.getItem("mil_mask_brush_size") || "30");
     const brushRow = document.createElement("div");
     brushRow.style.cssText = `display:flex;gap:${_r(6)}px;align-items:center;`;
     const brushSlider = document.createElement("input");
-    brushSlider.type = "range"; brushSlider.min = "4"; brushSlider.max = "150"; brushSlider.value = "30";
+    brushSlider.type = "range"; brushSlider.min = "4"; brushSlider.max = "150"; brushSlider.value = String(_savedBrushSize);
     brushSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
     const brushSizeEl = document.createElement("span");
     brushSizeEl.style.cssText = `color:#888;font-size:${_fs11};min-width:${_r(28)}px;text-align:right;`;
-    brushSizeEl.textContent = "30px";
-    brushSlider.addEventListener("input", () => { brushSizeEl.textContent = brushSlider.value+"px"; mRedraw(); });
+    brushSizeEl.textContent = _savedBrushSize + "px";
+    brushSlider.addEventListener("input", () => { brushSizeEl.textContent = brushSlider.value+"px"; localStorage.setItem("mil_mask_brush_size", brushSlider.value); mRedraw(); });
     brushRow.appendChild(brushSlider); brushRow.appendChild(brushSizeEl);
     pnlBody.appendChild(brushRow);
 
@@ -5621,7 +5844,7 @@ function createWidget(node) {
     colorLbl.style.cssText = `color:#888;font-size:${_fs11};`;
     colorLbl.textContent = "Mask Color";
     const colorPick = document.createElement("input");
-    const _savedColor = localStorage.getItem("mil_mask_color") || "#1e5adc";
+    const _savedColor = localStorage.getItem("mil_mask_color") || "#22cc44";
     colorPick.type = "color"; colorPick.value = _savedColor;
     colorPick.style.cssText = `width:${_r(28)}px;height:${_r(22)}px;border:none;background:none;cursor:pointer;padding:0;`;
     colorRow.appendChild(colorLbl); colorRow.appendChild(colorPick);
@@ -5636,7 +5859,7 @@ function createWidget(node) {
     alphaLbl.style.cssText = `color:#888;font-size:${_fs11};flex-shrink:0;`;
     alphaLbl.textContent = "Opacity";
     const alphaSlider = document.createElement("input");
-    const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "55");
+    const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "40");
     alphaSlider.type = "range"; alphaSlider.min = "10"; alphaSlider.max = "95"; alphaSlider.value = String(_savedAlpha);
     alphaSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
     const alphaValEl = document.createElement("span");
@@ -5668,6 +5891,7 @@ function createWidget(node) {
       ["L / P",    "Lasso / Polygon"],
       ["G",        "Fill (bucket)"],
       ["[ / ]",    "Brush size"],
+      ["Ctrl+⚙",  "Brush size (wheel)"],
       ["⌥ drag",  "Subtract mode"],
       ["Ctrl+Z",   "Undo"],
       ["Ctrl+⇧Z",  "Redo"],
@@ -6520,20 +6744,31 @@ function createWidget(node) {
       }
     });
 
-    // ── Mouse wheel zoom ──
+    // ── Mouse wheel: Ctrl+Wheel → brush size, plain Wheel → zoom ──
     ca.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const r = ca.getBoundingClientRect();
-      const cx = e.clientX - r.left, cy = e.clientY - r.top;
-      const oldZ = mZoom;
-      const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-      mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
-      // Zoom centered on cursor position
-      const cw2 = cvsBase.width / 2, ch2 = cvsBase.height / 2;
-      const ratio = mZoom / oldZ;
-      mPanX = (cx - cw2) - ratio * ((cx - cw2) - mPanX);
-      mPanY = (cy - ch2) - ratio * ((cy - ch2) - mPanY);
-      _dirtyBase = true; _dirtyMask = true; mRedraw();
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+Wheel → adjust brush size
+        const step = 3;
+        let v = parseFloat(brushSlider.value);
+        v = e.deltaY < 0 ? v + step : v - step;
+        v = Math.max(parseFloat(brushSlider.min), Math.min(parseFloat(brushSlider.max), v));
+        brushSlider.value = v;
+        brushSlider.dispatchEvent(new Event("input")); // sync label + persist
+        mRedraw();
+      } else {
+        const r = ca.getBoundingClientRect();
+        const cx = e.clientX - r.left, cy = e.clientY - r.top;
+        const oldZ = mZoom;
+        const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
+        // Zoom centered on cursor position
+        const cw2 = cvsBase.width / 2, ch2 = cvsBase.height / 2;
+        const ratio = mZoom / oldZ;
+        mPanX = (cx - cw2) - ratio * ((cx - cw2) - mPanX);
+        mPanY = (cy - ch2) - ratio * ((cy - ch2) - mPanY);
+        _dirtyBase = true; _dirtyMask = true; mRedraw();
+      }
     }, { passive: false });
 
     // ── Pan move/up handlers (window-level so drag continues outside canvas) ──

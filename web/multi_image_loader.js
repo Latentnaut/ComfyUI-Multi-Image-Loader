@@ -1063,6 +1063,85 @@ function createWidget(node) {
     return "#808080";
   }
 
+  /**
+   * Upload a base64 data URL to the server, saving it as a PNG file in input/mil_edits/.
+   * Returns the relative filename (e.g. "mil_edits/edit_abc123.png").
+   * Falls back to the original dataUrl if the upload fails.
+   */
+  async function _milUploadEdit(dataUrl) {
+    try {
+      const resp = await fetch("/multi_image_loader/upload_edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data_url: dataUrl }),
+      });
+      if (resp.ok) {
+        const { filename } = await resp.json();
+        return { filename, fallback: false };
+      }
+    } catch (e) {
+      console.warn("[MIL] upload_edit failed, keeping inline dataUrl:", e);
+    }
+    return { filename: null, fallback: true };
+  }
+
+  /**
+   * Resolve an imageEditsFile or legacy imageEditsDataUrl to a loadable src string.
+   * For file-based: uses /view?filename= endpoint.
+   * For legacy: returns the dataUrl directly.
+   */
+  function _resolveEditsSrc(t) {
+    if (t.imageEditsFile) return `/view?filename=${encodeURIComponent(t.imageEditsFile)}`;
+    if (t.imageEditsDataUrl) return t.imageEditsDataUrl;
+    return null;
+  }
+
+  /**
+   * Scan cropMap for inline base64 blobs (imageEditsDataUrl, maskOps.dataUrl)
+   * and upload them to the server as files.  Replaces the blobs with filename
+   * references (imageEditsFile, maskFile) and re-persists the crop_data widget.
+   * Called after doApply (Edit Image) and after Mask Editor Apply.
+   */
+  async function _milExternalizeBlobs() {
+    let changed = false;
+    for (const fn of Object.keys(cropMap)) {
+      const entry = cropMap[fn];
+      if (!entry || typeof entry !== 'object') continue;
+
+      // ── imageEditsDataUrl → imageEditsFile ──
+      if (entry.imageEditsDataUrl && !entry.imageEditsFile) {
+        const { filename } = await _milUploadEdit(entry.imageEditsDataUrl);
+        if (filename) {
+          entry.imageEditsFile = filename;
+          delete entry.imageEditsDataUrl;
+          changed = true;
+          console.log(`[MIL] Externalized imageEdits for ${fn} → ${filename}`);
+        }
+      }
+
+      // ── maskOps[].dataUrl → maskFile ──
+      if (entry.maskOps && Array.isArray(entry.maskOps)) {
+        for (const op of entry.maskOps) {
+          if (op.type === 'fill' && op.dataUrl && !op.maskFile) {
+            const { filename } = await _milUploadEdit(op.dataUrl);
+            if (filename) {
+              op.maskFile = filename;
+              delete op.dataUrl;
+              delete op._canvas;  // runtime-only canvas, not serializable
+              changed = true;
+              console.log(`[MIL] Externalized fill mask for ${fn} → ${filename}`);
+            }
+          }
+        }
+      }
+    }
+    if (changed) {
+      persistCropData();
+      persist();  // re-save with clean references
+      console.log(`[MIL] crop_data externalization complete, re-persisted`);
+    }
+  }
+
   function persist() {
     const w = getImageListWidget();
     if (w) w.value = JSON.stringify(items.map((i) => i.filename));
@@ -1084,9 +1163,33 @@ function createWidget(node) {
     // LiteGraph's positional widgets_values serialization which breaks when
     // converted-widget types alter the widget count between save and load.
     try {
+      // Sanitize crop_data for localStorage: strip large base64 blobs
+      let backupCropData = getCropDataWidget()?.value ?? "{}";
+      try {
+        const cd = JSON.parse(backupCropData);
+        for (const k of Object.keys(cd)) {
+          if (cd[k] && typeof cd[k] === 'object') {
+            // Strip imageEditsDataUrl (use imageEditsFile reference instead)
+            if (cd[k].imageEditsDataUrl && cd[k].imageEditsFile) {
+              delete cd[k].imageEditsDataUrl;
+            }
+            // Strip maskOps dataUrl (use maskFile reference instead)
+            if (cd[k].maskOps && Array.isArray(cd[k].maskOps)) {
+              cd[k].maskOps = cd[k].maskOps.map(op => {
+                if (op.type === 'fill' && op.dataUrl && op.maskFile) {
+                  const { dataUrl, ...rest } = op;
+                  return rest;
+                }
+                return op;
+              });
+            }
+          }
+        }
+        backupCropData = JSON.stringify(cd);
+      } catch(_) {}
       const backup = {
         image_list:      getImageListWidget()?.value      ?? "[]",
-        crop_data:       getCropDataWidget()?.value       ?? "{}",
+        crop_data:       backupCropData,
         selected_items:  getSelectedItemsWidget()?.value  ?? "[]",
         reference_image: getReferenceImageWidget()?.value ?? "",
         resolved_aspect_ratio: node._resolvedAspectRatio  ?? "",
@@ -1381,8 +1484,8 @@ function createWidget(node) {
           octx.fillStyle = "#000"; octx.fillRect(0, 0, cw, ch);
           if (maskData && maskData.length > 0) {
             for (const op of maskData) {
-              // ── Fill op: draw pre-baked mask from dataUrl ──
-              if (op.type === "fill" && (op.dataUrl || op._canvas)) {
+              // ── Fill op: draw pre-baked mask from _canvas, maskFile, or dataUrl ──
+              if (op.type === "fill" && (op.dataUrl || op._canvas || op.maskFile)) {
                 const drawFillOp = (source) => {
                   // source is black=masked, white=unmasked; thumbnail wants white=masked
                   const tmp = document.createElement("canvas"); tmp.width = cw; tmp.height = ch;
@@ -1398,10 +1501,13 @@ function createWidget(node) {
                 };
                 if (op._canvas) {
                   drawFillOp(op._canvas);
-                } else if (op.dataUrl) {
+                } else {
                   const fi = new Image();
+                  fi.crossOrigin = "anonymous";
                   fi.onload = () => { drawFillOp(fi); };
-                  fi.src = op.dataUrl;
+                  fi.src = op.maskFile
+                    ? `/view?filename=${encodeURIComponent(op.maskFile)}`
+                    : op.dataUrl;
                 }
                 continue;
               }
@@ -1887,7 +1993,10 @@ function createWidget(node) {
     if (!pos) return;
 
     if (isExternalFile) {
-      if (pos.dist > 0) return; // Not hovering directly over a thumbnail -> let it bubble to gridWrapper
+      if (pos.dist > 0) {
+        clearInsertIndicator();
+        return; // Not hovering directly over a thumbnail -> let it bubble to gridWrapper
+      }
       
       e.preventDefault();
       e.stopPropagation();
@@ -2095,11 +2204,12 @@ function createWidget(node) {
    * - No crop transform:               letterbox/crop fit against ref dims
    * When aspect_ratio is set or master_image is connected, even idx=0 is fitted to the fixed canvas.
    */
-  async function renderItemToDataUrl(item, idx) {
+  async function renderItemToDataUrl(item, idx, hiResScale) {
+    hiResScale = hiResScale || 1;
     const ar = getAspectRatioWidget()?.value ?? "Starred image";
     const t = cropMap[item.filename];
     if (idx === 0 && ar === "Starred image" && !isMasterConnected()) {
-      const hasPixelEdits = t && t.imageEditsDataUrl;
+      const hasPixelEdits = t && (t.imageEditsDataUrl || t.imageEditsFile);
       const hasLassoOps = t && ((t.lassoOps && t.lassoOps.length > 0) || t.lassoInverted);
       if (!hasPixelEdits && !hasLassoOps) {
         return item.src;
@@ -2107,7 +2217,8 @@ function createWidget(node) {
     }
 
     // Get reference dims (aspect_ratio-aware)
-    const { refW, refH } = await computeRefDims();
+    let { refW, refH } = await computeRefDims();
+    if (hiResScale > 1) { refW = Math.round(refW * hiResScale); refH = Math.round(refH * hiResScale); }
 
     if (t) {
       // Crop-transform path
@@ -2130,8 +2241,9 @@ function createWidget(node) {
       const mode = getFitModeWidget()?.value ?? "letterbox";
       // If pixel edits exist, load the edited image (crop already baked in)
       let drawSrc = el, srcX, srcY, srcW, srcH;
-      if (t.imageEditsDataUrl) {
-        const pxImg = await loadImage(t.imageEditsDataUrl);
+      const _editsSrc2 = _resolveEditsSrc(t);
+      if (_editsSrc2) {
+        const pxImg = await loadImage(_editsSrc2);
         drawSrc = pxImg;
         srcX = 0; srcY = 0; srcW = pxImg.naturalWidth; srcH = pxImg.naturalHeight;
       } else {
@@ -2219,7 +2331,7 @@ function createWidget(node) {
     if (t.bg === "telea" || t.bg === "navier-stokes") return true;
     return !!(
       t.cx != null || t.cy != null || t.cw != null || t.ch != null ||
-      t.imageEditsDataUrl || (t.lassoOps && t.lassoOps.length) || (t.maskOps && t.maskOps.length) ||
+      t.imageEditsDataUrl || t.imageEditsFile || (t.lassoOps && t.lassoOps.length) || (t.maskOps && t.maskOps.length) ||
       t.ox || t.oy || (t.scale !== undefined && t.scale !== 1 && t.scale !== 0) || t.rotate || t.flipH || t.flipV
     );
   }
@@ -2300,8 +2412,9 @@ function createWidget(node) {
         );
       } else {
         const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
-        const imgSrc = t.imageEditsDataUrl || item.src;
-        const xform = t.imageEditsDataUrl
+        const _editsSrc3 = _resolveEditsSrc(t);
+        const imgSrc = _editsSrc3 || item.src;
+        const xform = _editsSrc3
           ? { ...t, cx: undefined, cy: undefined, cw: undefined, ch: undefined }
           : t;
         jobs.push(
@@ -4169,7 +4282,7 @@ function createWidget(node) {
     // ══════════════════════════════════════════════════════════════════
     // ── IMAGE TOOLS section (Blur / Smudge / CA Fill on image pixels) ──
     // ══════════════════════════════════════════════════════════════════
-    let edPixelTool = null;  // null | "blur" | "smudge" | "brush" | "eyedropper"
+    let edPixelTool = localStorage.getItem("mil_last_pixel_tool") || null;  // null | "blur" | "smudge" | "brush" | "eyedropper"
     let edColorFg = localStorage.getItem("mil_fg_color") || "#ffffff";
     let edColorBg = localStorage.getItem("mil_bg_color") || "#000000";
     let edBrushAlpha = parseFloat(localStorage.getItem("mil_brush_alpha") ?? "1");
@@ -4312,7 +4425,7 @@ function createWidget(node) {
     updateLassoInfoLbl = updateSelInfoLbl;
 
     secPixels.appendChild(mkSec("Image Tools", () => {
-      edPixelTool = null; _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
+      edPixelTool = null; localStorage.removeItem("mil_last_pixel_tool"); _edCvsEditsPx = null; _edFlattenDataUrl = null; _edEditsUndoStack = []; _edEditsRedoStack = [];
       _edSmudgeBuf = null; _edBrushDrawing = false; _edBrushPts = [];
       _syncPixelToolUI(); redraw();
     }, "Reset all pixel edits"));
@@ -4444,7 +4557,12 @@ function createWidget(node) {
 
     // Brush size row: Size | clickable badge | slider
     const _ptBrSR = mkSliderRow("Size", { min:4, max:150, step:1, value:30, suffix:"",
-      onInput: () => redraw()
+      onInput: (v) => {
+        if (edPixelTool) {
+          localStorage.setItem("mil_pt_size_" + edPixelTool, v);
+        }
+        redraw();
+      }
     });
     const ptBrSlider = _ptBrSR.slider;
     const ptBrushRow = _ptBrSR.row;
@@ -4498,15 +4616,30 @@ function createWidget(node) {
         hint.textContent = msgMap[edPixelTool] + " · Scroll to zoom";
       }
     }
+    // Initialize tool size if remembered tool is active
+    if (edPixelTool && typeof ptBrSlider !== "undefined") {
+        const defaultSize = (edPixelTool === "blur") ? "50" : "30";
+        const savedSize = localStorage.getItem("mil_pt_size_" + edPixelTool) || defaultSize;
+        ptBrSlider.value = savedSize;
+        ptBrSlider.dispatchEvent(new Event("input"));
+    }
 
     function _selectPixelTool(t) {
-      if (edPixelTool === t) { edPixelTool = null; } // toggle off
+      if (edPixelTool === t) { edPixelTool = null; localStorage.removeItem("mil_last_pixel_tool"); } // toggle off
       else {
         edPixelTool = t;
+        localStorage.setItem("mil_last_pixel_tool", t);
         // Mutual exclusion: disable crop only (lasso stays active in pixels mode for CA Fill)
         // (edCropMode removed — marquee is now a lasso tool variant)
         if (typeof edLassoMode !== 'undefined' && edLassoMode) { edLassoMode = false; edLassoDrawing = false; edLassoCurrentPts = []; stopLassoAnts(); syncLassoToggle(); }
         _edEnsureEditsPx();
+        // Restore tool size
+        if (typeof ptBrSlider !== "undefined" && ptBrSlider) {
+           const defaultSize = (t === "blur") ? "50" : "30";
+           const savedSize = localStorage.getItem("mil_pt_size_" + t) || defaultSize;
+           ptBrSlider.value = savedSize;
+           ptBrSlider.dispatchEvent(new Event("input"));
+        }
       }
       _syncPixelToolUI();
       if (!edPixelTool && !edLassoMode) {
@@ -4694,14 +4827,14 @@ function createWidget(node) {
           lMskData = lMsk.getContext("2d", {willReadFrequently: true}).getImageData(bx, by, bw, bh).data;
       }
       for (let row = 0; row < bh; row++) {
-        let rs=0,gs=0,bs=0,cnt=0;
-        for (let i=-rad;i<=rad;i++) { const xi=Math.max(0,Math.min(bw-1,i)); const pi=(row*bw+xi)*4; rs+=d[pi];gs+=d[pi+1];bs+=d[pi+2];cnt++; }
-        for (let col=0;col<bw;col++) { const po=(row*bw+col)*4; tmp[po]=rs/cnt;tmp[po+1]=gs/cnt;tmp[po+2]=bs/cnt;tmp[po+3]=255; const ri2=Math.max(0,col-rad),ai2=Math.min(bw-1,col+rad+1); const pr=(row*bw+ri2)*4,pa=(row*bw+ai2)*4; rs+=d[pa]-d[pr];gs+=d[pa+1]-d[pr+1];bs+=d[pa+2]-d[pr+2]; }
+        let rs=0,gs=0,bs=0,as=0,cnt=0;
+        for (let i=-rad;i<=rad;i++) { const xi=Math.max(0,Math.min(bw-1,i)); const pi=(row*bw+xi)*4; rs+=d[pi];gs+=d[pi+1];bs+=d[pi+2];as+=d[pi+3];cnt++; }
+        for (let col=0;col<bw;col++) { const po=(row*bw+col)*4; tmp[po]=rs/cnt;tmp[po+1]=gs/cnt;tmp[po+2]=bs/cnt;tmp[po+3]=as/cnt; const ri2=Math.max(0,col-rad),ai2=Math.min(bw-1,col+rad+1); const pr=(row*bw+ri2)*4,pa=(row*bw+ai2)*4; rs+=d[pa]-d[pr];gs+=d[pa+1]-d[pr+1];bs+=d[pa+2]-d[pr+2];as+=d[pa+3]-d[pr+3]; }
       }
       for (let col=0;col<bw;col++) {
-        let rs=0,gs=0,bs=0,cnt=0;
-        for (let i=-rad;i<=rad;i++) { const yi=Math.max(0,Math.min(bh-1,i)); const pi=(yi*bw+col)*4; rs+=tmp[pi];gs+=tmp[pi+1];bs+=tmp[pi+2];cnt++; }
-        for (let row=0;row<bh;row++) { const po=(row*bw+col)*4; d[po]=rs/cnt;d[po+1]=gs/cnt;d[po+2]=bs/cnt;d[po+3]=255; const ri2=Math.max(0,row-rad),ai2=Math.min(bh-1,row+rad+1); const pr=(ri2*bw+col)*4,pa=(ai2*bw+col)*4; rs+=tmp[pa]-tmp[pr];gs+=tmp[pa+1]-tmp[pr+1];bs+=tmp[pa+2]-tmp[pr+2]; }
+        let rs=0,gs=0,bs=0,as=0,cnt=0;
+        for (let i=-rad;i<=rad;i++) { const yi=Math.max(0,Math.min(bh-1,i)); const pi=(yi*bw+col)*4; rs+=tmp[pi];gs+=tmp[pi+1];bs+=tmp[pi+2];as+=tmp[pi+3];cnt++; }
+        for (let row=0;row<bh;row++) { const po=(row*bw+col)*4; d[po]=rs/cnt;d[po+1]=gs/cnt;d[po+2]=bs/cnt;d[po+3]=as/cnt; const ri2=Math.max(0,row-rad),ai2=Math.min(bh-1,row+rad+1); const pr=(ri2*bw+col)*4,pa=(ai2*bw+col)*4; rs+=tmp[pa]-tmp[pr];gs+=tmp[pa+1]-tmp[pr+1];bs+=tmp[pa+2]-tmp[pr+2];as+=tmp[pa+3]-tmp[pr+3]; }
       }
       for (let row = 0; row < bh; row++) {
         for (let col = 0; col < bw; col++) {
@@ -4709,7 +4842,7 @@ function createWidget(node) {
           const lf = lMskData ? (lMskData[(row * bw + col) * 4 + 3] / 255) : 1;
           const f = dist <= r ? Math.pow(1 - dist / r, 1.2) * lf : 0;
           const i = (row * bw + col) * 4;
-          d[i]=origD[i]*(1-f)+d[i]*f; d[i+1]=origD[i+1]*(1-f)+d[i+1]*f; d[i+2]=origD[i+2]*(1-f)+d[i+2]*f;
+          d[i]=origD[i]*(1-f)+d[i]*f; d[i+1]=origD[i+1]*(1-f)+d[i+1]*f; d[i+2]=origD[i+2]*(1-f)+d[i+2]*f; d[i+3]=origD[i+3]*(1-f)+d[i+3]*f;
         }
       }
       ctx.putImageData(imgData, bx, by);
@@ -5921,17 +6054,19 @@ function createWidget(node) {
           edFlipH=!!(t?.flipH); edFlipV=!!(t?.flipV); edRotate=t?.rotate??0; edBg=t?.bg??getEffectiveBgColor();
           updateDimLabels(); updateCropInfoLbl();
           edInpaintPreview=null; edInpaintDirty=true;
-          // Restore pixel edits from session
-          if (t && t.imageEditsDataUrl) {
+          // Restore pixel edits from session (file-based or legacy inline)
+          const _editsSrc = t ? _resolveEditsSrc(t) : null;
+          if (_editsSrc) {
             const isFlattenComposite = !(t.cx != null);  // flatten clears crop
             try {
               const pxImg = new Image();
+              pxImg.crossOrigin = "anonymous";
               pxImg.onload = () => {
                 if (isFlattenComposite) {
                   // Flatten composite: replace edImg entirely (different aspect)
                   edImg = pxImg;
                   edNatW = pxImg.naturalWidth; edNatH = pxImg.naturalHeight;
-                  _edFlattenDataUrl = t.imageEditsDataUrl;
+                  _edFlattenDataUrl = _editsSrc;  // may be file URL or dataUrl
                   _edCvsEditsPx = null;
                   syncCvs();
                 } else {
@@ -5942,7 +6077,7 @@ function createWidget(node) {
                 }
                 redraw();
               };
-              pxImg.src = t.imageEditsDataUrl;
+              pxImg.src = _editsSrc;
             } catch(e) { console.warn("[MIL] Failed to restore pixel edits:", e); }
           }
           syncRotUI(); syncBgUI(); syncFlipUI(); updLbl(); _updatePxDimLbl(); redraw(); requestInpaintPreview(); res();
@@ -6252,7 +6387,7 @@ function createWidget(node) {
         requestInpaintPreview();
       }
     }
-    cvs.addEventListener("contextmenu", e => { if (edPixelTool === "brush") e.preventDefault(); });
+    cvs.addEventListener("contextmenu", e => { if (edPixelTool === "brush" || edPixelTool === "blur") e.preventDefault(); });
     cvs.addEventListener("mousedown", e=>{
       if (edPanelMode === "pixels" && (e.button === 1 || (e.button === 0 && e.shiftKey && (e.ctrlKey||e.metaKey)))) {
           e.preventDefault();
@@ -6260,10 +6395,14 @@ function createWidget(node) {
           ca.style.cursor = "grabbing";
           return;
       }
-      // right-click on brush = erase mode
+      // right-click on brush = erase mode, right-click on blur = undo
       if (e.button === 2 && edPixelTool === "brush") {
         e.preventDefault();
         _edBrushErasing = true;
+      } else if (e.button === 2 && edPixelTool === "blur") {
+        e.preventDefault();
+        _edUndoEdits();
+        return;
       } else if (e.button !== 0) return;
       else _edBrushErasing = false;
       // ── Overlay interaction (before pixel tools) ──
@@ -6532,6 +6671,14 @@ function createWidget(node) {
     window.addEventListener("mouseup",   onGlobalUp);
     cvs.addEventListener("wheel", e=>{
       e.preventDefault();
+      if ((e.ctrlKey || e.metaKey) && edPixelTool && ["blur", "smudge", "brush", "clone"].includes(edPixelTool) && typeof ptBrSlider !== "undefined") {
+        const step = e.deltaY < 0 ? 5 : -5;
+        let v = parseFloat(ptBrSlider.value) + step;
+        v = Math.max(parseFloat(ptBrSlider.min), Math.min(parseFloat(ptBrSlider.max), v));
+        ptBrSlider.value = v;
+        ptBrSlider.dispatchEvent(new Event("input"));
+        return;
+      }
       const f=e.deltaY<0?1.12:0.89;
       // ── Overlay resize (scroll on selected overlay) ──
       if (_ovSelected >= 0 && edOverlays[_ovSelected] && !edPixelTool && !edLassoMode) {
@@ -6696,7 +6843,7 @@ function createWidget(node) {
         const prevMaskInv = cropMap[fn]?.maskInverted;
         const prevMaskXf = cropMap[fn]?.maskXform;
         if (t&&(t.ox!==0||t.oy!==0||t.scale!==1.0||t.flipH||t.flipV||(t.rotate||0)!==0||(t.bg&&t.bg!==_nodeBg)||
-            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted||t.imageEditsDataUrl)) {
+            (t.cx!=null&&(t.cx>0||t.cy>0||t.cw<1||t.ch<1))||(t.lassoOps&&t.lassoOps.length>0)||t.lassoInverted||t.imageEditsDataUrl||t.imageEditsFile)) {
           cropMap[fn]=t;
         } else {
           // No edit transforms — keep entry only if mask data exists
@@ -6717,6 +6864,9 @@ function createWidget(node) {
         "hasLassoOps:", !!(_dbgT?.lassoOps?.length),
         "hasCrop:", hasCrop(_dbgFn));
       renderFitPreviews().then(() => renderCropPreviews());  // async: update thumbnails
+
+      // ── Background: externalize base64 blobs to files ──────────────────
+      _milExternalizeBlobs();
     }
     applyB.addEventListener("click",  doApply);
     cancelB.addEventListener("click", doClose);
@@ -6973,10 +7123,11 @@ function createWidget(node) {
     smudgeRow.style.display = "none";
     pnlBody.appendChild(smudgeRow);
 
-    // ── Brush size ──
+    // ── Brush size (persisted) ──
     pnlBody.appendChild(mkSec("BRUSH SIZE"));
-    const _mBrSR = mkMSliderRow("Size", { min:4, max:150, step:1, value:30, suffix:"px",
-      onInput: () => mRedraw()
+    const _savedBrushSize = parseInt(localStorage.getItem("mil_mask_brush_size") || "30");
+    const _mBrSR = mkMSliderRow("Size", { min:4, max:150, step:1, value:_savedBrushSize, suffix:"px",
+      onInput: v => { localStorage.setItem("mil_mask_brush_size", String(v)); mRedraw(); }
     });
     const brushSlider = _mBrSR.slider;
     pnlBody.appendChild(_mBrSR.row);
@@ -6998,7 +7149,7 @@ function createWidget(node) {
     colorLbl.style.cssText = `color:#888;font-size:${_fs11};`;
     colorLbl.textContent = "Mask Color";
     const colorPick = document.createElement("input");
-    const _savedColor = localStorage.getItem("mil_mask_color") || "#1e5adc";
+    const _savedColor = localStorage.getItem("mil_mask_color") || "#22cc44";
     colorPick.type = "color"; colorPick.value = _savedColor;
     colorPick.style.cssText = `width:${_r(28)}px;height:${_r(22)}px;border:none;background:none;cursor:pointer;padding:0;`;
     colorRow.appendChild(colorLbl); colorRow.appendChild(colorPick);
@@ -7007,7 +7158,7 @@ function createWidget(node) {
     pnlBody.appendChild(colorRow);
 
     // Mask transparency slider
-    const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "55");
+    const _savedAlpha = parseInt(localStorage.getItem("mil_mask_alpha") || "40");
     let mMaskAlpha = _savedAlpha / 100;
     const _mAlSR = mkMSliderRow("Opacity", { min:10, max:95, step:1, value:_savedAlpha, suffix:"%",
       onInput: v => {
@@ -7035,6 +7186,7 @@ function createWidget(node) {
       ["L / P",    "Lasso / Polygon"],
       ["G",        "Fill (bucket)"],
       ["[ / ]",    "Brush size"],
+      ["Ctrl+⚙",  "Brush size (wheel)"],
       ["⌥ drag",  "Subtract mode"],
       ["Ctrl+Z",   "Undo"],
       ["Ctrl+⇧Z",  "Redo"],
@@ -7887,12 +8039,23 @@ function createWidget(node) {
       }
     });
 
-    // ── Mouse wheel zoom ──
+    // ── Mouse wheel: Ctrl+Wheel → brush size, plain Wheel → zoom ──
     ca.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-      mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
-      _dirtyBase = true; _dirtyMask = true; mRedraw();
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+Wheel → adjust brush size
+        const step = 3;
+        let v = parseFloat(brushSlider.value);
+        v = e.deltaY < 0 ? v + step : v - step;
+        v = Math.max(parseFloat(brushSlider.min), Math.min(parseFloat(brushSlider.max), v));
+        brushSlider.value = v;
+        brushSlider.dispatchEvent(new Event("input")); // sync label + persist
+        mRedraw();
+      } else {
+        const zoomFactor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        mZoom = Math.max(0.25, Math.min(20, mZoom * zoomFactor));
+        _dirtyBase = true; _dirtyMask = true; mRedraw();
+      }
     }, { passive: false });
 
     // ── Pan move/up handlers (window-level so drag continues outside canvas) ──
@@ -8063,6 +8226,8 @@ function createWidget(node) {
       persistCropData();
       render();
       close();
+      // Background: externalize fill mask base64 blobs to files
+      _milExternalizeBlobs();
     });
 
     // ── Navigation ──
@@ -8124,17 +8289,21 @@ function createWidget(node) {
       _maskRaster = null; _maskRasterUndo = null; _smudgeBuf = null; // reset mask raster
       const fn = items[idx]?.filename;
       const saved = fn ? (cropMap[fn] || {}) : {};
-      // Deserialize fill ops: convert dataUrl back to _canvas DOM elements
+      // Deserialize fill ops: convert maskFile or dataUrl back to _canvas DOM elements
       const rawOps = saved.maskOps ? [...saved.maskOps] : [];
       mMaskOps = [];
       for (const op of rawOps) {
-        if (op.type === "fill" && op.dataUrl && !op._canvas) {
+        if (op.type === "fill" && (op.dataUrl || op.maskFile) && !op._canvas) {
           const img = new Image();
-          await new Promise(res => { img.onload = res; img.onerror = res; img.src = op.dataUrl; });
+          img.crossOrigin = "anonymous";
+          const imgSrc = op.maskFile
+            ? `/view?filename=${encodeURIComponent(op.maskFile)}`
+            : op.dataUrl;
+          await new Promise(res => { img.onload = res; img.onerror = res; img.src = imgSrc; });
           const cvs = document.createElement("canvas");
           cvs.width = img.naturalWidth; cvs.height = img.naturalHeight;
           cvs.getContext("2d").drawImage(img, 0, 0);
-          const { dataUrl: _, ...rest } = op;
+          const { dataUrl: _, maskFile: _mf, ...rest } = op;
           mMaskOps.push({ ...rest, _canvas: cvs });
         } else {
           mMaskOps.push({ ...op });
@@ -8157,7 +8326,14 @@ function createWidget(node) {
       }
       // Use the edit-processed version so mask aligns with what the user sees
       try {
-        const processedUrl = await renderItemToDataUrl(items[idx], idx);
+        // Use higher resolution for mask editor preview to avoid compression artifacts.
+        // Target ~1600px on longest edge: crisp for the mask dialog (~1400px image area)
+        // with slight oversample, without wasting memory on invisible pixels.
+        const { refW: _baseRefW, refH: _baseRefH } = await computeRefDims();
+        const _maskTarget = 1600;
+        const _maskLongEdge = Math.max(_baseRefW, _baseRefH);
+        const _maskHiRes = _maskLongEdge >= _maskTarget ? 1 : Math.ceil(_maskTarget / _maskLongEdge);
+        const processedUrl = await renderItemToDataUrl(items[idx], idx, _maskHiRes);
         if (processedUrl) {
           const img = new Image(); img.crossOrigin = "anonymous";
           await new Promise(res => { img.onload = res; img.onerror = res; img.src = processedUrl; });
