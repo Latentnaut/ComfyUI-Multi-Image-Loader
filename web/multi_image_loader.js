@@ -6181,7 +6181,7 @@ function createWidget(node) {
       // and are always serialized so the backend applies the selection mask.
       if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL(edBg === "transparent" ? "image/png" : "image/webp", 0.92); }
-        else if (hasFlatten) { t.imageEditsDataUrl = _edFlattenDataUrl; }
+        else if (hasFlatten) { t.imageEditsDataUrl = _edFlattenDataUrl; t.isFlattened = true; }
         ses[fn] = t;
       } else delete ses[fn];
     }
@@ -6225,7 +6225,7 @@ function createWidget(node) {
           // Restore pixel edits from session (file-based or legacy inline)
           const _editsSrc = t ? _resolveEditsSrc(t) : null;
           if (_editsSrc) {
-            const isFlattenComposite = !(t.cx != null);  // flatten clears crop
+            const isFlattenComposite = !!t.isFlattened;  // explicit flag from saveToSes
             try {
               const pxImg = new Image();
               pxImg.crossOrigin = "anonymous";
