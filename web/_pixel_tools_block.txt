@@ -108,7 +108,19 @@
     secPixels.appendChild(ptToolRow);
 
     secPixels.appendChild(mkSec("Filtros", () => {
-    }, ""));
+      // Reset all filter sliders to defaults
+      ptGBlurSlider.value = "5"; ptGBlurVal.textContent = "5px";
+      ptLvShadowSlider.value = "0"; ptLvShadowVal.textContent = "0";
+      ptLvGammaSlider.value = "100"; ptLvGammaVal.textContent = "1.00";
+      ptLvHighSlider.value = "255"; ptLvHighVal.textContent = "255";
+      // Undo pixel edits: re-initialize from base image
+      if (_edCvsEditsPx) {
+        _edSaveUndo();
+        _edCvsEditsPx = null; // force re-creation from base image
+        _edEnsureEditsPx();   // re-copies base image into pixel canvas
+        redraw();
+      }
+    }, "Reset filters & undo filter effects"));
     const ptFilterRow = document.createElement("div");
     ptFilterRow.style.cssText = `display:flex;gap:${_gap5};flex-wrap:wrap;`;
     const ptBwBtn = document.createElement("button");
@@ -119,7 +131,83 @@
     ptBwBtn.addEventListener("mouseleave", () => { ptBwBtn.style.background="#1e1e1e"; ptBwBtn.style.borderColor="#3a3a3a"; });
     ptBwBtn.addEventListener("click", () => _edApplyGrayscale());
     ptFilterRow.appendChild(ptBwBtn);
+    const ptBlurBtn = document.createElement("button");
+    ptBlurBtn.textContent = "🌫️ Gaussian Blur";
+    ptBlurBtn.title = "Apply Gaussian Blur filter";
+    ptBlurBtn.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptBlurBtn.addEventListener("mouseenter", () => { ptBlurBtn.style.background="#2a2a2a"; ptBlurBtn.style.borderColor="#555"; });
+    ptBlurBtn.addEventListener("mouseleave", () => { ptBlurBtn.style.background="#1e1e1e"; ptBlurBtn.style.borderColor="#3a3a3a"; });
+    ptBlurBtn.addEventListener("click", () => _edApplyGaussianBlur(parseFloat(ptGBlurSlider.value)));
+    ptFilterRow.appendChild(ptBlurBtn);
+    const ptLevelsBtn = document.createElement("button");
+    ptLevelsBtn.textContent = "\uD83D\uDCCA Levels";
+    ptLevelsBtn.title = "Apply Levels correction";
+    ptLevelsBtn.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
+    ptLevelsBtn.addEventListener("mouseenter", () => { ptLevelsBtn.style.background="#2a2a2a"; ptLevelsBtn.style.borderColor="#555"; });
+    ptLevelsBtn.addEventListener("mouseleave", () => { ptLevelsBtn.style.background="#1e1e1e"; ptLevelsBtn.style.borderColor="#3a3a3a"; });
+    ptLevelsBtn.addEventListener("click", () => _edApplyLevels(parseInt(ptLvShadowSlider.value), parseInt(ptLvGammaSlider.value) / 100, parseInt(ptLvHighSlider.value)));
+    ptFilterRow.appendChild(ptLevelsBtn);
     secPixels.appendChild(ptFilterRow);
+    // ── Gaussian Blur radius slider ──
+    const ptGBlurRow = document.createElement("div");
+    ptGBlurRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
+    const ptGBlurLbl = document.createElement("span");
+    ptGBlurLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;`;
+    ptGBlurLbl.textContent = "Radius";
+    const ptGBlurSlider = document.createElement("input");
+    ptGBlurSlider.type = "range"; ptGBlurSlider.min = "1"; ptGBlurSlider.max = "30"; ptGBlurSlider.value = "5";
+    ptGBlurSlider.style.cssText = `flex:1;accent-color:#40a0ff;`;
+    const ptGBlurVal = document.createElement("span");
+    ptGBlurVal.style.cssText = `color:#888;font-size:${_fs10};min-width:36px;padding-right:4px;text-align:right;box-sizing:border-box;`;
+    ptGBlurVal.textContent = "5px";
+    ptGBlurSlider.addEventListener("input", () => { ptGBlurVal.textContent = ptGBlurSlider.value + "px"; });
+    ptGBlurRow.appendChild(ptGBlurLbl); ptGBlurRow.appendChild(ptGBlurSlider); ptGBlurRow.appendChild(ptGBlurVal);
+    secPixels.appendChild(ptGBlurRow);
+    // ── Levels sliders ──
+    const ptLvShadowRow = document.createElement("div");
+    ptLvShadowRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
+    const ptLvShadowLbl = document.createElement("span");
+    ptLvShadowLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
+    ptLvShadowLbl.textContent = "Shadows";
+    const ptLvShadowSlider = document.createElement("input");
+    ptLvShadowSlider.type = "range"; ptLvShadowSlider.min = "0"; ptLvShadowSlider.max = "254"; ptLvShadowSlider.value = "0";
+    ptLvShadowSlider.style.cssText = `flex:1;accent-color:#555;`;
+    const ptLvShadowVal = document.createElement("span");
+    ptLvShadowVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
+    ptLvShadowVal.textContent = "0";
+    ptLvShadowSlider.addEventListener("input", () => { ptLvShadowVal.textContent = ptLvShadowSlider.value; });
+    ptLvShadowRow.appendChild(ptLvShadowLbl); ptLvShadowRow.appendChild(ptLvShadowSlider); ptLvShadowRow.appendChild(ptLvShadowVal);
+    secPixels.appendChild(ptLvShadowRow);
+
+    const ptLvGammaRow = document.createElement("div");
+    ptLvGammaRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
+    const ptLvGammaLbl = document.createElement("span");
+    ptLvGammaLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
+    ptLvGammaLbl.textContent = "Midtones";
+    const ptLvGammaSlider = document.createElement("input");
+    ptLvGammaSlider.type = "range"; ptLvGammaSlider.min = "10"; ptLvGammaSlider.max = "300"; ptLvGammaSlider.value = "100";
+    ptLvGammaSlider.style.cssText = `flex:1;accent-color:#aaa;`;
+    const ptLvGammaVal = document.createElement("span");
+    ptLvGammaVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
+    ptLvGammaVal.textContent = "1.00";
+    ptLvGammaSlider.addEventListener("input", () => { ptLvGammaVal.textContent = (parseInt(ptLvGammaSlider.value) / 100).toFixed(2); });
+    ptLvGammaRow.appendChild(ptLvGammaLbl); ptLvGammaRow.appendChild(ptLvGammaSlider); ptLvGammaRow.appendChild(ptLvGammaVal);
+    secPixels.appendChild(ptLvGammaRow);
+
+    const ptLvHighRow = document.createElement("div");
+    ptLvHighRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
+    const ptLvHighLbl = document.createElement("span");
+    ptLvHighLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
+    ptLvHighLbl.textContent = "Highlights";
+    const ptLvHighSlider = document.createElement("input");
+    ptLvHighSlider.type = "range"; ptLvHighSlider.min = "1"; ptLvHighSlider.max = "255"; ptLvHighSlider.value = "255";
+    ptLvHighSlider.style.cssText = `flex:1;accent-color:#ddd;`;
+    const ptLvHighVal = document.createElement("span");
+    ptLvHighVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
+    ptLvHighVal.textContent = "255";
+    ptLvHighSlider.addEventListener("input", () => { ptLvHighVal.textContent = ptLvHighSlider.value; });
+    ptLvHighRow.appendChild(ptLvHighLbl); ptLvHighRow.appendChild(ptLvHighSlider); ptLvHighRow.appendChild(ptLvHighVal);
+    secPixels.appendChild(ptLvHighRow);
 
     // ── Color row: compact FG/BG + swap + reset ──
     const ptColorWrapper = document.createElement("div");
@@ -187,6 +275,82 @@
               const avg = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
               d[i] = avg; d[i+1] = avg; d[i+2] = avg;
           }
+      }
+      ctx.putImageData(imgData, 0, 0);
+      redraw();
+    }
+
+    // ── Apply Gaussian Blur Filter ──────────────────────────────
+    function _edApplyGaussianBlur(radius) {
+      radius = radius || 5;
+      _edEnsureEditsPx(); _edSaveUndo();
+      const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+      const srcCtx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+
+      // Check lasso mask
+      let lMskCvs = null;
+      const hasLasso = typeof edLassoOps !== 'undefined' && edLassoOps.length > 0;
+      if (hasLasso) {
+        lMskCvs = buildLassoMaskCanvas(pw, ph);
+      }
+
+      // Create temp canvas for blur
+      const tmpCvs = document.createElement("canvas");
+      tmpCvs.width = pw; tmpCvs.height = ph;
+      const tmpCtx = tmpCvs.getContext("2d");
+      tmpCtx.filter = `blur(${radius}px)`;
+      tmpCtx.drawImage(_edCvsEditsPx, 0, 0);
+      tmpCtx.filter = "none";
+
+      if (hasLasso && lMskCvs) {
+        // Composite: only apply blur inside lasso selection
+        const orig = srcCtx.getImageData(0, 0, pw, ph);
+        const blurred = tmpCtx.getImageData(0, 0, pw, ph);
+        const mask = lMskCvs.getContext("2d", {willReadFrequently:true}).getImageData(0, 0, pw, ph).data;
+        const od = orig.data, bd = blurred.data;
+        for (let i = 0; i < od.length; i += 4) {
+          const a = mask[i + 3] / 255; // mask alpha as blend factor
+          od[i]     = od[i]     * (1 - a) + bd[i]     * a;
+          od[i + 1] = od[i + 1] * (1 - a) + bd[i + 1] * a;
+          od[i + 2] = od[i + 2] * (1 - a) + bd[i + 2] * a;
+        }
+        srcCtx.putImageData(orig, 0, 0);
+      } else {
+        // Full image blur
+        srcCtx.clearRect(0, 0, pw, ph);
+        srcCtx.drawImage(tmpCvs, 0, 0);
+      }
+      redraw();
+    }
+
+    // ── Apply Levels Correction ─────────────────────────────────
+    function _edApplyLevels(shadows, gamma, highlights) {
+      shadows = shadows || 0;
+      gamma = gamma || 1;
+      highlights = (highlights != null) ? highlights : 255;
+      if (shadows >= highlights) return;
+      _edEnsureEditsPx(); _edSaveUndo();
+      const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const imgData = ctx.getImageData(0, 0, pw, ph);
+      const d = imgData.data;
+      const invGamma = 1 / gamma;
+      const range = highlights - shadows;
+
+      let lMskData = null;
+      if (typeof edLassoOps !== 'undefined' && edLassoOps.length > 0) {
+        const lMsk = buildLassoMaskCanvas(pw, ph);
+        lMskData = lMsk.getContext("2d", {willReadFrequently: true}).getImageData(0, 0, pw, ph).data;
+      }
+
+      for (let i = 0; i < d.length; i += 4) {
+        if (lMskData && lMskData[i + 3] === 0) continue;
+        for (let c = 0; c < 3; c++) {
+          let v = d[i + c];
+          v = Math.max(0, Math.min(1, (v - shadows) / range));
+          v = Math.pow(v, invGamma);
+          d[i + c] = Math.round(v * 255);
+        }
       }
       ctx.putImageData(imgData, 0, 0);
       redraw();
