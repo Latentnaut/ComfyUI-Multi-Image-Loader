@@ -1087,11 +1087,19 @@ function createWidget(node) {
 
   /**
    * Resolve an imageEditsFile or legacy imageEditsDataUrl to a loadable src string.
-   * For file-based: uses /view?filename= endpoint.
+   * For file-based: uses /view?filename=&subfolder=&type=input endpoint.
    * For legacy: returns the dataUrl directly.
    */
   function _resolveEditsSrc(t) {
-    if (t.imageEditsFile) return `/view?filename=${encodeURIComponent(t.imageEditsFile)}`;
+    if (t.imageEditsFile) {
+      // imageEditsFile may be "mil_edits/edit_xxx.png" — split into subfolder + basename
+      const parts = t.imageEditsFile.replace(/\\/g, "/").split("/");
+      const basename = parts.pop();
+      const subfolder = parts.join("/");
+      let url = `/view?filename=${encodeURIComponent(basename)}&type=input`;
+      if (subfolder) url += `&subfolder=${encodeURIComponent(subfolder)}`;
+      return url;
+    }
     if (t.imageEditsDataUrl) return t.imageEditsDataUrl;
     return null;
   }
@@ -3015,6 +3023,12 @@ function createWidget(node) {
     // session crops: edits made during this dialog, committed only on Apply
     const ses = {};
     for (const fn in cropMap) ses[fn] = { ...cropMap[fn] };
+    console.log("[MIL openEditor] ses initialized from cropMap. Keys:", Object.keys(ses).length,
+      "sample:", Object.keys(ses).slice(0,2).map(fn => ({
+        fn, hasDataUrl: !!ses[fn].imageEditsDataUrl,
+        hasFile: !!ses[fn].imageEditsFile,
+        isFlattened: !!ses[fn].isFlattened
+      })));
     let curIdx = startIdx;
 
     // per-image display state
@@ -6224,12 +6238,19 @@ function createWidget(node) {
           edInpaintPreview=null; edInpaintDirty=true;
           // Restore pixel edits from session (file-based or legacy inline)
           const _editsSrc = t ? _resolveEditsSrc(t) : null;
+          console.log("[MIL loadIdx] fn:", items[idx].filename,
+            "hasSes:", !!t,
+            "imageEditsDataUrl:", !!(t?.imageEditsDataUrl), 
+            "imageEditsFile:", t?.imageEditsFile || null,
+            "isFlattened:", !!(t?.isFlattened),
+            "_editsSrc:", _editsSrc ? _editsSrc.substring(0, 80) + "..." : null);
           if (_editsSrc) {
             const isFlattenComposite = !!t.isFlattened;  // explicit flag from saveToSes
             try {
               const pxImg = new Image();
               pxImg.crossOrigin = "anonymous";
               pxImg.onload = () => {
+                console.log("[MIL loadIdx] pixel edits image LOADED:", pxImg.naturalWidth, "x", pxImg.naturalHeight, "flatten:", isFlattenComposite);
                 if (isFlattenComposite) {
                   // Flatten composite: replace edImg entirely (different aspect)
                   edImg = pxImg;
@@ -6244,6 +6265,9 @@ function createWidget(node) {
                   _edCvsEditsPx.getContext("2d").drawImage(pxImg, 0, 0);
                 }
                 redraw();
+              };
+              pxImg.onerror = (e) => {
+                console.error("[MIL loadIdx] pixel edits image FAILED to load:", _editsSrc, e);
               };
               pxImg.src = _editsSrc;
             } catch(e) { console.warn("[MIL] Failed to restore pixel edits:", e); }

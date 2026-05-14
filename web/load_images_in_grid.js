@@ -1820,6 +1820,16 @@ function createWidget(node) {
 
   // ── canvas fit preview ─────────────────────────────────────────────────────
 
+  /** Build a proper ComfyUI /view URL for an imageEditsFile path (e.g. 'mil_edits/edit_xxx.png'). */
+  function _milEditsViewUrl(editPath) {
+    const parts = editPath.replace(/\\/g, "/").split("/");
+    const basename = parts.pop();
+    const subfolder = parts.join("/");
+    let url = `/view?filename=${encodeURIComponent(basename)}&type=input`;
+    if (subfolder) url += `&subfolder=${encodeURIComponent(subfolder)}`;
+    return url;
+  }
+
   /** Loads any URL/dataURL as an HTMLImageElement. */
   function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -1874,7 +1884,7 @@ function createWidget(node) {
       let drawSrc = el, srcX, srcY, srcW, srcH;
       if (t.imageEditsDataUrl || t.imageEditsFile) {
         const editSrc = t.imageEditsFile
-          ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+          ? _milEditsViewUrl(t.imageEditsFile)
           : t.imageEditsDataUrl;
         const pxImg = await loadImage(editSrc);
         drawSrc = pxImg;
@@ -2046,7 +2056,7 @@ function createWidget(node) {
         const bgC = /^#[0-9a-fA-F]{6}$/.test(bgRaw) ? bgRaw : getEffectiveBgColor();
         const hasEdits = t.imageEditsFile || t.imageEditsDataUrl;
         const imgSrc = t.imageEditsFile
-          ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+          ? _milEditsViewUrl(t.imageEditsFile)
           : (t.imageEditsDataUrl || item.src);
         const xform = hasEdits
           ? { ...t, cx: undefined, cy: undefined, cw: undefined, ch: undefined }
@@ -5037,7 +5047,7 @@ function createWidget(node) {
                 redraw();
               };
               pxImg.src = t.imageEditsFile
-                ? `/view?filename=${encodeURIComponent(t.imageEditsFile)}`
+                ? _milEditsViewUrl(t.imageEditsFile)
                 : t.imageEditsDataUrl;
             } catch(e) { console.warn("[MIL] Failed to restore pixel edits:", e); }
           }
