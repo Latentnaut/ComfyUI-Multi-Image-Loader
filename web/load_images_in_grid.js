@@ -7268,19 +7268,20 @@ app.registerExtension({
       const milNodes = getMILNodes();
       if (!milNodes.length) return null;
       
-      // 1. If any node has an active internal selection (blue border thumbnail), it's the target!
+      // 1. Prioritize ComfyUI's standard node selection
+      const selected = milNodes.filter(n =>
+        n.is_selected ||
+        (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
+      );
+      if (selected.length === 1) return selected[0];
+
+      // 2. Fallback: If no node is uniquely selected, check for active internal selection
       for (const n of milNodes) {
         if (n._milDomWidget?.element?.querySelector(".mil-selected")) {
           return n;
         }
       }
 
-      // 2. Otherwise fallback to ComfyUI's standard node selection
-      const selected = milNodes.filter(n =>
-        n.is_selected ||
-        (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
-      );
-      if (selected.length === 1) return selected[0];
       return null;
     }
 

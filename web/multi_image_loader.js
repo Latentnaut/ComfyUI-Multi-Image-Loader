@@ -1461,6 +1461,7 @@ function createWidget(node) {
         overflow: hidden;
         border: ${isBlank ? "1.5px dashed #666" : "1px solid #444"};
         background: ${wrapperBg};
+        box-sizing: border-box;
       `;
 
       // ── image / blank placeholder ─────────────────────────────────────────
@@ -8584,19 +8585,20 @@ app.registerExtension({
       const milNodes = getMILNodes();
       if (!milNodes.length) return null;
       
-      // 1. If any node has an active internal selection (blue border thumbnail), it's the target!
+      // 1. Prioritize ComfyUI's standard node selection
+      const selected = milNodes.filter(n =>
+        n.is_selected ||
+        (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
+      );
+      if (selected.length === 1) return selected[0];
+
+      // 2. Fallback: If no node is uniquely selected, check for active internal selection
       for (const n of milNodes) {
         if (n._milDomWidget?.element?.querySelector(".mil-selected")) {
           return n;
         }
       }
 
-      // 2. Otherwise fallback to ComfyUI's standard node selection
-      const selected = milNodes.filter(n =>
-        n.is_selected ||
-        (app.canvas?.selected_nodes && app.canvas.selected_nodes[n.id] !== undefined)
-      );
-      if (selected.length === 1) return selected[0];
       return null;
     }
 
@@ -8741,9 +8743,21 @@ app.registerExtension({
           getValue() { return ""; },
           setValue() {},
           computeSize(width) {
-            // Give the widget all space that the node currently has, minus chrome.
-            // We do NOT call setSize here — the node height is owned by the user.
-            return [width, Math.max(120, node.size[1] - NODE_HEADER_H - NODE_SLOT_H * 4 - NODE_PADDING_V)];
+            // ComfyUI incorrectly passes an enlarged 'width' parameter when the node is selected 
+            // (due to the selection bounding box). We MUST strictly use node.size[0] to prevent enlargement.
+            const trueWidth = node.size[0];
+            
+            let widgetH = 0;
+            if (node.widgets) {
+              for (const w of node.widgets) {
+                if (w.name === "mil_uploader") continue;
+                widgetH += (w.computeSize ? w.computeSize(trueWidth)[1] : 20) + 4;
+              }
+            }
+            const slotsH = Math.max(node.inputs?.length || 0, node.outputs?.length || 0) * NODE_SLOT_H;
+            const chromeH = NODE_HEADER_H + slotsH + widgetH + NODE_PADDING_V;
+            
+            return [trueWidth, Math.max(120, node.size[1] - chromeH)];
           },
         }
       );
