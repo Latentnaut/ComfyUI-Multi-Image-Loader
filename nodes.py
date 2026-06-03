@@ -88,11 +88,32 @@ async def inpaint_handler(request):
             # Resize mask to match image if needed
             if mask_pil.size != img_pil.size:
                 mask_pil = mask_pil.resize(img_pil.size, Image.NEAREST)
-            img_cv = np.array(img_pil)[:, :, ::-1]  # RGB→BGR
+            img_cv = np.array(img_pil)[:, :, ::-1].copy()  # RGB→BGR
             # In our mask convention: black=masked, white=unmasked
             # cv2.inpaint wants white=inpaint region, so invert
             mask_cv = 255 - np.array(mask_pil)
-            result = cv2.inpaint(img_cv, mask_cv, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+            
+            # Use method if provided, default to Telea
+            method_str = data.get("method", "telea")
+            method = cv2.INPAINT_NS if method_str == "navier-stokes" else cv2.INPAINT_TELEA
+            
+            # For Navier-Stokes: dilate mask to push boundary away from
+            # original content, then blur seed to prevent color transitions
+            if method_str == "navier-stokes":
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+                dilated_mask = cv2.dilate(mask_cv, kernel, iterations=1)
+            else:
+                dilated_mask = mask_cv
+            
+            # Clear pixels inside the (dilated) mask to neutral gray
+            img_cv[dilated_mask == 255] = [128, 128, 128]
+            # Blur boundary transitions for Navier-Stokes
+            if method_str == "navier-stokes":
+                blurred = cv2.GaussianBlur(img_cv, (0, 0), sigmaX=3)
+                orig_cv = np.array(img_pil)[:, :, ::-1].copy()
+                img_cv = np.where(dilated_mask[:, :, None] == 255, blurred, orig_cv)
+            
+            result = cv2.inpaint(img_cv, dilated_mask, inpaintRadius=7, flags=method)
             result_rgb = result[:, :, ::-1]  # BGR→RGB
             result_pil = Image.fromarray(result_rgb)
             # Restore alpha channel if source had transparency
@@ -143,7 +164,13 @@ async def preview_transform_handler(request):
         loop = asyncio.get_event_loop()
         PREVIEW_MAX = 768  # cap preview resolution for speed
         def _run():
-            img = Image.open(path).convert("RGB")
+            img = Image.open(path)
+            # Keep RGBA if the image has an alpha channel, so we can composite it over the background color
+            has_alpha = (img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info))
+            if has_alpha:
+                img = img.convert("RGBA")
+            else:
+                img = img.convert("RGB")
             # Downscale source + ref dimensions proportionally for fast inpaint
             w, h = img.size
             if max(ref_w, ref_h) > PREVIEW_MAX:
@@ -468,7 +495,10 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
 
     if mode == "fill":
         resized = img.resize((target_w, target_h), Image.BICUBIC)
-        canvas.paste(resized, (0, 0))
+        if resized.mode == "RGBA":
+            canvas.paste(resized, (0, 0), mask=resized.split()[3])
+        else:
+            canvas.paste(resized, (0, 0))
     else:
         scale_w = target_w / src_w
         scale_h = target_h / src_h
@@ -482,11 +512,17 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
             left = (new_w - target_w) // 2
             top  = (new_h - target_h) // 2
             cropped = resized.crop((left, top, left + target_w, top + target_h))
-            canvas.paste(cropped, (0, 0))
+            if cropped.mode == "RGBA":
+                canvas.paste(cropped, (0, 0), mask=cropped.split()[3])
+            else:
+                canvas.paste(cropped, (0, 0))
         else:
             offset_x = (target_w - new_w) // 2
             offset_y = (target_h - new_h) // 2
-            canvas.paste(resized, (offset_x, offset_y))
+            if resized.mode == "RGBA":
+                canvas.paste(resized, (offset_x, offset_y), mask=resized.split()[3])
+            else:
+                canvas.paste(resized, (offset_x, offset_y))
             
     # Apply global_scale strictly upon the resolved canvas
     if global_scale != 1.0:
@@ -565,7 +601,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
             if edits_pil.size != img.size:
                 edits_pil = edits_pil.resize(img.size, Image.BICUBIC)
             img = img.convert("RGBA")
-            img = Image.alpha_composite(img, edits_pil).convert("RGB")
+            img = Image.alpha_composite(img, edits_pil)
         except Exception as e:
             print(f"[MIL] Warning: failed to composite pixel edits: {e}")
 
@@ -662,8 +698,27 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
 
         if inpaint_mask.any():
             method = cv2.INPAINT_TELEA if inpaint_method == "telea" else cv2.INPAINT_NS
+
+            # For Navier-Stokes: dilate mask to push boundary away from
+            # original image content, then blur the seed image at the
+            # boundary so NS doesn't pick up sharp color transitions.
+            if inpaint_method == "navier-stokes":
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+                dilated_mask = cv2.dilate(inpaint_mask, kernel, iterations=1)
+            else:
+                dilated_mask = inpaint_mask
+
             img_bgr = img_np[:, :, ::-1].copy()
-            img_bgr = cv2.inpaint(img_bgr, inpaint_mask, inpaintRadius=3, flags=method)
+            # Clear pixels inside the (dilated) mask to neutral gray
+            img_bgr[dilated_mask == 255] = [128, 128, 128]
+            # Blur the seed image to smooth boundary transitions
+            if inpaint_method == "navier-stokes":
+                img_bgr = cv2.GaussianBlur(img_bgr, (0, 0), sigmaX=3)
+                # Restore sharp pixels OUTSIDE the dilated mask from original seed
+                orig_bgr = img_np[:, :, ::-1].copy()
+                img_bgr = np.where(dilated_mask[:, :, None] == 255, img_bgr, orig_bgr)
+
+            img_bgr = cv2.inpaint(img_bgr, dilated_mask, inpaintRadius=7, flags=method)
             img_np  = img_bgr[:, :, ::-1]
 
         final_img = Image.fromarray(img_np.astype(np.uint8))
@@ -684,8 +739,12 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     if flipV: img = ImageOps.flip(img)
 
     if rotate != 0:
-        img = img.rotate(-rotate, expand=True, resample=Image.BICUBIC,
-                         fillcolor=bg_color)
+        if img.mode == "RGBA":
+            img = img.rotate(-rotate, expand=True, resample=Image.BICUBIC,
+                             fillcolor=(0, 0, 0, 0))
+        else:
+            img = img.rotate(-rotate, expand=True, resample=Image.BICUBIC,
+                             fillcolor=bg_color)
 
     src_w, src_h = img.size
     if fit_mode == "crop":
@@ -703,7 +762,10 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     # Letterbox uses the node's bg_color; crop/fill uses the editor's per-image bg
     canvas_bg = node_bg_color if fit_mode == "letterbox" else bg_color
     canvas = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
-    canvas.paste(resized, (paste_x, paste_y))
+    if resized.mode == "RGBA":
+        canvas.paste(resized, (paste_x, paste_y), mask=resized.split()[3])
+    else:
+        canvas.paste(resized, (paste_x, paste_y))
 
     # ── LASSO MASK: apply poly-crop cutout in solid-fill path ──────────────
     lasso_mask = _generate_lasso_mask(transform, img.size, canvas_w, canvas_h, fit_mode)
@@ -728,6 +790,9 @@ def _generate_lasso_mask(transform: dict, source_img_size: tuple, canvas_w: int,
     """Generate a composite lasso mask from operations and apply geometric transforms.
     Returns an 'L' mode image (canvas_w × canvas_h) — 255 inside, 0 outside.
     Returns None if no lasso ops in transform."""
+    if transform.get("lassoIsPaint"):
+        return None
+
     ops = transform.get("lassoOps", [])
     inverted = bool(transform.get("lassoInverted", False))
 
@@ -921,8 +986,8 @@ class MultiImageLoader:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE", "STRING",)
-    RETURN_NAMES = ("image_batch", "mask_batch", "image_original", "grid_image", "grid_hires", "aspect_ratio_out",)
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "IMAGE", "IMAGE", "STRING", "INT", "INT",)
+    RETURN_NAMES = ("image_batch", "mask_batch", "image_original", "grid_image", "grid_hires", "aspect_ratio_out", "columns_n", "rows_n",)
     FUNCTION = "load_images"
     CATEGORY = "image/loaders"
     OUTPUT_NODE = False
@@ -958,7 +1023,17 @@ class MultiImageLoader:
 
         try:
             transforms = json.loads(crop_data) if crop_data else {}
-        except Exception:
+            with open(r"C:\Users\info\.gemini\antigravity-ide\brain\db04a2ec-a159-432c-99d7-d6d65103307f\scratch\nodes_run.log", "a", encoding="utf-8") as log_f:
+                log_f.write(f"--- execution ---\n")
+                log_f.write(f"image_list: {image_list}\n")
+                log_f.write(f"crop_data raw: {crop_data}\n")
+                log_f.write(f"transforms: {list(transforms.keys())}\n")
+                for k, v in transforms.items():
+                    if isinstance(v, dict):
+                        log_f.write(f"  Image: {k}, keys: {list(v.keys())}, lassoIsPaint: {v.get('lassoIsPaint')}, lassoOps len: {len(v.get('lassoOps', []))}\n")
+        except Exception as e:
+            with open(r"C:\Users\info\.gemini\antigravity-ide\brain\db04a2ec-a159-432c-99d7-d6d65103307f\scratch\nodes_run.log", "a", encoding="utf-8") as log_f:
+                log_f.write(f"Error parsing crop_data: {e}\n")
             transforms = {}
 
         try:
@@ -981,7 +1056,7 @@ class MultiImageLoader:
         placeholder_img  = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         placeholder_mask = torch.ones((1, 64, 64), dtype=torch.float32)
         if not filtered_filenames and images is None:
-            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img)
+            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img, resolved_ar, grid_columns, grid_rows)
 
         input_dir = Path(folder_paths.get_input_directory())
         tensors      = []
@@ -1054,7 +1129,7 @@ class MultiImageLoader:
             else:
                 # megapixels=0 with fixed AR but no image yet — defer to Step 4
                 ref_w = ref_h = None
-                fixed_canvas = False
+                fixed_canvas = True
         elif not badge_resolved:
             fixed_canvas = False
             ref_w = ref_h = None
@@ -1092,8 +1167,13 @@ class MultiImageLoader:
                     orig_ref_h = first_native_h
 
             if ref_w is None:
-                tmp_scaled = _scale_to_megapixels(first_valid_img, megapixels)
-                ref_w, ref_h = tmp_scaled.size
+                if aspect_ratio not in ("Starred image", "Image Input", "none") and bool(aspect_ratio):
+                    dims = _compute_canvas_dims(aspect_ratio, megapixels, (first_native_w, first_native_h))
+                    if dims is not None:
+                        ref_w, ref_h = dims
+                if ref_w is None:
+                    tmp_scaled = _scale_to_megapixels(first_valid_img, megapixels)
+                    ref_w, ref_h = tmp_scaled.size
 
         # Fallback if no valid image was found (e.g. only BLANK images)
         if orig_ref_w is None:
@@ -1131,7 +1211,12 @@ class MultiImageLoader:
             try:
                 img = Image.open(fpath)
                 img = ImageOps.exif_transpose(img)
-                img = img.convert("RGB")
+                # Keep RGBA if the image has an alpha channel, so we can composite it over the background color
+                has_alpha = (img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info))
+                if has_alpha:
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
 
                 # ── Original-resolution branch (no megapixel budget) ──
                 img_orig = img.copy()
@@ -1140,6 +1225,15 @@ class MultiImageLoader:
                     img_orig = _apply_crop_transform(img_orig, t_orig, orig_ref_w, orig_ref_h, fit_mode=fit_mode, node_bg_color=_parse_bg_color_word(bg_color), global_scale=1.0)
                 elif img_orig.size != (orig_ref_w, orig_ref_h):
                     img_orig = _fit_image(img_orig, orig_ref_w, orig_ref_h, fit_mode, bg_color=_parse_bg_color_word(bg_color), global_scale=1.0)
+
+                # Composite over background if still RGBA, otherwise convert to RGB
+                if img_orig.mode == "RGBA":
+                    canvas_orig = Image.new("RGB", img_orig.size, _parse_bg_color_word(bg_color))
+                    canvas_orig.paste(img_orig, (0, 0), mask=img_orig.split()[3])
+                    img_orig = canvas_orig
+                else:
+                    img_orig = img_orig.convert("RGB")
+
                 orig_arr = np.array(img_orig).astype(np.float32) / 255.0
                 orig_tensors.append(torch.from_numpy(orig_arr).unsqueeze(0))
 
@@ -1155,6 +1249,14 @@ class MultiImageLoader:
                     img = _apply_crop_transform(img, t, ref_w, ref_h, fit_mode=fit_mode, node_bg_color=_bg_rgb, global_scale=1.0)
                 elif img.size != (ref_w, ref_h):
                     img = _fit_image(img, ref_w, ref_h, fit_mode, bg_color=_bg_rgb, global_scale=1.0)
+
+                # Composite over background if still RGBA, otherwise convert to RGB
+                if img.mode == "RGBA":
+                    canvas_scaled = Image.new("RGB", img.size, _bg_rgb)
+                    canvas_scaled.paste(img, (0, 0), mask=img.split()[3])
+                    img = canvas_scaled
+                else:
+                    img = img.convert("RGB")
 
                 arr = np.array(img).astype(np.float32) / 255.0
                 tensors.append(torch.from_numpy(arr).unsqueeze(0))
@@ -1176,8 +1278,37 @@ class MultiImageLoader:
                 print(f"[MultiImageLoader] Error loading {fname}: {e}")
                 continue
 
+        # Update resolved_ar based on the actual computed canvas size if it is a dynamic setting
+        if aspect_ratio in ("Starred image", "Image Input", "Aspect Ratio Input", "none") or not aspect_ratio:
+            if ref_w and ref_h:
+                def _find_closest_ratio(w, h):
+                    actual_ratio = w / h
+                    common_ratios = [
+                        (1, 1),
+                        (2, 3),
+                        (3, 2),
+                        (3, 4),
+                        (4, 3),
+                        (4, 5),
+                        (5, 4),
+                        (9, 16),
+                        (16, 9),
+                        (21, 9),
+                    ]
+                    best_ratio = None
+                    min_diff = float('inf')
+                    for rw, rh in common_ratios:
+                        diff = abs(actual_ratio - (rw / rh))
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_ratio = f"{rw}:{rh}"
+                    return best_ratio
+                resolved_ar = _find_closest_ratio(ref_w, ref_h)
+            else:
+                resolved_ar = "auto"
+
         if not tensors:
-            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img, resolved_ar)
+            return (placeholder_img, placeholder_mask, placeholder_img, placeholder_img, placeholder_img, resolved_ar, grid_columns, grid_rows)
 
         batch      = torch.cat(tensors, dim=0)
         mask_batch = torch.cat(mask_tensors, dim=0)
@@ -1186,7 +1317,7 @@ class MultiImageLoader:
         grid_image = self._make_grid(batch, grid_rows, grid_columns, randomize, image_list, selected_items)
         grid_hires = self._make_grid(orig_batch, grid_rows, grid_columns, randomize, image_list, selected_items)
         
-        return (batch, mask_batch, orig_batch, grid_image, grid_hires, resolved_ar)
+        return (batch, mask_batch, orig_batch, grid_image, grid_hires, resolved_ar, grid_columns, grid_rows)
 
     def _make_grid(self, batch, rows, cols, randomize="None", image_list="[]", selected_items="[]"):
         import torch, random, json
@@ -1296,9 +1427,8 @@ class LoadImagesInGrid(MultiImageLoader):
         return MultiImageLoader.IS_CHANGED(*args, **kwargs)
 
     def compose_grid(self, *args, **kwargs):
-        # Unpack the 5 tuple output from new load_images implementation
-        # (batch, mask_batch, orig_batch, grid_image, grid_hires)
-        _1, _2, _3, grid_image, grid_hires = self.load_images(*args, **kwargs)
+        res = self.load_images(*args, **kwargs)
+        grid_image, grid_hires = res[3], res[4]
         return (grid_image, grid_hires)
 
 

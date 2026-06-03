@@ -243,6 +243,7 @@ function createWidget(node) {
     padding: 4px 6px 6px;
     box-sizing: border-box;
     width: 100%;
+    height: 100%;
     min-width: 180px;
     overflow: hidden;
   `;
@@ -1050,7 +1051,7 @@ function createWidget(node) {
     const masterDims = getMasterImageDims();
     if (masterDims) {
       const ratio = masterDims.w / masterDims.h;
-      const totalPx = Math.max(1, mp * 1_000_000);
+      const totalPx = mp <= 0 ? masterDims.w * masterDims.h : Math.max(1, mp * 1_000_000);
       const refW = Math.max(1, Math.round(Math.sqrt(totalPx * ratio)));
       const refH = Math.max(1, Math.round(Math.sqrt(totalPx / ratio)));
       return { refW, refH };
@@ -1060,7 +1061,17 @@ function createWidget(node) {
     const ar = getAspectRatioWidget()?.value ?? "none";
     if (ar !== "none") {
       const [aw, ah] = ar.split(":").map(Number);
-      const totalPx = Math.max(1, mp * 1_000_000);
+      let totalPx;
+      if (mp <= 0) {
+        try {
+          const r0 = await getImageDimensions(items[0].src);
+          totalPx = r0.w * r0.h;
+        } catch {
+          totalPx = 1024 * 1024;
+        }
+      } else {
+        totalPx = Math.max(1, mp * 1_000_000);
+      }
       const refW = Math.max(1, Math.round(Math.sqrt(totalPx * aw / ah)));
       const refH = Math.max(1, Math.round(Math.sqrt(totalPx * ah / aw)));
       return { refW, refH };
@@ -1918,9 +1929,9 @@ function createWidget(node) {
       ctx.rotate(rot);
       ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
       ctx.drawImage(drawSrc, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
-      // Lasso mask overlay — same logic as renderCropPreviews
+      // Lasso mask overlay — skip in Paint mode (lassoIsPaint)
       const tOps = t.lassoOps;
-      if (tOps && tOps.length > 0) {
+      if (tOps && tOps.length > 0 && !t.lassoIsPaint) {
         const mw = Math.ceil(dw), mh = Math.ceil(dh);
         const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh;
         const mx = mc.getContext('2d');
@@ -2729,6 +2740,11 @@ function createWidget(node) {
 
     function switchPanelMode(mode) {
       if (edPanelMode === mode) return;
+      if (mode !== "pixels" && edLassoIsPaint) {
+        edLassoIsPaint = false;
+        edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+        stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      }
       edPanelMode = mode;
       setTabActive(tabEdit, mode === "edit");
       setTabActive(tabPixels, mode === "pixels");
@@ -3127,13 +3143,15 @@ function createWidget(node) {
       lassoInfoLbl.textContent = txt;
     }
 
-    // ── Commit a completed polygon/freehand shape ──
     function commitLassoShape(points, e) {
       if (points.length < 3) return;
       const normalized = points.map(p => [p.x, p.y]);
       let mode = "add";
       if (e && e.altKey && e.shiftKey) mode = "subtract";
-      if (!e || !e.shiftKey) edLassoOps = [];
+      if (!e || !e.shiftKey) {
+        edLassoOps = [];
+        edLassoIsPaint = (edPanelMode === "pixels");
+      }
       edLassoOps.push({ mode, points: normalized });
       edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
       _lassoMaskDirty = true;
@@ -3702,7 +3720,7 @@ function createWidget(node) {
     ptLevelsBtn.style.cssText = `flex:1 1 calc(50% - 4px);background:#1e1e1e;color:#aaa;border:1px solid #3a3a3a;border-radius:${_r5};padding:${_btnPad};font-size:${_fs11};cursor:pointer;transition:background .12s;`;
     ptLevelsBtn.addEventListener("mouseenter", () => { ptLevelsBtn.style.background="#2a2a2a"; ptLevelsBtn.style.borderColor="#555"; });
     ptLevelsBtn.addEventListener("mouseleave", () => { ptLevelsBtn.style.background="#1e1e1e"; ptLevelsBtn.style.borderColor="#3a3a3a"; });
-    ptLevelsBtn.addEventListener("click", () => _edApplyLevels(parseInt(ptLvShadowSlider.value), parseInt(ptLvGammaSlider.value) / 100, parseInt(ptLvHighSlider.value)));
+    ptLevelsBtn.addEventListener("click", () => openLevelsModal());
     ptFilterRow.appendChild(ptLevelsBtn);
     const ptPasteBtn = document.createElement("button");
     ptPasteBtn.textContent = "\uD83D\uDCCB Paste";
@@ -3728,51 +3746,6 @@ function createWidget(node) {
     ptGBlurSlider.addEventListener("input", () => { ptGBlurVal.textContent = ptGBlurSlider.value + "px"; });
     ptGBlurRow.appendChild(ptGBlurLbl); ptGBlurRow.appendChild(ptGBlurSlider); ptGBlurRow.appendChild(ptGBlurVal);
     secPixels.appendChild(ptGBlurRow);
-    // ── Levels sliders ──
-    const ptLvShadowRow = document.createElement("div");
-    ptLvShadowRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
-    const ptLvShadowLbl = document.createElement("span");
-    ptLvShadowLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
-    ptLvShadowLbl.textContent = "Shadows";
-    const ptLvShadowSlider = document.createElement("input");
-    ptLvShadowSlider.type = "range"; ptLvShadowSlider.min = "0"; ptLvShadowSlider.max = "254"; ptLvShadowSlider.value = "0";
-    ptLvShadowSlider.style.cssText = `flex:1;accent-color:#555;`;
-    const ptLvShadowVal = document.createElement("span");
-    ptLvShadowVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
-    ptLvShadowVal.textContent = "0";
-    ptLvShadowSlider.addEventListener("input", () => { ptLvShadowVal.textContent = ptLvShadowSlider.value; });
-    ptLvShadowRow.appendChild(ptLvShadowLbl); ptLvShadowRow.appendChild(ptLvShadowSlider); ptLvShadowRow.appendChild(ptLvShadowVal);
-    secPixels.appendChild(ptLvShadowRow);
-
-    const ptLvGammaRow = document.createElement("div");
-    ptLvGammaRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
-    const ptLvGammaLbl = document.createElement("span");
-    ptLvGammaLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
-    ptLvGammaLbl.textContent = "Midtones";
-    const ptLvGammaSlider = document.createElement("input");
-    ptLvGammaSlider.type = "range"; ptLvGammaSlider.min = "10"; ptLvGammaSlider.max = "300"; ptLvGammaSlider.value = "100";
-    ptLvGammaSlider.style.cssText = `flex:1;accent-color:#aaa;`;
-    const ptLvGammaVal = document.createElement("span");
-    ptLvGammaVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
-    ptLvGammaVal.textContent = "1.00";
-    ptLvGammaSlider.addEventListener("input", () => { ptLvGammaVal.textContent = (parseInt(ptLvGammaSlider.value) / 100).toFixed(2); });
-    ptLvGammaRow.appendChild(ptLvGammaLbl); ptLvGammaRow.appendChild(ptLvGammaSlider); ptLvGammaRow.appendChild(ptLvGammaVal);
-    secPixels.appendChild(ptLvGammaRow);
-
-    const ptLvHighRow = document.createElement("div");
-    ptLvHighRow.style.cssText = `display:flex;gap:${_gap5};align-items:center;margin-top:2px;`;
-    const ptLvHighLbl = document.createElement("span");
-    ptLvHighLbl.style.cssText = `color:#888;font-size:${_fs10};flex-shrink:0;min-width:52px;`;
-    ptLvHighLbl.textContent = "Highlights";
-    const ptLvHighSlider = document.createElement("input");
-    ptLvHighSlider.type = "range"; ptLvHighSlider.min = "1"; ptLvHighSlider.max = "255"; ptLvHighSlider.value = "255";
-    ptLvHighSlider.style.cssText = `flex:1;accent-color:#ddd;`;
-    const ptLvHighVal = document.createElement("span");
-    ptLvHighVal.style.cssText = `color:#888;font-size:${_fs10};min-width:28px;text-align:right;`;
-    ptLvHighVal.textContent = "255";
-    ptLvHighSlider.addEventListener("input", () => { ptLvHighVal.textContent = ptLvHighSlider.value; });
-    ptLvHighRow.appendChild(ptLvHighLbl); ptLvHighRow.appendChild(ptLvHighSlider); ptLvHighRow.appendChild(ptLvHighVal);
-    secPixels.appendChild(ptLvHighRow);
 
     // ── Color row: compact FG/BG + swap + reset ──
     const ptColorWrapper = document.createElement("div");
@@ -3953,90 +3926,22 @@ function createWidget(node) {
       const ctx = _edCvsEditsPx.getContext("2d");
       ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
 
-      // Detect whether any Edit-panel transforms are active
-      const hasOffset = (dOX !== 0 || dOY !== 0);
-      const hasScale  = (edScale !== 1.0 || edScaleX !== 1.0 || edScaleY !== 1.0);
-      const hasFlip   = (edFlipH || edFlipV);
-      const hasRot    = (edRotate !== 0);
-      const hasLasso  = (edLassoOps.length > 0 || edLassoInverted);
-      const hasTransforms = hasOffset || hasScale || hasFlip || hasRot || hasLasso;
-
-      if (!hasTransforms) {
-        // ── FAST PATH: simple stretch (original behavior) ──────────
-        if (edAppliedCrop) {
-          const sx = edAppliedCrop.cx * edNatW, sy = edAppliedCrop.cy * edNatH;
-          const sw = edAppliedCrop.cw * edNatW, sh = edAppliedCrop.ch * edNatH;
-          ctx.drawImage(edImg, sx, sy, sw, sh, 0, 0, wpX, wpY);
-        } else {
-          ctx.drawImage(edImg, 0, 0, wpX, wpY);
-        }
+      // ── INPAINT FLATTEN: bake server-rendered inpaint preview as editable base ──
+      const isInpaintMode = (edBg === "telea" || edBg === "navier-stokes");
+      if (isInpaintMode && edInpaintPreview && !edInpaintDirty) {
+        // The inpaint preview already contains the fully composited result
+        // (transforms + inpaint fill). Draw it stretched to fill the pixel canvas.
+        ctx.drawImage(edInpaintPreview, 0, 0, wpX, wpY);
         return;
       }
 
-      // ── FULL COMPOSITE: bake Edit-panel state into pixel canvas ──
-      const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : getEffectiveBgColor();
-      ctx.fillStyle = bgC;
-      ctx.fillRect(0, 0, wpX, wpY);
-
-      // Source region (pre-crop)
-      let srcX = 0, srcY = 0, srcW = edNatW, srcH = edNatH;
       if (edAppliedCrop) {
-        srcX = edAppliedCrop.cx * edNatW;
-        srcY = edAppliedCrop.cy * edNatH;
-        srcW = edAppliedCrop.cw * edNatW;
-        srcH = edAppliedCrop.ch * edNatH;
+        const sx = edAppliedCrop.cx * edNatW, sy = edAppliedCrop.cy * edNatH;
+        const sw = edAppliedCrop.cw * edNatW, sh = edAppliedCrop.ch * edNatH;
+        ctx.drawImage(edImg, sx, sy, sw, sh, 0, 0, wpX, wpY);
+      } else {
+        ctx.drawImage(edImg, 0, 0, wpX, wpY);
       }
-
-      // Fit scale (use widget value, not syncCvs local)
-      const fitMode = getFitModeWidget()?.value ?? "letterbox";
-      const rot   = edRotate * Math.PI / 180;
-      const cosA  = Math.abs(Math.cos(rot)), sinA = Math.abs(Math.sin(rot));
-      const rW    = srcW * cosA + srcH * sinA;
-      const rH    = srcW * sinA + srcH * cosA;
-      const bf    = fitMode === "crop"
-        ? Math.max(wpX / rW, wpY / rH)
-        : Math.min(wpX / rW, wpY / rH);
-      const eff   = bf * edScale;
-      const dw    = srcW * eff * edScaleX;
-      const dh    = srcH * eff * edScaleY;
-
-      // Pan/offset, flip, rotate, draw image
-      ctx.save();
-      ctx.translate(wpX / 2 + dOX * wpX, wpY / 2 + dOY * wpY);
-      ctx.rotate(rot);
-      ctx.scale(edFlipH ? -1 : 1, edFlipV ? -1 : 1);
-      ctx.drawImage(edImg, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
-
-      // Lasso mask overlay
-      if (hasLasso) {
-        const mw = Math.ceil(dw), mh = Math.ceil(dh);
-        const mc = document.createElement("canvas"); mc.width = mw; mc.height = mh;
-        const mx = mc.getContext("2d");
-        for (const op of edLassoOps) {
-          if (op.points.length < 3) continue;
-          mx.globalCompositeOperation = op.mode === "add" ? "source-over" : "destination-out";
-          mx.fillStyle = "white"; mx.beginPath();
-          mx.moveTo(op.points[0][0] * mw, op.points[0][1] * mh);
-          for (let k = 1; k < op.points.length; k++)
-            mx.lineTo(op.points[k][0] * mw, op.points[k][1] * mh);
-          mx.closePath(); mx.fill();
-        }
-        if (edLassoInverted) {
-          mx.globalCompositeOperation = "xor";
-          mx.fillStyle = "white"; mx.fillRect(0, 0, mw, mh);
-        }
-        mx.globalCompositeOperation = "source-over";
-
-        const oc = document.createElement("canvas"); oc.width = mw; oc.height = mh;
-        const ox = oc.getContext("2d");
-        ox.fillStyle = bgC; ox.fillRect(0, 0, mw, mh);
-        ox.globalCompositeOperation = "destination-out";
-        ox.drawImage(mc, 0, 0);
-        ox.globalCompositeOperation = "source-over";
-        ctx.drawImage(oc, -dw / 2, -dh / 2);
-      }
-      ctx.restore();
-
     }
 
 
@@ -4310,18 +4215,21 @@ function createWidget(node) {
     }
 
     // ── Apply Levels Correction ─────────────────────────────────
-    function _edApplyLevels(shadows, gamma, highlights) {
-      shadows = shadows || 0;
+    function _edApplyLevels(inBlack, gamma, inWhite, outBlack, outWhite) {
+      inBlack = inBlack || 0;
       gamma = gamma || 1;
-      highlights = (highlights != null) ? highlights : 255;
-      if (shadows >= highlights) return; // invalid range
+      inWhite = (inWhite != null) ? inWhite : 255;
+      outBlack = outBlack || 0;
+      outWhite = (outWhite != null) ? outWhite : 255;
+      if (inBlack >= inWhite) return; // invalid range
       _edEnsureEditsPx(); _edSaveUndo();
       const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
       const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
       const imgData = ctx.getImageData(0, 0, pw, ph);
       const d = imgData.data;
       const invGamma = 1 / gamma;
-      const range = highlights - shadows;
+      const range = inWhite - inBlack;
+      const outRange = outWhite - outBlack;
 
       let lMskData = null;
       if (typeof edLassoOps !== 'undefined' && edLassoOps.length > 0) {
@@ -4333,16 +4241,343 @@ function createWidget(node) {
         if (lMskData && lMskData[i + 3] === 0) continue;
         for (let c = 0; c < 3; c++) {
           let v = d[i + c];
-          // Clamp to input range and normalize to 0-1
-          v = Math.max(0, Math.min(1, (v - shadows) / range));
+          // Normalize to 0-1 based on input range
+          v = Math.max(0, Math.min(1, (v - inBlack) / range));
           // Apply gamma
           v = Math.pow(v, invGamma);
-          // Scale back to 0-255
-          d[i + c] = Math.round(v * 255);
+          // Scale to output range
+          v = outBlack + v * outRange;
+          d[i + c] = Math.round(v);
         }
       }
       ctx.putImageData(imgData, 0, 0);
       redraw();
+    }
+
+    function openLevelsModal() {
+      _edEnsureEditsPx();
+      const pw = _edCvsEditsPx.width, ph = _edCvsEditsPx.height;
+      const ctx = _edCvsEditsPx.getContext("2d", { willReadFrequently: true });
+      const initialSnap = ctx.getImageData(0, 0, pw, ph);
+
+      function sliderToGamma(x) {
+        const g = Math.pow(10, (x - 100) / 100);
+        return Math.max(0.1, Math.min(9.99, g));
+      }
+
+      const overlay = document.createElement("div");
+      overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: transparent;
+        backdrop-filter: none;
+        pointer-events: none;
+        z-index: 100000;
+        color: #f4f4f5;
+        font-family: system-ui, -apple-system, sans-serif;
+      `;
+
+      const card = document.createElement("div");
+      card.style.cssText = `
+        position: absolute;
+        left: calc(50% - 155px);
+        top: 20%;
+        background: #18181b;
+        border: 1px solid #27272a;
+        border-radius: 8px;
+        padding: 12px 14px;
+        width: 310px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        pointer-events: auto;
+        user-select: none;
+      `;
+      overlay.appendChild(card);
+
+      const title = document.createElement("div");
+      title.style.cssText = `
+        font-size: 12px;
+        font-weight: 600;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: move;
+        padding-bottom: 4px;
+        border-bottom: 1px solid #27272a;
+      `;
+      title.innerHTML = `📊 Levels Adjustment`;
+      card.appendChild(title);
+
+      // Dragging logic
+      let isDragging = false;
+      let startX, startY, initialLeft, initialTop;
+      title.addEventListener("mousedown", (e) => {
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = card.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+        card.style.left = initialLeft + "px";
+        card.style.top = initialTop + "px";
+        card.style.margin = "0";
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      });
+      function onMouseMove(e) {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        card.style.left = (initialLeft + dx) + "px";
+        card.style.top = (initialTop + dy) + "px";
+      }
+      function onMouseUp() {
+        isDragging = false;
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      }
+
+      // Section creator helper
+      function createSection(titleText) {
+        const sec = document.createElement("div");
+        sec.style.cssText = `
+          border: 1px solid #27272a;
+          border-radius: 6px;
+          padding: 8px 10px;
+          background: #09090b;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        `;
+        const secHeader = document.createElement("div");
+        secHeader.style.cssText = `
+          font-size: 9px;
+          font-weight: 700;
+          color: #71717a;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        `;
+        secHeader.textContent = titleText;
+        sec.appendChild(secHeader);
+        return sec;
+      }
+
+      // Input Section
+      const inSec = createSection("Input Levels");
+      const inGrad = document.createElement("div");
+      inGrad.style.cssText = `
+        height: 6px;
+        background: linear-gradient(to right, #000000 0%, #ffffff 100%);
+        border-radius: 3px;
+        border: 1px solid #27272a;
+      `;
+      inSec.appendChild(inGrad);
+
+      function createSliderRow(label, min, max, val, isGamma) {
+        const row = document.createElement("div");
+        row.style.cssText = `
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 10px;
+        `;
+        const nameSpan = document.createElement("span");
+        nameSpan.style.cssText = `
+          width: 60px;
+          color: #a1a1aa;
+        `;
+        nameSpan.textContent = label;
+
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = min;
+        slider.max = max;
+        slider.value = val;
+        slider.style.cssText = `
+          flex: 1;
+          accent-color: #3b82f6;
+          cursor: pointer;
+          height: 3px;
+          background: #27272a;
+          border-radius: 1.5px;
+          border: none;
+        `;
+
+        const valSpan = document.createElement("span");
+        valSpan.style.cssText = `
+          width: 28px;
+          text-align: right;
+          color: #ffffff;
+          font-family: monospace;
+          font-weight: 500;
+        `;
+        valSpan.textContent = isGamma ? sliderToGamma(val).toFixed(2) : val;
+
+        row.appendChild(nameSpan);
+        row.appendChild(slider);
+        row.appendChild(valSpan);
+        return { row, slider, valSpan };
+      }
+
+      const inBRow = createSliderRow("Shadows", "0", "253", "0", false);
+      const gamRow = createSliderRow("Midtones", "0", "200", "100", true);
+      const inWRow = createSliderRow("Highlights", "2", "255", "255", false);
+
+      inSec.appendChild(inBRow.row);
+      inSec.appendChild(gamRow.row);
+      inSec.appendChild(inWRow.row);
+      card.appendChild(inSec);
+
+      // Output Section
+      const outSec = createSection("Output Levels");
+      const outGrad = document.createElement("div");
+      outGrad.style.cssText = `
+        height: 6px;
+        background: linear-gradient(to right, #000000 0%, #ffffff 100%);
+        border-radius: 3px;
+        border: 1px solid #27272a;
+      `;
+      outSec.appendChild(outGrad);
+
+      const outBRow = createSliderRow("Out Black", "0", "255", "0", false);
+      const outWRow = createSliderRow("Out White", "0", "255", "255", false);
+
+      outSec.appendChild(outBRow.row);
+      outSec.appendChild(outWRow.row);
+      card.appendChild(outSec);
+
+      function updatePreview() {
+        const inB = parseInt(inBRow.slider.value);
+        const gam = sliderToGamma(parseInt(gamRow.slider.value));
+        const inW = parseInt(inWRow.slider.value);
+        const outB = parseInt(outBRow.slider.value);
+        const outW = parseInt(outWRow.slider.value);
+
+        ctx.putImageData(initialSnap, 0, 0);
+        const imgData = ctx.getImageData(0, 0, pw, ph);
+        const d = imgData.data;
+        const range = Math.max(1, inW - inB);
+        const invGamma = 1 / gam;
+        const outRange = outW - outB;
+
+        let lMskData = null;
+        if (typeof edLassoOps !== 'undefined' && edLassoOps.length > 0) {
+          const lMsk = buildLassoMaskCanvas(pw, ph);
+          lMskData = lMsk.getContext("2d", {willReadFrequently: true}).getImageData(0, 0, pw, ph).data;
+        }
+
+        for (let i = 0; i < d.length; i += 4) {
+          if (lMskData && lMskData[i + 3] === 0) continue;
+          for (let c = 0; c < 3; c++) {
+            let v = d[i + c];
+            v = Math.max(0, Math.min(1, (v - inB) / range));
+            v = Math.pow(v, invGamma);
+            v = outB + v * outRange;
+            d[i + c] = Math.round(v);
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+        redraw();
+      }
+
+      inBRow.slider.addEventListener("input", (e) => {
+        const val = parseInt(e.target.value);
+        inBRow.valSpan.textContent = val;
+        if (val >= parseInt(inWRow.slider.value)) {
+          inWRow.slider.value = val + 2;
+          inWRow.valSpan.textContent = val + 2;
+        }
+        updatePreview();
+      });
+
+      gamRow.slider.addEventListener("input", (e) => {
+        gamRow.valSpan.textContent = sliderToGamma(parseInt(e.target.value)).toFixed(2);
+        updatePreview();
+      });
+
+      inWRow.slider.addEventListener("input", (e) => {
+        const val = parseInt(e.target.value);
+        inWRow.valSpan.textContent = val;
+        if (val <= parseInt(inBRow.slider.value)) {
+          inBRow.slider.value = Math.max(0, val - 2);
+          inBRow.valSpan.textContent = Math.max(0, val - 2);
+        }
+        updatePreview();
+      });
+
+      outBRow.slider.addEventListener("input", (e) => {
+        outBRow.valSpan.textContent = e.target.value;
+        updatePreview();
+      });
+
+      outWRow.slider.addEventListener("input", (e) => {
+        outWRow.valSpan.textContent = e.target.value;
+        updatePreview();
+      });
+
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = `
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+        margin-top: 4px;
+      `;
+
+      const cancelB = document.createElement("button");
+      cancelB.textContent = "Cancel";
+      cancelB.style.cssText = `
+        background: #27272a;
+        color: #e4e4e7;
+        border: 1px solid #3f3f46;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 10px;
+        cursor: pointer;
+        transition: background 0.12s;
+      `;
+      cancelB.addEventListener("mouseenter", () => cancelB.style.background = "#3f3f46");
+      cancelB.addEventListener("mouseleave", () => cancelB.style.background = "#27272a");
+      cancelB.addEventListener("click", () => {
+        ctx.putImageData(initialSnap, 0, 0);
+        redraw();
+        document.body.removeChild(overlay);
+      });
+
+      const okB = document.createElement("button");
+      okB.textContent = "OK";
+      okB.style.cssText = `
+        background: #2563eb;
+        color: #ffffff;
+        border: none;
+        border-radius: 4px;
+        padding: 4px 14px;
+        font-size: 10px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.12s;
+      `;
+      okB.addEventListener("mouseenter", () => okB.style.background = "#1d4ed8");
+      okB.addEventListener("mouseleave", () => okB.style.background = "#2563eb");
+      okB.addEventListener("click", () => {
+        const inB = parseInt(inBRow.slider.value);
+        const gam = sliderToGamma(parseInt(gamRow.slider.value));
+        const inW = parseInt(inWRow.slider.value);
+        const outB = parseInt(outBRow.slider.value);
+        const outW = parseInt(outWRow.slider.value);
+
+        ctx.putImageData(initialSnap, 0, 0);
+        _edApplyLevels(inB, gam, inW, outB, outW);
+        document.body.removeChild(overlay);
+      });
+
+      btnRow.appendChild(cancelB);
+      btnRow.appendChild(okB);
+      card.appendChild(btnRow);
+
+      document.body.appendChild(overlay);
     }
 
     // ── Clipboard Paste functions ──────────────────────────────────
@@ -4550,9 +4785,32 @@ function createWidget(node) {
       const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
       const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
       ctx.save();
-      // dim outside crop
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.rect(bx, by, bw, bh); ctx.fill('evenodd');
+      // fill outside crop with background selection (clip frame excluding crop box)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(fx, fy, frameW, frameH);
+      ctx.rect(bx, by, bw, bh);
+      ctx.clip('evenodd');
+      const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : (edBg === "transparent" ? "#808080" : "#808080");
+      if (edBg === "transparent") {
+        const aT = 12;
+        for (let ar = 0; ar < Math.ceil(frameH / aT); ar++) {
+          for (let ac = 0; ac < Math.ceil(frameW / aT); ac++) {
+            ctx.fillStyle = (ar + ac) % 2 === 0 ? "#cccccc" : "#999999";
+            ctx.fillRect(fx + ac * aT, fy + ar * aT, aT, aT);
+          }
+        }
+      } else {
+        ctx.fillStyle = bgC;
+        ctx.fillRect(fx, fy, frameW, frameH);
+      }
+      if (edBg === "telea" || edBg === "navier-stokes") {
+        ctx.strokeStyle = "rgba(90,122,191,0.18)"; ctx.lineWidth = 1;
+        for (let i = -frameH; i < frameW + frameH; i += 14) {
+          ctx.beginPath(); ctx.moveTo(fx + i, fy); ctx.lineTo(fx + i + frameH, fy + frameH); ctx.stroke();
+        }
+      }
+      ctx.restore();
       // border
       ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5;
       ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
@@ -4592,7 +4850,11 @@ function createWidget(node) {
     globalUndoB.addEventListener("mouseenter", () => { globalUndoB.style.background="#2a2a2a"; globalUndoB.style.borderColor="#555"; });
     globalUndoB.addEventListener("mouseleave", () => { globalUndoB.style.background="#1e1e1e"; globalUndoB.style.borderColor="#3a3a3a"; });
     globalUndoB.addEventListener("click", () => {
-      if (edPanelMode === "edit") _edUndoEditOps(); else _edUndoEdits();
+      if (edPanelMode === "pixels" && _edEditsUndoStack.length > 0) {
+        _edUndoEdits();
+      } else {
+        _edUndoEditOps();
+      }
     });
     const globalRedoB = document.createElement("button");
     globalRedoB.textContent = "\u21B7 Redo";
@@ -4601,7 +4863,11 @@ function createWidget(node) {
     globalRedoB.addEventListener("mouseenter", () => { globalRedoB.style.background="#2a2a2a"; globalRedoB.style.borderColor="#555"; });
     globalRedoB.addEventListener("mouseleave", () => { globalRedoB.style.background="#1e1e1e"; globalRedoB.style.borderColor="#3a3a3a"; });
     globalRedoB.addEventListener("click", () => {
-      if (edPanelMode === "edit") _edRedoEditOps(); else _edRedoEdits();
+      if (edPanelMode === "pixels" && _edEditsRedoStack.length > 0) {
+        _edRedoEdits();
+      } else {
+        _edRedoEditOps();
+      }
     });
     globalUndoRedoRow.appendChild(globalUndoB); globalUndoRedoRow.appendChild(globalRedoB);
     pnlFoot.appendChild(globalUndoRedoRow);
@@ -4676,7 +4942,26 @@ function createWidget(node) {
       if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
       if (edLassoOps.length > 0) { transform.lassoOps = edLassoOps; }
       if (edLassoInverted) { transform.lassoInverted = true; }
+      if (edLassoIsPaint) { transform.lassoIsPaint = true; }
+      
       const fn = items[curIdx]?.filename ?? "";
+      const tSes = fn ? ses[fn] : null;
+      if (_edCvsEditsPx) {
+        if (tSes && tSes.imageEditsFile && (!_edEditsUndoStack || _edEditsUndoStack.length === 0)) {
+          transform.imageEditsFile = tSes.imageEditsFile;
+        } else {
+          transform.imageEditsDataUrl = _edCvsEditsPx.toDataURL(edBg === "transparent" ? "image/png" : "image/webp", 0.92);
+        }
+      } else if (_edFlattenDataUrl) {
+        if (tSes && tSes.imageEditsFile) {
+          transform.imageEditsFile = tSes.imageEditsFile;
+          transform.isFlattened = true;
+        } else {
+          transform.imageEditsDataUrl = _edFlattenDataUrl;
+          transform.isFlattened = true;
+        }
+      }
+
       const cacheKey = JSON.stringify(transform) + "|" + fn;
       edReqHandle = setTimeout(async () => {
         if (!edImg || !fn) return;
@@ -4750,7 +5035,7 @@ function createWidget(node) {
         }
         // image rendering
         const isInpaint = edBg==="telea"||edBg==="navier-stokes";
-        if (isInpaint && edInpaintPreview && !edInpaintDirty) {
+        if (isInpaint && edInpaintPreview && !edInpaintDirty && (typeof edPanelMode === "undefined" || edPanelMode !== "pixels")) {
           // Server-rendered result — draw it filling the reference frame (already fully transformed)
           ctx.drawImage(edInpaintPreview, fx, fy, frameW, frameH);
         } else {
@@ -4795,11 +5080,8 @@ function createWidget(node) {
               ctx.strokeRect(sx - pw/2, sy - ph/2, pw, ph);
               ctx.restore();
             }
-            // Lasso mask overlay — show bg color outside selection.
-            // In pixels mode: only shown before pixel edits start (_edCvsEditsPx==null),
-            // because once initialized, the lasso is already baked into _edCvsEditsPx.
             const showLassoOverlay = (edLassoOps.length > 0 || edLassoInverted) &&
-              (edPanelMode !== "pixels" || !_edCvsEditsPx);
+              !edLassoIsPaint;
             if (showLassoOverlay) {
               const mw = Math.ceil(dw), mh = Math.ceil(dh);
               // Build mask canvas (white = inside selection)
@@ -4829,7 +5111,7 @@ function createWidget(node) {
             }
             ctx.restore();
           }
-          if (isInpaint) {
+          if (isInpaint && edInpaintDirty && (typeof edPanelMode === "undefined" || edPanelMode !== "pixels")) {
             // spinner overlay while computing
             ctx.fillStyle="rgba(0,0,0,0.5)"; ctx.fillRect(fx,fy,frameW,frameH);
             ctx.fillStyle="#888"; ctx.font="12px system-ui";
@@ -4996,7 +5278,11 @@ function createWidget(node) {
       if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
-        if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
+        if (hasLasso) {
+          t.lassoOps = edLassoOps;
+          if (edLassoInverted) t.lassoInverted = true;
+          if (edLassoIsPaint) t.lassoIsPaint = true;
+        }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
         ses[fn] = t;
       } else delete ses[fn];
@@ -5027,6 +5313,7 @@ function createWidget(node) {
           else edAppliedCrop = null;
           edLassoOps = (t && t.lassoOps) ? t.lassoOps : [];
           edLassoInverted = !!(t && t.lassoInverted);
+          edLassoIsPaint = !!(t && t.lassoIsPaint);
           _lassoMaskDirty = true;
           syncLassoInvertBtn();
           edCropBox = null; edCropDrag = null;
@@ -5148,11 +5435,13 @@ function createWidget(node) {
         const r = cvs.getBoundingClientRect();
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
         _edBrushPos = { cx, cy };
-        const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
-        const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
-        const { dw, dh } = _imgRenderDims();
-        const epx = (cx - (imgCX - dw/2)) * pxScale;
-        const epy = (cy - (imgCY - dh/2)) * pxScale;
+        const wpX = _edCvsEditsPx ? _edCvsEditsPx.width : 1;
+        const wpY = _edCvsEditsPx ? _edCvsEditsPx.height : 1;
+        const norm = cropPxToNorm(cx, cy);
+        const epx = norm.nx * wpX;
+        const epy = norm.ny * wpY;
+        const { dw } = _imgRenderDims();
+        const pxScale = _edCvsEditsPx ? wpX / dw : 1;
         const rPx = parseFloat(ptBrSlider.value) * pxScale;
         if (edPixelTool === "blur") {
           _edApplyBlur(epx, epy, rPx);
@@ -5472,11 +5761,13 @@ function createWidget(node) {
         const r = cvs.getBoundingClientRect();
         const cx = e.clientX - r.left, cy = e.clientY - r.top;
         _edBrushPos = { cx, cy };
-        const pxScale = _edCvsEditsPx ? _edCvsEditsPx.width / (effNatW() * bFit * edScale) : 1;
-        const imgCX = frameCX + dOX, imgCY = frameCY + dOY;
-        const { dw, dh } = _imgRenderDims();
-        const startX = (cx - (imgCX - dw/2)) * pxScale;
-        const startY = (cy - (imgCY - dh/2)) * pxScale;
+        const wpX = _edCvsEditsPx ? _edCvsEditsPx.width : 1;
+        const wpY = _edCvsEditsPx ? _edCvsEditsPx.height : 1;
+        const norm = cropPxToNorm(cx, cy);
+        const startX = norm.nx * wpX;
+        const startY = norm.ny * wpY;
+        const { dw } = _imgRenderDims();
+        const pxScale = _edCvsEditsPx ? wpX / dw : 1;
         _edBrushPts = [{ x: startX, y: startY }];
         
         if (_edAltEyedrop || edPixelTool === "eyedropper") {
@@ -5646,14 +5937,19 @@ function createWidget(node) {
         if (_pasteImg) { _pasteImg = null; _pasteDrag = null; hint.textContent = "Paste cancelled"; redraw(); e.preventDefault(); e.stopImmediatePropagation(); return; }
         doClose();
       }
-      // Ctrl+Z/Y: undo/redo pixel edits
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && edPixelTool && _edEditsUndoStack.length > 0) {
+      // Ctrl+Shift+Z or Ctrl+Y: redo
+      if ((e.ctrlKey || e.metaKey) && ((e.key === "z" && e.shiftKey) || e.key === "y")) {
         e.preventDefault(); e.stopImmediatePropagation();
-        _edUndoEdits(); return;
+        if (edPanelMode === "pixels" && _edEditsRedoStack.length > 0) { _edRedoEdits(); }
+        else { _edRedoEditOps(); }
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey)) && edPixelTool && _edEditsRedoStack.length > 0) {
+      // Ctrl+Z: undo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault(); e.stopImmediatePropagation();
-        _edRedoEdits(); return;
+        if (edPanelMode === "pixels" && _edEditsUndoStack.length > 0) { _edUndoEdits(); }
+        else { _edUndoEditOps(); }
+        return;
       }
       // Ctrl+V — paste from clipboard (pixels mode)
       if ((e.ctrlKey || e.metaKey) && e.key === "v" && edPanelMode === "pixels") {

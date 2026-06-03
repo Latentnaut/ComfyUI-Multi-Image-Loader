@@ -26,6 +26,7 @@
     let edLassoTool = "freehand";
     let edLassoOps = [];
     let edLassoInverted = false;
+    let edLassoIsPaint = false;
     let edLassoCurrentPts = [];
     let edLassoDrawing = false;
     let edLassoAntsOffset = 0;
@@ -202,6 +203,11 @@
 
     function switchPanelMode(mode) {
       if (edPanelMode === mode) return;
+      if (mode !== "pixels" && edLassoIsPaint) {
+        edLassoIsPaint = false;
+        edLassoOps = []; edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
+        stopLassoAnts(); syncLassoToggle(); updateLassoInfoLbl();
+      }
       edPanelMode = mode;
       setTabActive(tabEdit, mode === "edit");
       setTabActive(tabPixels, mode === "pixels");
@@ -497,7 +503,10 @@
       const normalized = points.map(p => [p.x, p.y]);
       let mode = "add";
       if (e && e.altKey) mode = "subtract";
-      if (!e || (!e.shiftKey && !e.altKey)) edLassoOps = [];
+      if (!e || (!e.shiftKey && !e.altKey)) {
+        edLassoOps = [];
+        edLassoIsPaint = (edPanelMode === "pixels");
+      }
       edLassoOps.push({ mode, points: normalized });
       edLassoCurrentPts = []; edLassoDrawing = false; _lassoCursorNorm = null;
       _lassoMaskDirty = true;
@@ -1043,7 +1052,7 @@
 
       // 2) Bake lasso mask: paint bg color outside selection
       //    so Edit Pixels sees the same result as Edit Image view.
-      if (edLassoOps.length > 0 || edLassoInverted) {
+      if ((edLassoOps.length > 0 || edLassoInverted) && !edLassoIsPaint) {
         const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : "#808080";
 
         // Build white-fill mask (white = inside selection)
@@ -1369,9 +1378,32 @@
       const bx = fx + edCropBox.x * frameW, by = fy + edCropBox.y * frameH;
       const bw = edCropBox.w * frameW, bh = edCropBox.h * frameH;
       ctx.save();
-      // dim outside crop
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.beginPath(); ctx.rect(fx, fy, frameW, frameH); ctx.rect(bx, by, bw, bh); ctx.fill('evenodd');
+      // fill outside crop with background selection (clip frame excluding crop box)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(fx, fy, frameW, frameH);
+      ctx.rect(bx, by, bw, bh);
+      ctx.clip('evenodd');
+      const bgC = /^#[0-9a-fA-F]{6}$/.test(edBg) ? edBg : (edBg === "transparent" ? "#808080" : "#808080");
+      if (edBg === "transparent") {
+        const aT = 12;
+        for (let ar = 0; ar < Math.ceil(frameH / aT); ar++) {
+          for (let ac = 0; ac < Math.ceil(frameW / aT); ac++) {
+            ctx.fillStyle = (ar + ac) % 2 === 0 ? "#cccccc" : "#999999";
+            ctx.fillRect(fx + ac * aT, fy + ar * aT, aT, aT);
+          }
+        }
+      } else {
+        ctx.fillStyle = bgC;
+        ctx.fillRect(fx, fy, frameW, frameH);
+      }
+      if (edBg === "telea" || edBg === "navier-stokes") {
+        ctx.strokeStyle = "rgba(90,122,191,0.18)"; ctx.lineWidth = 1;
+        for (let i = -frameH; i < frameW + frameH; i += 14) {
+          ctx.beginPath(); ctx.moveTo(fx + i, fy); ctx.lineTo(fx + i + frameH, fy + frameH); ctx.stroke();
+        }
+      }
+      ctx.restore();
       // border
       ctx.strokeStyle = '#d5ff6b'; ctx.lineWidth = 1.5;
       ctx.strokeRect(bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5);
@@ -1470,6 +1502,7 @@
       if (edAppliedCrop) { transform.cx = edAppliedCrop.cx; transform.cy = edAppliedCrop.cy; transform.cw = edAppliedCrop.cw; transform.ch = edAppliedCrop.ch; }
       if (edLassoOps.length > 0) { transform.lassoOps = edLassoOps; }
       if (edLassoInverted) { transform.lassoInverted = true; }
+      if (edLassoIsPaint) { transform.lassoIsPaint = true; }
       const fn = items[curIdx]?.filename ?? "";
       const cacheKey = JSON.stringify(transform) + "|" + fn;
       edReqHandle = setTimeout(async () => {
@@ -1691,7 +1724,11 @@
       if (dOX!==0||dOY!==0||edScale!==1.0||edFlipH||edFlipV||edRotate!==0||edBg!==nodeBg||hasAppliedCrop||hasLasso||hasPixelEdits) {
         const t = {ox:dOX/frameW,oy:dOY/frameH,scale:edScale,flipH:edFlipH,flipV:edFlipV,rotate:edRotate,bg:edBg};
         if (hasAppliedCrop) { t.cx = edAppliedCrop.cx; t.cy = edAppliedCrop.cy; t.cw = edAppliedCrop.cw; t.ch = edAppliedCrop.ch; }
-        if (hasLasso) { t.lassoOps = edLassoOps; if (edLassoInverted) t.lassoInverted = true; }
+        if (hasLasso) {
+          t.lassoOps = edLassoOps;
+          if (edLassoInverted) t.lassoInverted = true;
+          if (edLassoIsPaint) t.lassoIsPaint = true;
+        }
         if (hasPixelEdits) { t.imageEditsDataUrl = _edCvsEditsPx.toDataURL("image/webp", 0.92); }
         ses[fn] = t;
       } else delete ses[fn];
@@ -1721,6 +1758,7 @@
           else edAppliedCrop = null;
           edLassoOps = (t && t.lassoOps) ? t.lassoOps : [];
           edLassoInverted = !!(t && t.lassoInverted);
+          edLassoIsPaint = !!(t && t.lassoIsPaint);
           _lassoMaskDirty = true;
           syncLassoInvertBtn();
           edCropBox = null; edCropDrag = null;

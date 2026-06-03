@@ -1,4 +1,15 @@
-from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+from .nodes import NODE_CLASS_MAPPINGS as MULTI_IMAGE_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS as MULTI_IMAGE_DISPLAY
+from .batch_to_grid import FromBatchToGrid
+
+NODE_CLASS_MAPPINGS = {
+    **MULTI_IMAGE_MAPPINGS,
+    "FromBatchToGrid": FromBatchToGrid
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    **MULTI_IMAGE_DISPLAY,
+    "FromBatchToGrid": "From Batch to Grid"
+}
 
 WEB_DIRECTORY = "./web"
 

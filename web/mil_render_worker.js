@@ -138,9 +138,11 @@ async function handleCropTransform(bitmap, p) {
   ctx.scale(fH ? -1 : 1, fV ? -1 : 1);
   ctx.drawImage(bitmap, srcX, srcY, srcW, srcH, -dw / 2, -dh / 2, dw, dh);
 
-  // Lasso mask overlay
+  // Lasso mask overlay — skip in Paint mode where the lasso defines a
+  // brush-clip region, not a crop mask (mirrors backend _generate_lasso_mask
+  // which returns None when lassoIsPaint is set).
   const tOps = t.lassoOps;
-  if (tOps && tOps.length > 0) {
+  if (tOps && tOps.length > 0 && !t.lassoIsPaint) {
     applyLassoMask(ctx, tOps, t.lassoInverted, dw, dh, bgColor);
   }
 
