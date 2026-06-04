@@ -727,7 +727,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
             scaled_w = max(1, round(canvas_w * global_scale))
             scaled_h = max(1, round(canvas_h * global_scale))
             shrunk = final_img.resize((scaled_w, scaled_h), Image.BICUBIC)
-            final_img = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
+            final_img = Image.new("RGB", (canvas_w, canvas_h), bg_color)
             final_img.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
 
         return final_img
@@ -759,8 +759,8 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
 
-    # Letterbox uses the node's bg_color; crop/fill uses the editor's per-image bg
-    canvas_bg = node_bg_color if fit_mode == "letterbox" else bg_color
+    # Use the editor's per-image bg_color in all fit modes
+    canvas_bg = bg_color
     canvas = Image.new("RGB", (canvas_w, canvas_h), canvas_bg)
     if resized.mode == "RGBA":
         canvas.paste(resized, (paste_x, paste_y), mask=resized.split()[3])
@@ -779,7 +779,7 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
         scaled_w = max(1, round(canvas_w * global_scale))
         scaled_h = max(1, round(canvas_h * global_scale))
         shrunk = canvas.resize((scaled_w, scaled_h), Image.BICUBIC)
-        final_canvas = Image.new("RGB", (canvas_w, canvas_h), node_bg_color)
+        final_canvas = Image.new("RGB", (canvas_w, canvas_h), bg_color)
         final_canvas.paste(shrunk, ((canvas_w - scaled_w) // 2, (canvas_h - scaled_h) // 2))
         return final_canvas
 
