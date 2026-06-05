@@ -149,12 +149,17 @@ async function handleCropTransform(bitmap, p) {
   ctx.restore();
 
   // Convert to data URL via blob → base64
-  const blob = await cvs.convertToBlob({ type: "image/jpeg", quality: 0.92 });
-  const arrayBuf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuf);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return "data:image/jpeg;base64," + btoa(binary);
+  try {
+    const blob = await cvs.convertToBlob({ type: "image/jpeg", quality: 0.92 });
+    const arrayBuf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return "data:image/jpeg;base64," + btoa(binary);
+  } catch (e) {
+    console.warn("[MIL Worker] convertToBlob failed inside handleCropTransform:", e);
+    return "";
+  }
 }
 
 
@@ -195,10 +200,15 @@ async function handleFitPreview(bitmap, p) {
   ctx.restore();
 
   // Convert to data URL via blob
-  const blob = await cvs.convertToBlob({ type: "image/jpeg", quality: 0.92 });
-  const arrayBuf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuf);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return "data:image/jpeg;base64," + btoa(binary);
+  try {
+    const blob = await cvs.convertToBlob({ type: "image/jpeg", quality: 0.92 });
+    const arrayBuf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return "data:image/jpeg;base64," + btoa(binary);
+  } catch (e) {
+    console.warn("[MIL Worker] convertToBlob failed inside handleFitPreview:", e);
+    return "";
+  }
 }

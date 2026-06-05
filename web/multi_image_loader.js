@@ -43,6 +43,48 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// --- Brave Shields & Canvas Fingerprinting Protection Guard ---
+(function() {
+  if (typeof HTMLCanvasElement !== 'undefined' && !HTMLCanvasElement.prototype._originalToDataURL) {
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      try {
+        return origToDataURL.apply(this, args);
+      } catch (e) {
+        console.warn("[MIL] Canvas.toDataURL blocked or failed (Brave fingerprinting/tainted?):", e);
+        return "";
+      }
+    };
+  }
+
+  if (typeof CanvasRenderingContext2D !== 'undefined' && !CanvasRenderingContext2D.prototype._originalGetImageData) {
+    const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+      try {
+        return origGetImageData.apply(this, args);
+      } catch (e) {
+        console.warn("[MIL] CanvasRenderingContext2D.getImageData blocked or failed (Brave fingerprinting/tainted?):", e);
+        const sx = args[0] || 0;
+        const sy = args[1] || 0;
+        const sw = args[2] || 1;
+        const sh = args[3] || 1;
+        const w = Math.max(1, Math.abs(Math.round(sw)));
+        const h = Math.max(1, Math.abs(Math.round(sh)));
+        try {
+          return new ImageData(w, h);
+        } catch (innerErr) {
+          return {
+            width: w,
+            height: h,
+            data: new Uint8ClampedArray(w * h * 4)
+          };
+        }
+      }
+    };
+  }
+})();
+// ---------------------------------------------------------------
+
 // ─── constants ───────────────────────────────────────────────────────────────
 
 const NODE_TYPE  = "MultiImageLoader";
@@ -1634,10 +1676,19 @@ function createWidget(node) {
           toRemove = Array.from(selectedIndices).sort((a,b) => b - a);
         }
         
+        let refDeleted = false;
         for (const i of toRemove) {
           const fn = items[i]?.filename;
-          if (fn) delete cropMap[fn];
+          if (fn) {
+            delete cropMap[fn];
+            if (referenceImage && fn === referenceImage) {
+              refDeleted = true;
+            }
+          }
           items.splice(i, 1);
+        }
+        if (refDeleted) {
+          referenceImage = "";
         }
         // Don't clear ALL previewSrc — only removed items are gone.
         // Re-check if any remaining items still have previews.
@@ -1647,6 +1698,7 @@ function createWidget(node) {
         selectedIdx = null;
         anchorIdx = null;
         
+        await updateThumbHFromFirst();
         if (items.length === 0) thumbH = THUMB_W;
         flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
         render();
@@ -2159,15 +2211,49 @@ function createWidget(node) {
     }
   }
 
+  function findClosestRatio(w, h) {
+    if (!w || !h) return null;
+    const actualRatio = w / h;
+    const commonRatios = [
+      [1, 1],
+      [2, 3],
+      [3, 2],
+      [3, 4],
+      [4, 3],
+      [4, 5],
+      [5, 4],
+      [9, 16],
+      [16, 9],
+      [21, 9]
+    ];
+    let bestRatio = null;
+    let minDiff = Infinity;
+    for (const [rw, rh] of commonRatios) {
+      const diff = Math.abs(actualRatio - (rw / rh));
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestRatio = `${rw}:${rh}`;
+      }
+    }
+    return bestRatio;
+  }
+
   // Update thumbH: "Image Input" mode > fixed aspect_ratio > first/reference image
   async function updateThumbHFromFirst() {
     const ar = getAspectRatioWidget()?.value ?? "Starred image";
+    const oldAr = node._resolvedAspectRatio;
+    let newAr = null;
 
     // Priority 1: "Image Input" mode — use upstream tensor dims
     if (ar === "Image Input") {
       const masterDims = getMasterImageDims();
       if (masterDims) {
         thumbH = Math.max(20, Math.round(THUMB_W * masterDims.h / masterDims.w));
+        newAr = findClosestRatio(masterDims.w, masterDims.h);
+        if (newAr && newAr !== oldAr) {
+          node._resolvedAspectRatio = newAr;
+          _propagateARToDownstream();
+        }
         return;
       }
       // Upstream not yet executed — fall through to first-image dims
@@ -2180,18 +2266,36 @@ function createWidget(node) {
         const [aw, ah] = linkedAr.split(":").map(Number);
         if (aw > 0 && ah > 0) {
           thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
+          newAr = linkedAr;
+          if (newAr && newAr !== oldAr) {
+            node._resolvedAspectRatio = newAr;
+            _propagateARToDownstream();
+          }
           return;
         }
       }
       // No resolved AR yet — fall through to first-image dims
     }
 
-    if (items.length === 0) { thumbH = THUMB_W; return; }
+    if (items.length === 0) {
+      thumbH = THUMB_W;
+      newAr = null;
+      if (newAr !== oldAr) {
+        node._resolvedAspectRatio = newAr;
+        _propagateARToDownstream();
+      }
+      return;
+    }
 
     // Priority 2: fixed aspect ratio widget (e.g. "1:1", "16:9")
     if (ar !== "Starred image" && ar !== "Image Input" && ar !== "Aspect Ratio Input") {
       const [aw, ah] = ar.split(":").map(Number);
       thumbH = Math.max(20, Math.round(THUMB_W * ah / aw));
+      newAr = ar;
+      if (newAr && newAr !== oldAr) {
+        node._resolvedAspectRatio = newAr;
+        _propagateARToDownstream();
+      }
       return;
     }
 
@@ -2204,8 +2308,15 @@ function createWidget(node) {
       }
       const { w, h } = await getImageDimensions(refSrc);
       thumbH = Math.max(20, Math.round(THUMB_W * h / w));
+      newAr = findClosestRatio(w, h);
     } catch {
       thumbH = THUMB_W;
+      newAr = null;
+    }
+
+    if (newAr !== oldAr) {
+      node._resolvedAspectRatio = newAr;
+      _propagateARToDownstream();
     }
   }
 
@@ -2814,10 +2925,19 @@ function createWidget(node) {
       toRemove = Array.from(selectedIndices).sort((a,b) => b - a);
     }
     
+    let refDeleted = false;
     for (const i of toRemove) {
       const fn = items[i]?.filename;
-      if (fn) delete cropMap[fn];
+      if (fn) {
+        delete cropMap[fn];
+        if (referenceImage && fn === referenceImage) {
+          refDeleted = true;
+        }
+      }
       items.splice(i, 1);
+    }
+    if (refDeleted) {
+      referenceImage = "";
     }
     // Don't clear ALL previewSrc — only removed items are gone.
     previewActive = items.some(it => it.previewSrc);
@@ -2826,6 +2946,7 @@ function createWidget(node) {
     selectedIdx = null;
     anchorIdx = null;
     
+    await updateThumbHFromFirst();
     if (items.length === 0) thumbH = THUMB_W;
     if (typeof flashStatusMessage === "function") flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
     render();
@@ -2950,6 +3071,7 @@ function createWidget(node) {
   root._resolveAndCacheAR = () => {
     const ar = resolveUpstreamAspectRatio();
     if (ar) {
+      const oldAr = node._resolvedAspectRatio;
       node._resolvedAspectRatio = ar;
       // Merge AR into existing backup WITHOUT overwriting image data.
       // persist() would write items=[] if called before _restore() completes.
@@ -2962,6 +3084,9 @@ function createWidget(node) {
           localStorage.setItem(lsKey, JSON.stringify(backup));
         }
       } catch(_) {}
+      if (oldAr !== ar) {
+        _propagateARToDownstream();
+      }
     }
   };
   root._onAspectRatioChange = async (wName) => {
@@ -9149,6 +9274,31 @@ app.registerExtension({
       const origOnExecuted = node.onExecuted;
       node.onExecuted = function (output) {
         origOnExecuted?.apply(this, arguments);
+
+        // Capture computed aspect ratio from python execution output
+        if (output && output.aspect_ratio_out) {
+          const arVal = Array.isArray(output.aspect_ratio_out) ? output.aspect_ratio_out[0] : output.aspect_ratio_out;
+          if (typeof arVal === "string" && /^\d+:\d+$/.test(arVal)) {
+            const oldAr = node._resolvedAspectRatio;
+            node._resolvedAspectRatio = arVal;
+            
+            // Backup immediately to localStorage
+            try {
+              const lsKey = `mil_backup_${node.id}`;
+              const raw = localStorage.getItem(lsKey);
+              if (raw) {
+                const backup = JSON.parse(raw);
+                backup.resolved_aspect_ratio = arVal;
+                localStorage.setItem(lsKey, JSON.stringify(backup));
+              }
+            } catch(_) {}
+
+            if (oldAr !== arVal) {
+              _propagateARToDownstream();
+            }
+          }
+        }
+
         // Resolve AR from upstream link after execution
         const el = node._milDomWidget?.element;
         if (el?._resolveAndCacheAR) {

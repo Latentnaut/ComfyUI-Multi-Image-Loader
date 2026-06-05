@@ -43,6 +43,48 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// --- Brave Shields & Canvas Fingerprinting Protection Guard ---
+(function() {
+  if (typeof HTMLCanvasElement !== 'undefined' && !HTMLCanvasElement.prototype._originalToDataURL) {
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      try {
+        return origToDataURL.apply(this, args);
+      } catch (e) {
+        console.warn("[MIL] Canvas.toDataURL blocked or failed (Brave fingerprinting/tainted?):", e);
+        return "";
+      }
+    };
+  }
+
+  if (typeof CanvasRenderingContext2D !== 'undefined' && !CanvasRenderingContext2D.prototype._originalGetImageData) {
+    const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+      try {
+        return origGetImageData.apply(this, args);
+      } catch (e) {
+        console.warn("[MIL] CanvasRenderingContext2D.getImageData blocked or failed (Brave fingerprinting/tainted?):", e);
+        const sx = args[0] || 0;
+        const sy = args[1] || 0;
+        const sw = args[2] || 1;
+        const sh = args[3] || 1;
+        const w = Math.max(1, Math.abs(Math.round(sw)));
+        const h = Math.max(1, Math.abs(Math.round(sh)));
+        try {
+          return new ImageData(w, h);
+        } catch (innerErr) {
+          return {
+            width: w,
+            height: h,
+            data: new Uint8ClampedArray(w * h * 4)
+          };
+        }
+      }
+    };
+  }
+})();
+// ---------------------------------------------------------------
+
 // ─── constants ───────────────────────────────────────────────────────────────
 
 const NODE_TYPE  = "LoadImagesInGrid";
@@ -1295,7 +1337,7 @@ function createWidget(node) {
         opacity:0;transition:opacity 0.15s;
         z-index:2;
       `;
-      removeBtn.addEventListener("click", (e) => {
+      removeBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         pushUndoState();
         
@@ -1314,10 +1356,13 @@ function createWidget(node) {
         selectedIdx = null;
         anchorIdx = null;
         
+        await updateThumbHFromFirst();
         if (items.length === 0) thumbH = THUMB_W;
         flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
         render();
         persist();
+        await renderFitPreviews();
+        await renderCropPreviews();
       });
 
       // ── drag-to-reorder events ────────────────────────────────────────────
@@ -2302,7 +2347,7 @@ function createWidget(node) {
   root._getCachedBlob    = () => (_cachedCopyIdx === selectedIdx && _cachedCopyBlob) ? _cachedCopyBlob : null;
   root._undo             = popUndoState;
   
-  root._removeSelectedItems = () => {
+  root._removeSelectedItems = async () => {
     if (selectedIdx === null) return;
     pushUndoState();
     
@@ -2321,10 +2366,13 @@ function createWidget(node) {
     selectedIdx = null;
     anchorIdx = null;
     
+    await updateThumbHFromFirst();
     if (items.length === 0) thumbH = THUMB_W;
     if (typeof flashStatusMessage === "function") flashStatusMessage(`${toRemove.length} image${toRemove.length > 1 ? 's' : ''} deleted`);
     render();
     persist();
+    await renderFitPreviews();
+    await renderCropPreviews();
   };
 
   root._copySelected     = async () => {
