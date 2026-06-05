@@ -730,14 +730,49 @@ function createWidget(node) {
     refreshBtn.style.borderColor = "#444";
   });
   refreshBtn.addEventListener("click", async () => {
-    // Only re-render the UI, do not import images.
     statusLabel.textContent = "Refreshing UI…";
     statusLabel.style.color = "#ffcc66";
+
+    // 1. Force recalculate and clear cached states
+    node._resolvedAspectRatio = null;
+    
+    // 2. Re-resolve aspect ratio from upstream link if in input mode
+    const ar = getAspectRatioWidget()?.value ?? "Starred image";
+    if (ar === "Aspect Ratio Input") {
+      const upstreamAr = resolveUpstreamAspectRatio();
+      if (upstreamAr) {
+        node._resolvedAspectRatio = upstreamAr;
+      }
+    } else if (ar === "Image Input") {
+      // Re-read upstream dimensions for Image Input mode
+      const masterDims = getMasterImageDims();
+      if (!masterDims && isMasterConnected()) {
+        await _fetchUpstreamDimsOnly();
+      }
+    }
+
+    // 3. Clear preview cache to force full re-generation of all thumbnails
+    items.forEach(it => delete it.previewSrc);
+    previewActive = false;
+
+    // 4. Force update thumbnail height and propagate to downstream daisy-chained nodes
+    await updateThumbHFromFirst();
+    _propagateARToDownstream();
+
+    // 5. Re-render, resize, and persist
     render();
+    resizeNode();
+    persist();
+
+    // 6. Regenerate previews
     await renderFitPreviews();
     await renderCropPreviews();
+
+    // 7. Force ComfyUI canvas redraw
+    node.setDirtyCanvas(true, true);
+
     statusLabel.textContent = "";
-    flashStatusMessage("UI Refreshed");
+    flashStatusMessage("UI and Aspect Ratios Fully Refreshed");
   });
   btnGroup.appendChild(refreshBtn);
 
@@ -1245,7 +1280,9 @@ function createWidget(node) {
         reference_image: getReferenceImageWidget()?.value ?? "",
         resolved_aspect_ratio: node._resolvedAspectRatio  ?? "",
       };
-      localStorage.setItem(`mil_backup_${node.id}`, JSON.stringify(backup));
+      if (node.id != null) {
+        localStorage.setItem(`mil_backup_${node.id}`, JSON.stringify(backup));
+      }
     } catch(_) {}
   }
 
@@ -3076,12 +3113,14 @@ function createWidget(node) {
       // Merge AR into existing backup WITHOUT overwriting image data.
       // persist() would write items=[] if called before _restore() completes.
       try {
-        const lsKey = `mil_backup_${node.id}`;
-        const raw = localStorage.getItem(lsKey);
-        if (raw) {
-          const backup = JSON.parse(raw);
-          backup.resolved_aspect_ratio = ar;
-          localStorage.setItem(lsKey, JSON.stringify(backup));
+        if (node.id != null) {
+          const lsKey = `mil_backup_${node.id}`;
+          const raw = localStorage.getItem(lsKey);
+          if (raw) {
+            const backup = JSON.parse(raw);
+            backup.resolved_aspect_ratio = ar;
+            localStorage.setItem(lsKey, JSON.stringify(backup));
+          }
         }
       } catch(_) {}
       if (oldAr !== ar) {
@@ -9248,7 +9287,9 @@ app.registerExtension({
             // silently execute upstream to read its dims (no grid import).
             const arVal = node.widgets?.find(w => w.name === "aspect_ratio")?.value ?? "Starred image";
             if (arVal === "Image Input" && connected) {
-              el._fetchUpstreamDimsOnly?.();
+              setTimeout(() => {
+                el._fetchUpstreamDimsOnly?.();
+              }, 50);
             } else {
               el._onAspectRatioChange?.();
             }
@@ -9257,13 +9298,16 @@ app.registerExtension({
           if (inp && inp.name === "aspect_ratio_in") {
             const el = node._milDomWidget?.element;
             if (connected) {
-              // Resolve AR from newly connected upstream node
-              el?._resolveAndCacheAR?.();
+              // Resolve AR from newly connected upstream node after LiteGraph registers the link
+              setTimeout(() => {
+                el?._resolveAndCacheAR?.();
+                el?._onAspectRatioChange?.();
+              }, 50);
             } else {
               // Cable disconnected — clear cached AR
               node._resolvedAspectRatio = null;
+              el?._onAspectRatioChange?.();
             }
-            el?._onAspectRatioChange?.();
           }
         }
       };
@@ -9284,12 +9328,14 @@ app.registerExtension({
             
             // Backup immediately to localStorage
             try {
-              const lsKey = `mil_backup_${node.id}`;
-              const raw = localStorage.getItem(lsKey);
-              if (raw) {
-                const backup = JSON.parse(raw);
-                backup.resolved_aspect_ratio = arVal;
-                localStorage.setItem(lsKey, JSON.stringify(backup));
+              if (node.id != null) {
+                const lsKey = `mil_backup_${node.id}`;
+                const raw = localStorage.getItem(lsKey);
+                if (raw) {
+                  const backup = JSON.parse(raw);
+                  backup.resolved_aspect_ratio = arVal;
+                  localStorage.setItem(lsKey, JSON.stringify(backup));
+                }
               }
             } catch(_) {}
 
@@ -9384,57 +9430,59 @@ app.registerExtension({
             // with the backup → stale.  If the workflow has ZERO identifiable
             // filenames → we cannot verify → skip backup (safe default).
             try {
-              const raw = localStorage.getItem(`mil_backup_${node.id}`);
-              if (raw) {
-                const bk = JSON.parse(raw);
-                const ilW = node.widgets.find(w => w.name === "image_list");
-                const bkFiles = JSON.parse(bk.image_list || "[]");
-                console.log(`[MIL:${node.id}] onConfigure: localStorage backup has ${bkFiles.length} image(s)`);
+              if (node.id != null) {
+                const raw = localStorage.getItem(`mil_backup_${node.id}`);
+                if (raw) {
+                  const bk = JSON.parse(raw);
+                  const ilW = node.widgets.find(w => w.name === "image_list");
+                  const bkFiles = JSON.parse(bk.image_list || "[]");
+                  console.log(`[MIL:${node.id}] onConfigure: localStorage backup has ${bkFiles.length} image(s)`);
 
-                // Collect ALL filenames from the serialized workflow data.
-                // nameOrder: sv[6]=crop_data, sv[7]=selected_items, sv[8]=reference_image
-                const wfFilenames = new Set();
-                try {
-                  const cdRaw = sv[6];
-                  if (cdRaw && cdRaw !== "{}") {
-                    for (const k of Object.keys(JSON.parse(cdRaw))) wfFilenames.add(k);
-                  }
-                } catch(_) {}
-                try {
-                  const siRaw = sv[7];
-                  if (siRaw && siRaw !== "[]") {
-                    for (const f of JSON.parse(siRaw)) { if (f) wfFilenames.add(f); }
-                  }
-                } catch(_) {}
-                try {
-                  const ri = sv[8];
-                  if (ri && ri !== "") wfFilenames.add(ri);
-                } catch(_) {}
+                  // Collect ALL filenames from the serialized workflow data.
+                  // nameOrder: sv[6]=crop_data, sv[7]=selected_items, sv[8]=reference_image
+                  const wfFilenames = new Set();
+                  try {
+                    const cdRaw = sv[6];
+                    if (cdRaw && cdRaw !== "{}") {
+                      for (const k of Object.keys(JSON.parse(cdRaw))) wfFilenames.add(k);
+                    }
+                  } catch(_) {}
+                  try {
+                    const siRaw = sv[7];
+                    if (siRaw && siRaw !== "[]") {
+                      for (const f of JSON.parse(siRaw)) { if (f) wfFilenames.add(f); }
+                    }
+                  } catch(_) {}
+                  try {
+                    const ri = sv[8];
+                    if (ri && ri !== "") wfFilenames.add(ri);
+                  } catch(_) {}
 
-                let backupMatchesWorkflow = false; // default: don't trust
-                if (wfFilenames.size > 0 && bkFiles.length > 0) {
-                  // Workflow has identifiable filenames — check overlap
-                  const bkSet = new Set(bkFiles);
-                  const overlap = [...wfFilenames].filter(f => bkSet.has(f)).length;
-                  backupMatchesWorkflow = overlap >= Math.ceil(wfFilenames.size / 2);
-                  if (!backupMatchesWorkflow) {
-                    console.log(`[MIL:${node.id}] onConfigure: localStorage backup is STALE. `
-                      + `Workflow filenames: ${wfFilenames.size}, backup files: ${bkFiles.length}, overlap: ${overlap}. Skipping.`);
+                  let backupMatchesWorkflow = false; // default: don't trust
+                  if (wfFilenames.size > 0 && bkFiles.length > 0) {
+                    // Workflow has identifiable filenames — check overlap
+                    const bkSet = new Set(bkFiles);
+                    const overlap = [...wfFilenames].filter(f => bkSet.has(f)).length;
+                    backupMatchesWorkflow = overlap >= Math.ceil(wfFilenames.size / 2);
+                    if (!backupMatchesWorkflow) {
+                      console.log(`[MIL:${node.id}] onConfigure: localStorage backup is STALE. `
+                        + `Workflow filenames: ${wfFilenames.size}, backup files: ${bkFiles.length}, overlap: ${overlap}. Skipping.`);
+                    }
+                  } else if (wfFilenames.size === 0 && bkFiles.length > 0) {
+                    // Workflow has NO filenames in any serialized field but backup has images.
+                    // This means either the workflow had no images, or the data doesn't carry
+                    // filename info.  Either way, we CANNOT verify the backup → skip it.
+                    console.log(`[MIL:${node.id}] onConfigure: workflow has no identifiable filenames, `
+                      + `cannot verify localStorage backup (${bkFiles.length} images). Skipping.`);
                   }
-                } else if (wfFilenames.size === 0 && bkFiles.length > 0) {
-                  // Workflow has NO filenames in any serialized field but backup has images.
-                  // This means either the workflow had no images, or the data doesn't carry
-                  // filename info.  Either way, we CANNOT verify the backup → skip it.
-                  console.log(`[MIL:${node.id}] onConfigure: workflow has no identifiable filenames, `
-                    + `cannot verify localStorage backup (${bkFiles.length} images). Skipping.`);
+
+                  if (backupMatchesWorkflow && ilW && bk.image_list && bkFiles.length > 0) {
+                    ilW.value = bk.image_list;
+                    console.log(`[MIL:${node.id}] onConfigure: localStorage backup MATCHES workflow. Restored image_list.`);
+                  }
+                } else {
+                  console.log(`[MIL:${node.id}] onConfigure: NO localStorage backup found`);
                 }
-
-                if (backupMatchesWorkflow && ilW && bk.image_list && bkFiles.length > 0) {
-                  ilW.value = bk.image_list;
-                  console.log(`[MIL:${node.id}] onConfigure: localStorage backup MATCHES workflow. Restored image_list.`);
-                }
-              } else {
-                console.log(`[MIL:${node.id}] onConfigure: NO localStorage backup found`);
               }
             } catch(_) {}
 
