@@ -9153,6 +9153,7 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_TYPE) return;
 
+    nodeType.canvasOnly = true; // Force classic canvas rendering for compatibility with Nodes 2.0
     const origOnCreated   = nodeType.prototype.onNodeCreated;
     const origOnConfigure = nodeType.prototype.onConfigure;
 
