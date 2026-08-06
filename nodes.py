@@ -1023,17 +1023,7 @@ class MultiImageLoader:
 
         try:
             transforms = json.loads(crop_data) if crop_data else {}
-            with open(r"C:\Users\info\.gemini\antigravity-ide\brain\db04a2ec-a159-432c-99d7-d6d65103307f\scratch\nodes_run.log", "a", encoding="utf-8") as log_f:
-                log_f.write(f"--- execution ---\n")
-                log_f.write(f"image_list: {image_list}\n")
-                log_f.write(f"crop_data raw: {crop_data}\n")
-                log_f.write(f"transforms: {list(transforms.keys())}\n")
-                for k, v in transforms.items():
-                    if isinstance(v, dict):
-                        log_f.write(f"  Image: {k}, keys: {list(v.keys())}, lassoIsPaint: {v.get('lassoIsPaint')}, lassoOps len: {len(v.get('lassoOps', []))}\n")
-        except Exception as e:
-            with open(r"C:\Users\info\.gemini\antigravity-ide\brain\db04a2ec-a159-432c-99d7-d6d65103307f\scratch\nodes_run.log", "a", encoding="utf-8") as log_f:
-                log_f.write(f"Error parsing crop_data: {e}\n")
+        except Exception:
             transforms = {}
 
         try:
