@@ -39,8 +39,14 @@ async def upload_images_handler(request):
             # Use a hash prefix to avoid collisions across users/sessions
             hash_prefix = hashlib.md5(data).hexdigest()[:8]
             stem, ext = os.path.splitext(filename)
-            safe_name = f"mil_{hash_prefix}_{stem}{ext}"
-            dest = input_dir / safe_name
+            counter = 0
+            while True:
+                suffix = f"_{counter}" if counter > 0 else ""
+                safe_name = f"mil_{hash_prefix}_{stem}{suffix}{ext}"
+                dest = input_dir / safe_name
+                if not dest.exists():
+                    break
+                counter += 1
             dest.write_bytes(data)
             saved.append(safe_name)
 
@@ -502,27 +508,36 @@ def _fit_image(img: Image.Image, target_w: int, target_h: int, mode: str, bg_col
     else:
         scale_w = target_w / src_w
         scale_h = target_h / src_h
-        scale = min(scale_w, scale_h) if mode == "letterbox" else max(scale_w, scale_h)
         
-        new_w = max(1, round(src_w * scale))
-        new_h = max(1, round(src_h * scale))
-        resized = img.resize((new_w, new_h), Image.BICUBIC)
-        
-        if mode == "crop" and (new_w > target_w or new_h > target_h):
-            left = (new_w - target_w) // 2
-            top  = (new_h - target_h) // 2
-            cropped = resized.crop((left, top, left + target_w, top + target_h))
-            if cropped.mode == "RGBA":
-                canvas.paste(cropped, (0, 0), mask=cropped.split()[3])
-            else:
-                canvas.paste(cropped, (0, 0))
-        else:
-            offset_x = (target_w - new_w) // 2
-            offset_y = (target_h - new_h) // 2
+        # If AR is extremely close (e.g. Starred image rounding), force exact fit to avoid 1px gaps
+        if abs(scale_w - scale_h) < 0.005:
+            resized = img.resize((target_w, target_h), Image.BICUBIC)
             if resized.mode == "RGBA":
-                canvas.paste(resized, (offset_x, offset_y), mask=resized.split()[3])
+                canvas.paste(resized, (0, 0), mask=resized.split()[3])
             else:
-                canvas.paste(resized, (offset_x, offset_y))
+                canvas.paste(resized, (0, 0))
+        else:
+            scale = min(scale_w, scale_h) if mode == "letterbox" else max(scale_w, scale_h)
+            
+            new_w = max(1, round(src_w * scale))
+            new_h = max(1, round(src_h * scale))
+            resized = img.resize((new_w, new_h), Image.BICUBIC)
+            
+            if mode == "crop" and (new_w > target_w or new_h > target_h):
+                left = (new_w - target_w) // 2
+                top  = (new_h - target_h) // 2
+                cropped = resized.crop((left, top, left + target_w, top + target_h))
+                if cropped.mode == "RGBA":
+                    canvas.paste(cropped, (0, 0), mask=cropped.split()[3])
+                else:
+                    canvas.paste(cropped, (0, 0))
+            else:
+                offset_x = (target_w - new_w) // 2
+                offset_y = (target_h - new_h) // 2
+                if resized.mode == "RGBA":
+                    canvas.paste(resized, (offset_x, offset_y), mask=resized.split()[3])
+                else:
+                    canvas.paste(resized, (offset_x, offset_y))
             
     # Apply global_scale strictly upon the resolved canvas
     if global_scale != 1.0:
@@ -665,14 +680,21 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
 
         # Scale to fit/fill canvas, applying user zoom
         src_w, src_h = rgba.size
-        if fit_mode == "crop":
-            base_scale = max(canvas_w / src_w, canvas_h / src_h)
+        scale_w, scale_h = canvas_w / src_w, canvas_h / src_h
+        
+        # Tolerance check for near-perfect fits
+        if abs(scale_w - scale_h) < 0.005 and scale == 1.0 and ox == 0 and oy == 0:
+            resized = rgba.resize((canvas_w, canvas_h), Image.BICUBIC)
+            new_w, new_h = canvas_w, canvas_h
         else:
-            base_scale = min(canvas_w / src_w, canvas_h / src_h)
-        eff_scale    = base_scale * scale
-        new_w        = max(1, round(src_w * eff_scale))
-        new_h        = max(1, round(src_h * eff_scale))
-        resized      = rgba.resize((new_w, new_h), Image.BICUBIC)
+            if fit_mode == "crop":
+                base_scale = max(scale_w, scale_h)
+            else:
+                base_scale = min(scale_w, scale_h)
+            eff_scale    = base_scale * scale
+            new_w        = max(1, round(src_w * eff_scale))
+            new_h        = max(1, round(src_h * eff_scale))
+            resized      = rgba.resize((new_w, new_h), Image.BICUBIC)
 
         # Paste onto a fully-transparent RGBA canvas
         paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
@@ -747,14 +769,21 @@ def _apply_crop_transform(img: Image.Image, transform: dict, canvas_w: int, canv
                              fillcolor=bg_color)
 
     src_w, src_h = img.size
-    if fit_mode == "crop":
-        base_scale = max(canvas_w / src_w, canvas_h / src_h)
+    scale_w, scale_h = canvas_w / src_w, canvas_h / src_h
+
+    # Tolerance check for near-perfect fits (solid-fill path)
+    if abs(scale_w - scale_h) < 0.005 and scale == 1.0 and ox == 0 and oy == 0:
+        resized = img.resize((canvas_w, canvas_h), Image.BICUBIC)
+        new_w, new_h = canvas_w, canvas_h
     else:
-        base_scale = min(canvas_w / src_w, canvas_h / src_h)
-    eff_scale    = base_scale * scale
-    new_w        = max(1, round(src_w * eff_scale))
-    new_h        = max(1, round(src_h * eff_scale))
-    resized      = img.resize((new_w, new_h), Image.BICUBIC)
+        if fit_mode == "crop":
+            base_scale = max(scale_w, scale_h)
+        else:
+            base_scale = min(scale_w, scale_h)
+        eff_scale    = base_scale * scale
+        new_w        = max(1, round(src_w * eff_scale))
+        new_h        = max(1, round(src_h * eff_scale))
+        resized      = img.resize((new_w, new_h), Image.BICUBIC)
 
     paste_x = round((canvas_w - new_w) / 2 + ox * canvas_w)
     paste_y = round((canvas_h - new_h) / 2 + oy * canvas_h)
@@ -1075,7 +1104,16 @@ class MultiImageLoader:
                     first_valid_img = img_tmp.copy()
                     badge_resolved = True
                     orig_ref_w, orig_ref_h = img_tmp.size
+                    t_ref = transforms.get(reference_image)
+                    if t_ref:
+                        # Use cropped size for native reference
+                        img_tmp_cropped = _apply_crop_region(img_tmp, t_ref)
+                        orig_ref_w, orig_ref_h = img_tmp_cropped.size
+                        
                     tmp_scaled = _scale_to_megapixels(img_tmp, megapixels)
+                    if t_ref:
+                        # Use cropped size for scaled reference
+                        tmp_scaled = _apply_crop_region(tmp_scaled, t_ref)
                     ref_w, ref_h = tmp_scaled.size
                     fixed_canvas = True
                     print(f"[MultiImageLoader] BADGE override: {reference_image} ({orig_ref_w}x{orig_ref_h}) -> canvas {ref_w}x{ref_h}")
@@ -1124,7 +1162,7 @@ class MultiImageLoader:
             fixed_canvas = False
             ref_w = ref_h = None
 
-        # Step 4: Fallback - find first valid image if badge didn't resolve
+        first_valid_fname = ""
         if first_valid_img is None:
             for fname in filenames:
                 fpath = input_dir / fname
@@ -1133,6 +1171,7 @@ class MultiImageLoader:
                         img_tmp = Image.open(fpath)
                         img_tmp = ImageOps.exif_transpose(img_tmp)
                         first_valid_img = img_tmp.copy()
+                        first_valid_fname = fname
                         break
                     except Exception:
                         pass
@@ -1153,8 +1192,13 @@ class MultiImageLoader:
                     else:
                         orig_ref_w, orig_ref_h = first_native_w, first_native_h
                 else:
-                    orig_ref_w = first_native_w
-                    orig_ref_h = first_native_h
+                    t_fallback = transforms.get(first_valid_fname)
+                    if t_fallback:
+                        img_tmp_cropped = _apply_crop_region(first_valid_img, t_fallback)
+                        orig_ref_w, orig_ref_h = img_tmp_cropped.size
+                    else:
+                        orig_ref_w = first_native_w
+                        orig_ref_h = first_native_h
 
             if ref_w is None:
                 if aspect_ratio not in ("Starred image", "Image Input", "none") and bool(aspect_ratio):
@@ -1163,6 +1207,10 @@ class MultiImageLoader:
                         ref_w, ref_h = dims
                 if ref_w is None:
                     tmp_scaled = _scale_to_megapixels(first_valid_img, megapixels)
+                    # Check for fallback transform if no badge was used
+                    t_fallback = transforms.get(first_valid_fname) if not badge_resolved else None
+                    if t_fallback:
+                        tmp_scaled = _apply_crop_region(tmp_scaled, t_fallback)
                     ref_w, ref_h = tmp_scaled.size
 
         # Fallback if no valid image was found (e.g. only BLANK images)

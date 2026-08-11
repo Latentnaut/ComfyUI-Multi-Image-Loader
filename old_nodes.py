@@ -39,8 +39,14 @@ async def upload_images_handler(request):
             # Use a hash prefix to avoid collisions across users/sessions
             hash_prefix = hashlib.md5(data).hexdigest()[:8]
             stem, ext = os.path.splitext(filename)
-            safe_name = f"mil_{hash_prefix}_{stem}{ext}"
-            dest = input_dir / safe_name
+            counter = 0
+            while True:
+                suffix = f"_{counter}" if counter > 0 else ""
+                safe_name = f"mil_{hash_prefix}_{stem}{suffix}{ext}"
+                dest = input_dir / safe_name
+                if not dest.exists():
+                    break
+                counter += 1
             dest.write_bytes(data)
             saved.append(safe_name)
 
